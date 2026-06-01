@@ -1,0 +1,64 @@
+name: Release
+
+# Déclenché quand on pousse un tag de version (ex: git tag v1.0.1 && git push origin v1.0.1)
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version sans le v (ex: 1.0.1)'
+        required: true
+
+permissions:
+  contents: write   # requis pour créer la Release via GITHUB_TOKEN
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Toolchain MinGW 32-bit (identique au build local C:\msys64\mingw32)
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: false
+          install: >-
+            mingw-w64-i686-gcc
+            mingw-w64-i686-cmake
+            mingw-w64-i686-make
+            zip
+
+      - name: Build & package
+        shell: msys2 {0}
+        run: |
+          set -e
+          if [ -n "${{ github.event.inputs.version }}" ]; then VER="${{ github.event.inputs.version }}"; else VER="${GITHUB_REF_NAME#v}"; fi
+          echo "VERSION=$VER" >> "$GITHUB_ENV"
+          echo "=== cod1reloaded $VER ==="
+
+          # Stampe la version (depuis le tag) dans le binaire
+          sed -i "s/COD1RELOADED_VERSION = \"[0-9.]*\"/COD1RELOADED_VERSION = \"$VER\"/" src/updater.h
+
+          cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+          test -f build/mss32.dll
+
+          mkdir -p dist
+          cp build/mss32.dll dist/
+          cp cod1reloaded.ini dist/
+          printf '{\n  "version": "%s",\n  "download_url": "https://github.com/cod1plus/client/releases/latest/download/mss32.dll",\n  "notes": "cod1reloaded %s"\n}\n' "$VER" "$VER" > dist/manifest.json
+          (cd dist && zip -q "cod1reloaded-$VER.zip" mss32.dll cod1reloaded.ini)
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$env:VERSION" `
+            "dist/mss32.dll" `
+            "dist/manifest.json" `
+            "dist/cod1reloaded-$env:VERSION.zip" `
+            --title "cod1reloaded $env:VERSION" `
+            --generate-notes

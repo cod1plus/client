@@ -1,0 +1,36 @@
+name: Build
+
+# Vérifie que ça compile à chaque push / PR sur main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: false
+          install: >-
+            mingw-w64-i686-gcc
+            mingw-w64-i686-cmake
+            mingw-w64-i686-make
+
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          set -e
+          cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+          test -f build/mss32.dll
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mss32-dev
+          path: build/mss32.dll
