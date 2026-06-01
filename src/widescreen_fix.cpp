@@ -34,6 +34,12 @@
 
 namespace patches {
 
+// Adresse de CG_GetEffectiveFov d'origine, posee par le hook horplus.
+// Definie au scope namespace (linkage EXTERNE) : sa seule lecture est dans
+// l'asm du trampoline (invisible au compilo), donc en linkage interne -O2
+// l'eliminerait comme un store mort -> undefined reference au link.
+extern "C" { void* g_calcfov_original = nullptr; }
+
 // Default configuration.
 WidescreenConfig g_widescreen_config = {
     /* horplus_fov_enable    */ true,
@@ -266,10 +272,7 @@ void ensure_exec_line_in_config_mp() {
 // Auto mode. Recomputed in widescreen_fix_apply() at startup.
 static float g_cached_aspect = 1.778f;
 
-// State for the trampoline (C-linked symbol names for use from basic asm).
-extern "C" {
-    void* g_calcfov_original = nullptr;  // original fcn.300344c0 address
-}
+// g_calcfov_original est defini plus haut (hors de l'anonymous namespace).
 
 // cdecl wrapper called by the trampoline. Takes the vanilla effective hfov
 // on the stack, returns the Hor+ corrected hfov in ST(0) (cdecl float).
