@@ -1,0 +1,50 @@
+# ============================================================
+# cod1reloaded — .gitignore
+# On garde : src/, CMakeLists.txt, build_cod1.ps1, cod1reloaded.ini,
+# docs/, tools/*.ps1, les assets HUD, les .md.
+# On ignore : tout ce qui est généré, lourd, ou hérité de CoD2x.
+# ============================================================
+
+# --- Sortie de compilation (généré) ---
+/build/
+*.o
+*.obj
+*.a
+*.exe
+/mss32.dll
+/cod1reloaded.dll
+
+# --- Archives / dumps / logs ---
+*.zip
+*.log
+result*.txt
+
+# --- Référence CoD2x (énorme, hors cod1reloaded) ---
+/cod2x/
+
+# --- Binaires du jeu pour le RE (gros, non essentiels) ---
+/cod1dll/
+/images/
+/bin/
+
+# --- Toolchain MinGW bundlé (hérité CoD2x) ---
+/tools/mingw/
+/tools/cmake/
+/tools/*.exe
+
+# --- Assets pk3 générés au runtime ---
+*.pk3
+*.pk3.hash
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+*.user
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# --- Dev / non distribué ---
+/tools/
+/scoreboard-clean*.png
+/TODO.md
