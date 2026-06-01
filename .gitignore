@@ -7,6 +7,7 @@
 
 # --- Sortie de compilation (généré) ---
 /build/
+/dist/
 *.o
 *.obj
 *.a

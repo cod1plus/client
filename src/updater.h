@@ -8,7 +8,7 @@ namespace patches {
 // Version du DLL embarquee dans le binaire (compare a la version distante).
 // Format semver simple : "MAJ.MIN.PATCH". Compare lexicographiquement avec
 // padding zero -> "0.1.0" < "0.10.0" marche correctement.
-constexpr const char* COD1RELOADED_VERSION = "0.1.0";
+constexpr const char* COD1RELOADED_VERSION = "1.0.0";
 
 struct UpdaterConfig {
     bool        enable;
