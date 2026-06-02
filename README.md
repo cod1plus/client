@@ -1,111 +1,109 @@
 # cod1reloaded
 
-Mod client pour **Call of Duty 1 multijoueur** (`CoDMP.exe`). Il modernise le jeu
-sans rien casser : fluidité, FPS stable, support écran large, alt-tab instantané,
-et corrections d'animation. Aucun launcher : on dépose un fichier dans le dossier
-du jeu et c'est tout. Le mod se **met à jour tout seul**.
+A client mod for **Call of Duty 1 multiplayer** (`CoDMP.exe`). It modernizes the
+game without breaking anything: smoother frames, stable FPS, widescreen support,
+instant alt-tab, and animation fixes. No launcher — you just drop one file into
+the game folder. The mod **updates itself**.
 
 ---
 
-## ⚡ Installation (3 étapes)
+## ⚡ Installation (3 steps)
 
-**1. Télécharge la dernière version**
+**1. Download the latest version**
 
-Récupère le fichier `cod1reloaded-X.X.X.zip` sur la page des releases :
+Grab `cod1reloaded-X.X.X.zip` from the releases page:
 
 👉 **https://github.com/cod1plus/client/releases/latest**
 
-Décompresse-le : tu obtiens **`mss32.dll`** et **`cod1reloaded.ini`**.
+Unzip it: you get **`mss32.dll`** and **`cod1reloaded.ini`**.
 
-**2. Ouvre le dossier du jeu** (celui qui contient `CoDMP.exe`)
+**2. Open the game folder** (the one with `CoDMP.exe`)
 
-- Steam : `…\steamapps\common\Call of Duty\`
-- Version boîte : `C:\Program Files (x86)\Call of Duty\`
+- Steam: `…\steamapps\common\Call of Duty\`
+- Retail: `C:\Program Files (x86)\Call of Duty\`
 
-Dans ce dossier, **renomme le `mss32.dll` existant en `mss32_original.dll`**.
+In that folder, **rename the existing `mss32.dll` to `mss32_original.dll`**.
 
-> ⚠️ **Étape essentielle.** Notre `mss32.dll` réutilise l'ancien pour le son.
-> Si tu sautes cette étape, le jeu n'aura plus de son (ou ne démarrera pas).
+> ⚠️ **Don't skip this.** Our `mss32.dll` reuses the original one for audio.
+> If you skip it, the game loses sound (or won't start).
 
-**3. Copie les 2 fichiers**
+**3. Copy the two files**
 
-Place **`mss32.dll`** et **`cod1reloaded.ini`** dans le dossier du jeu, puis lance
-**`CoDMP.exe`** normalement.
+Put **`mss32.dll`** and **`cod1reloaded.ini`** into the game folder, then launch
+**`CoDMP.exe`** as usual.
 
-C'est terminé. ✅
+Done. ✅
 
-Au final, le dossier doit contenir :
+The folder should end up with:
 
-| Fichier | Rôle |
+| File | Purpose |
 |---|---|
-| `mss32.dll` | le mod (notre fichier) |
-| `mss32_original.dll` | l'ancien `mss32.dll`, renommé (le son) |
-| `cod1reloaded.ini` | la configuration |
+| `mss32.dll` | the mod (our file) |
+| `mss32_original.dll` | the old `mss32.dll`, renamed (audio) |
+| `cod1reloaded.ini` | the configuration |
 
 ---
 
-## 🔄 Mises à jour automatiques
+## 🔄 Auto-updates
 
-Rien à faire. À chaque lancement, le mod vérifie s'il existe une version plus
-récente. Si oui, il la télécharge en arrière-plan et **l'applique au prochain
-démarrage** du jeu.
+Nothing to do. On each launch the mod checks for a newer version. If there is
+one, it downloads it in the background and **applies it on the next launch**.
 
-> Pour désactiver : mets `updater_enable = false` dans `cod1reloaded.ini`.
-
----
-
-## ✨ Ce que ça améliore
-
-- **Fluidité** — supprime les micro-saccades (épingle le jeu sur les bons cœurs CPU, priorité haute, anti-throttling).
-- **FPS stable** — limiteur de frames précis + timer Windows 1 ms : avec `com_maxfps 250`, tu as vraiment 250 (et pas 240–248).
-- **Écran large / FOV Hor+** — corrige le 4:3 forcé de CoD1 ; tu vois enfin plus large en 16:9 / 21:9 au lieu d'une image étirée.
-- **Alt-tab instantané** — mode fenêtré sans bordure (fake fullscreen), plus d'écran noir au changement de fenêtre.
-- **Corrections d'animation** — posture et hauteur de vue plus propres.
-- **Version perso** — texte affiché dans le coin du menu principal.
-
-> Compatible PunkBuster : on ne touche pas aux dvars sensibles, juste à la logique
-> interne du moteur.
+> To disable: set `updater_enable = false` in `cod1reloaded.ini`.
 
 ---
 
-## ⚙️ Configuration (optionnel)
+## ✨ What it improves
 
-Tout est réglable dans **`cod1reloaded.ini`** (chaque option est commentée).
-Modifie le fichier, enregistre, relance le jeu. Les réglages par défaut
-conviennent à la plupart des joueurs — tu peux laisser tel quel.
+- **Smoothness** — kills microstutter (pins the game to the right CPU cores, raises priority, blocks throttling).
+- **Stable FPS** — precise frame limiter + 1 ms Windows timer: with `com_maxfps 250` you actually get 250 (not 240–248).
+- **Widescreen / Hor+ FOV** — fixes CoD1's forced 4:3; you finally see wider on 16:9 / 21:9 instead of a stretched image.
+- **Instant alt-tab** — borderless windowed (fake fullscreen), no more black screen when switching windows.
+- **Animation fixes** — cleaner posture and view height.
+- **Custom version** — text shown in the main menu corner.
 
----
-
-## 🗑️ Désinstallation
-
-1. Supprime notre `mss32.dll`.
-2. Renomme `mss32_original.dll` → `mss32.dll`.
-3. (optionnel) Supprime `cod1reloaded.ini`.
-
-Le jeu revient à l'état d'origine.
+> PunkBuster-safe: we don't touch sensitive dvars, only the engine's internal logic.
 
 ---
 
-## ❓ Problèmes courants
+## ⚙️ Configuration (optional)
 
-**Plus de son / le jeu ne démarre pas**
-→ Tu as probablement oublié l'étape 2 : l'ancien `mss32.dll` doit être renommé en
-`mss32_original.dll` et rester dans le dossier.
-
-**L'antivirus bloque le `.dll`**
-→ Faux positif classique pour ce type de mod (DLL chargée par le jeu).
-Autorise le fichier / ajoute une exception.
-
-**La mise à jour ne s'applique pas**
-→ Normal au premier lancement : elle se télécharge puis s'applique au lancement
-**suivant**. Relance le jeu une fois de plus.
-
-**Je ne trouve pas le dossier du jeu**
-→ Sur Steam : clic droit sur le jeu → *Gérer* → *Parcourir les fichiers locaux*.
+Everything is tunable in **`cod1reloaded.ini`** (each option is commented).
+Edit, save, relaunch. The defaults are fine for most players — you can leave it
+as is.
 
 ---
 
-## Prérequis
+## 🗑️ Uninstall
 
-- **Call of Duty (2003)**, mode multijoueur (`CoDMP.exe`), patché en **1.5**.
+1. Delete our `mss32.dll`.
+2. Rename `mss32_original.dll` back to `mss32.dll`.
+3. (optional) Delete `cod1reloaded.ini`.
+
+The game is back to vanilla.
+
+---
+
+## ❓ Troubleshooting
+
+**No sound / the game won't start**
+→ You probably skipped step 2: the old `mss32.dll` must be renamed to
+`mss32_original.dll` and kept in the folder.
+
+**Antivirus flags the `.dll`**
+→ Common false positive for this kind of mod (a DLL loaded by the game).
+Allow the file / add an exception.
+
+**The update didn't apply**
+→ Expected on the first launch: it downloads, then applies on the **next**
+launch. Start the game once more.
+
+**I can't find the game folder**
+→ On Steam: right-click the game → *Manage* → *Browse local files*.
+
+---
+
+## Requirements
+
+- **Call of Duty (2003)**, multiplayer (`CoDMP.exe`), patched to **1.5**.
 - Windows.
