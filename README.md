@@ -59,7 +59,7 @@ one, it downloads it in the background and **applies it on the next launch**.
 - **Stable FPS** — precise frame limiter + 1 ms Windows timer: with `com_maxfps 250` you actually get 250 (not 240–248).
 - **Widescreen / Hor+ FOV** — fixes CoD1's forced 4:3; you finally see wider on 16:9 / 21:9 instead of a stretched image.
 - **Instant alt-tab** — borderless windowed (fake fullscreen), no more black screen when switching windows.
-- **Animation fixes** — cleaner posture and view height.
+- **Anti-exploit / animation fixes** — fixes the up/down crouch view-height bug (the camera used to desync from the body, letting players peek while barely visible) and the left-lean *clipping* exploit (the camera peeked around cover while the body model stayed hidden).
 - **Custom version** — text shown in the main menu corner.
 
 > PunkBuster-safe: we don't touch sensitive dvars, only the engine's internal logic.
