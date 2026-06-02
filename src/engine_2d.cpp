@@ -39,6 +39,9 @@ RE_DrawStretchPic_t       g_RE_DrawStretchPic = nullptr;
 post_hud_draw_callback_t  g_post_hud_callback = nullptr;
 bool                      g_hook_installed    = false;
 
+// Heartbeat : tick de la derniere frame HUD (cf. engine_2d_last_hud_tick).
+volatile DWORD            g_last_hud_tick     = 0;
+
 // Syscall IDs for shader registration. Both are seen in cgame disasm
 // registering shader names. We try both and use whichever returns >0.
 constexpr intptr_t SYSCALL_R_REGISTERSHADER       = 0x58;  // used directly for ui_assets_*
@@ -59,6 +62,7 @@ bool                             g_regshaders_hook_installed = false;
 // Called by the naked trampoline AFTER the vanilla CG_Draw2D returns.
 // Any state set up by the engine for HUD rendering is still active.
 extern "C" void cg_draw2d_post_run() {
+    g_last_hud_tick = GetTickCount();  // heartbeat "en partie" (Discord RPC)
     if (g_post_hud_callback) g_post_hud_callback();
 }
 
@@ -142,6 +146,10 @@ void engine_2d_reset_color() {
 
 void engine_2d_set_post_hud_callback(post_hud_draw_callback_t cb) {
     g_post_hud_callback = cb;
+}
+
+DWORD engine_2d_last_hud_tick() {
+    return g_last_hud_tick;
 }
 
 void engine_2d_set_post_register_callback(post_register_shaders_callback_t cb) {

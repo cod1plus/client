@@ -84,6 +84,12 @@ void engine_2d_reset_color();
 // freely call engine_2d_draw_pic / draw_stretch_pic from here.
 void engine_2d_set_post_hud_callback(post_hud_draw_callback_t cb);
 
+// Frame heartbeat : GetTickCount() de la derniere execution du hook CG_Draw2D.
+// Renvoie 0 si le hook n'a jamais tourne (pas encore en partie). CG_Draw2D ne
+// s'execute QUE pendant une partie active -> permet de detecter "en partie" vs
+// "menus" sans lire l'etat moteur. Lecture thread-safe (32-bit aligne).
+DWORD engine_2d_last_hud_tick();
+
 // Install the CG_RegisterCgameShaders hook. After this is called and
 // CG_RegisterCgameShaders runs at least once (either naturally during
 // CG_Init or triggered by engine_2d_force_register_shaders()), the

@@ -34,6 +34,8 @@
 #include "fso_disable.h"
 #include "widescreen_fix.h"
 #include "avatar_overlay.h"
+#include "engine_2d.h"
+#include "discord_rpc.h"
 
 namespace {
 
@@ -61,6 +63,15 @@ void try_patch_cgame() {
     if (!cgame) return;
     logger::logf("cgame_mp_x86.dll detected (base=0x%08x)",
                  (unsigned)(uintptr_t)cgame);
+
+    // Discord RPC : le hook CG_Draw2D fournit le heartbeat "en partie"
+    // (engine_2d_last_hud_tick). On l'installe ici, independamment de
+    // l'overlay HUD (qui peut etre desactive) et du lean fix. Idempotent.
+    if (patches::g_discord_rpc_config.enable &&
+        patches::g_discord_rpc_config.client_id[0] != '\0') {
+        patches::engine_2d_install_hook(cgame);
+    }
+
     if (patches::g_lean_fix_config.enable) {
         logger::logf("  applying lean fix (yaw scales neck=%.2f head=%.2f, in_stand=%d)...",
                      patches::g_lean_fix_config.neck_yaw_scale,
@@ -143,6 +154,9 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             // Demo upload background watcher
             patches::demo_upload_start();
 
+            // Discord Rich Presence (thread de fond : pipe IPC + presence).
+            patches::discord_rpc_start();
+
             // Resolution du timer Windows a 1ms : permet que com_maxfps
             // soit respecte precisement. Doit etre tres tot car le timer
             // est process-wide.
@@ -190,6 +204,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             patches::fps_cap_shutdown();
             patches::toast_shutdown();
             patches::avatar_overlay_shutdown();
+            patches::discord_rpc_shutdown();
             break;
     }
     return TRUE;

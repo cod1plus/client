@@ -34,6 +34,7 @@ set(COD1RELOADED_SOURCES
     src/widescreen_fix.cpp
     src/avatar_overlay.cpp
     src/engine_2d.cpp
+    src/discord_rpc.cpp
 )
 
 add_library(cod1reloaded SHARED

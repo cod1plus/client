@@ -17,6 +17,7 @@
 #include "fso_disable.h"
 #include "widescreen_fix.h"
 #include "avatar_overlay.h"
+#include "discord_rpc.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -463,6 +464,36 @@ void load_config(HMODULE self_module) {
         else if (!_stricmp(buf, "custom")) g_widescreen_config.aspect_mode = AspectMode::Custom;
     }
 
+    // Discord Rich Presence
+    g_discord_rpc_config.enable = read_ini_bool(
+        ini_path, "discord_rpc_enable", g_discord_rpc_config.enable);
+    g_discord_rpc_config.show_elapsed = read_ini_bool(
+        ini_path, "discord_rpc_show_elapsed", g_discord_rpc_config.show_elapsed);
+    read_ini_string(ini_path, "discord_rpc_client_id",
+                    g_discord_rpc_config.client_id,
+                    sizeof(g_discord_rpc_config.client_id),
+                    g_discord_rpc_config.client_id);
+    read_ini_string(ini_path, "discord_rpc_large_image",
+                    g_discord_rpc_config.large_image,
+                    sizeof(g_discord_rpc_config.large_image),
+                    g_discord_rpc_config.large_image);
+    read_ini_string(ini_path, "discord_rpc_large_text",
+                    g_discord_rpc_config.large_text,
+                    sizeof(g_discord_rpc_config.large_text),
+                    g_discord_rpc_config.large_text);
+    read_ini_string(ini_path, "discord_rpc_details_menu",
+                    g_discord_rpc_config.details_menu,
+                    sizeof(g_discord_rpc_config.details_menu),
+                    g_discord_rpc_config.details_menu);
+    read_ini_string(ini_path, "discord_rpc_details_match",
+                    g_discord_rpc_config.details_match,
+                    sizeof(g_discord_rpc_config.details_match),
+                    g_discord_rpc_config.details_match);
+    read_ini_string(ini_path, "discord_rpc_state",
+                    g_discord_rpc_config.state_text,
+                    sizeof(g_discord_rpc_config.state_text),
+                    g_discord_rpc_config.state_text);
+
     logger::logf("config loaded from %s", ini_path);
     logger::logf("  viewheight_lerp_speed = %.2f", g_viewheight_config.viewheight_lerp_speed);
     logger::logf("  short_version         = \"%s\"", g_short_version_buffer);
@@ -501,6 +532,9 @@ void load_config(HMODULE self_module) {
                  g_swing_fix_config.enable,
                  g_swing_fix_config.legs_tolerance,
                  g_swing_fix_config.torso_pitch_speed);
+    logger::logf("  discord_rpc: enable=%s client_id=%s",
+                 g_discord_rpc_config.enable ? "true" : "false",
+                 g_discord_rpc_config.client_id[0] ? g_discord_rpc_config.client_id : "(none)");
 }
 
 }  // namespace patches
