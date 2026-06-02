@@ -1,21 +1,21 @@
 // Patch fenetre borderless pour CoD1.
 //
-// Approche minimaliste (Phase 1) :
+// Approche :
 //   1. Watcher thread qui poll pour la fenetre principale de CoDMP.exe.
-//   2. Quand elle est trouvee, on modifie ses styles GWL_STYLE / GWL_EXSTYLE
-//      pour enlever bordures/titre/coins.
-//   3. On la positionne pour remplir tout le monitor cible.
+//   2. Quand elle est trouvee, on enleve bordures/titre (WS_POPUP) et on la
+//      positionne pour remplir le monitor cible.
+//   3. On subclasse sa WindowProc pour minimiser le jeu sur perte de focus
+//      (alt-tab propre en borderless).
 //
-// Avantages vs vrai fullscreen exclusif :
-//   - Alt-tab instantane (pas de switch de mode video).
-//   - Multi-ecran propre : on choisit precisement quel monitor.
-//   - Pas de glitch de gamma quand le jeu perd le focus.
-//
-// Limites :
-//   - Ne gere pas un retour en mode fenetre normal sans relance (one-shot).
-//   - Ne touche pas a la WindowProc ; certains events Windows comme le
-//     redimensionnement utilisateur ne sont pas geres (pas grave en borderless).
-//   - Pas de gestion du gamma (a porter dans une phase ulterieure).
+// CoDMP cree souvent une fenetre temporaire au demarrage puis recree la vraie
+// fenetre de rendu (contexte GL) ; les deux peuvent coexister un instant. Le
+// watcher doit donc :
+//   - se verrouiller sur la fenetre AU PREMIER PLAN (la vraie fenetre active),
+//     sinon il fait du yo-yo entre les deux et re-style en boucle ;
+//   - ne JAMAIS re-subclasser une fenetre deja subclassee (sinon
+//     g_original_wnd_proc pointe sur notre propre proc -> recursion infinie
+//     sur chaque message -> fenetre figee, "on ne peut cliquer nulle part") ;
+//   - restaurer la proc d'origine avant de basculer sur une autre fenetre.
 
 #include "window_patch.h"
 #include "logger.h"
@@ -35,111 +35,137 @@ WindowConfig g_window_config = {
 
 namespace {
 
-bool      g_applied = false;
-WNDPROC   g_original_wnd_proc = nullptr;
-HWND      g_subclassed_hwnd = nullptr;
+volatile bool g_applied  = false;
+volatile bool g_applying = false;   // vrai pendant make_borderless (anti-minimize)
+WNDPROC       g_original_wnd_proc = nullptr;
+HWND          g_subclassed_hwnd   = nullptr;
 
-// EnumWindows callback : trouve une top-level visible appartenant au process.
-struct FindData {
-    DWORD  pid;
-    HWND   hwnd;
-};
+LRESULT CALLBACK cod1reloaded_wnd_proc(HWND, UINT, WPARAM, LPARAM);  // fwd
+
+// --- Recherche de la fenetre principale -----------------------------------
+
+struct FindData { DWORD pid; HWND hwnd; };
 
 BOOL CALLBACK enum_windows_cb(HWND hwnd, LPARAM lParam) {
     auto* d = (FindData*)lParam;
-
     DWORD wnd_pid = 0;
     GetWindowThreadProcessId(hwnd, &wnd_pid);
-    if (wnd_pid != d->pid) return TRUE; // continue
-
-    if (!IsWindowVisible(hwnd))           return TRUE;
+    if (wnd_pid != d->pid)                 return TRUE;
+    if (!IsWindowVisible(hwnd))            return TRUE;
     if (GetWindow(hwnd, GW_OWNER) != NULL) return TRUE; // pas une top-level
-
-    // Filtre supplementaire : la fenetre doit avoir une taille > 100x100
-    // (evite de prendre une console ou un splash screen minuscule).
     RECT rc;
-    if (!GetWindowRect(hwnd, &rc)) return TRUE;
+    if (!GetWindowRect(hwnd, &rc))         return TRUE;
     if ((rc.right - rc.left) < 200 || (rc.bottom - rc.top) < 200) return TRUE;
-
     d->hwnd = hwnd;
-    return FALSE; // stop l'enumeration
+    return FALSE; // stop
 }
 
+// Privilegie la fenetre AU PREMIER PLAN si elle nous appartient : ca verrouille
+// sur la vraie fenetre de rendu active et evite le yo-yo entre la fenetre
+// temporaire de demarrage et la vraie (qui re-stylait en boucle).
 HWND find_main_window() {
+    HWND fg = GetForegroundWindow();
+    if (fg) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(fg, &pid);
+        if (pid == GetCurrentProcessId() && IsWindowVisible(fg) &&
+            GetWindow(fg, GW_OWNER) == NULL) {
+            RECT rc;
+            if (GetWindowRect(fg, &rc) &&
+                (rc.right - rc.left) >= 200 && (rc.bottom - rc.top) >= 200) {
+                return fg;
+            }
+        }
+    }
     FindData d = { GetCurrentProcessId(), NULL };
     EnumWindows(enum_windows_cb, (LPARAM)&d);
     return d.hwnd;
 }
 
-// Selection du monitor cible selon la config.
+// --- Selection du monitor --------------------------------------------------
+
 struct MonitorPickData {
-    int   target_index;
-    int   current_index;
+    int      target_index;
+    int      current_index;
     HMONITOR hmon;
 };
 
 BOOL CALLBACK enum_monitor_cb(HMONITOR hMon, HDC, LPRECT, LPARAM lParam) {
     auto* d = (MonitorPickData*)lParam;
-    if (d->current_index == d->target_index) {
-        d->hmon = hMon;
-        return FALSE; // stop
-    }
+    if (d->current_index == d->target_index) { d->hmon = hMon; return FALSE; }
     d->current_index++;
-    return TRUE; // continue
+    return TRUE;
 }
 
 HMONITOR pick_monitor(HWND hwnd) {
-    // Mode "follow current" : on garde le monitor sur lequel la fenetre est
-    // actuellement positionnee.
     if (g_window_config.follow_current_monitor) {
         return MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
     }
-
-    // Mode "preferred index" : on choisit le N-ieme monitor selon l'ordre
-    // d'enumeration de Windows.
     if (g_window_config.preferred_monitor_index >= 0) {
         MonitorPickData d = { g_window_config.preferred_monitor_index, 0, NULL };
         EnumDisplayMonitors(NULL, NULL, enum_monitor_cb, (LPARAM)&d);
         if (d.hmon) return d.hmon;
     }
-
-    // Fallback : monitor primaire (point 0,0).
     POINT zero = { 0, 0 };
     return MonitorFromPoint(zero, MONITOR_DEFAULTTOPRIMARY);
 }
 
-// WindowProc subclass : intercepte WM_ACTIVATEAPP pour minimiser le jeu
-// quand il perd le focus. Tous les autres messages sont relayes a la
-// WindowProc d'origine via CallWindowProc.
+// --- Subclass --------------------------------------------------------------
+
+// Restaure la WindowProc d'origine sur la fenetre actuellement subclassee,
+// puis oublie l'etat. A appeler avant de basculer sur une autre fenetre.
+void restore_subclass() {
+    if (g_subclassed_hwnd && g_original_wnd_proc && IsWindow(g_subclassed_hwnd)) {
+        WNDPROC cur = (WNDPROC)GetWindowLongPtrA(g_subclassed_hwnd, GWLP_WNDPROC);
+        if (cur == cod1reloaded_wnd_proc) {
+            SetWindowLongPtrA(g_subclassed_hwnd, GWLP_WNDPROC,
+                              (LONG_PTR)g_original_wnd_proc);
+        }
+    }
+    g_subclassed_hwnd   = nullptr;
+    g_original_wnd_proc = nullptr;
+}
+
 LRESULT CALLBACK cod1reloaded_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_ACTIVATEAPP) {
         const BOOL activated = (BOOL)wParam;
-        if (!activated && g_window_config.minimize_on_focus_loss) {
-            // Important : relacher la souris avant de minimiser, sinon
-            // le clic peut etre intercepte par notre fenetre qui n'est
-            // plus visible.
+        // Minimise UNIQUEMENT si : perte de focus reelle, option active, patch
+        // entierement applique, et PAS pendant notre propre setup (sinon on
+        // minimise la fenetre en cours d'init -> inutilisable).
+        if (!activated && g_window_config.minimize_on_focus_loss &&
+            g_applied && !g_applying) {
             ReleaseCapture();
             while (ShowCursor(TRUE) < 0) {}
             ShowWindow(hwnd, SW_MINIMIZE);
         }
     }
 
-    // Quand le user click le X ou Alt+F4 -> trigger upload immediat des demos
-    // avant que le process meure. L'upload tourne en background, on ne bloque
-    // pas la fermeture (sinon UX horrible). Les fichiers .dm_1 restent sur
-    // disque si l'upload est interrompu, le retry se fera au prochain launch.
+    // Fermeture -> upload immediat des demos avant la mort du process.
     if (msg == WM_CLOSE || msg == WM_DESTROY) {
         demo_upload_trigger_now();
     }
 
-    if (g_original_wnd_proc) {
-        return CallWindowProcA(g_original_wnd_proc, hwnd, msg, wParam, lParam);
+    // Anti-recursion : ne JAMAIS rappeler notre propre proc.
+    WNDPROC orig = g_original_wnd_proc;
+    if (orig && orig != cod1reloaded_wnd_proc) {
+        return CallWindowProcA(orig, hwnd, msg, wParam, lParam);
     }
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
 
 void subclass_window(HWND hwnd) {
-    if (g_subclassed_hwnd == hwnd) return; // deja fait
+    if (!hwnd) return;
+    if (g_subclassed_hwnd == hwnd) return; // deja fait par nous
+
+    // Si la proc actuelle est DEJA la notre (globals obsoletes apres une
+    // recreation), on adopte sans reinstaller : reinstaller ferait pointer
+    // g_original_wnd_proc sur notre propre proc -> recursion infinie.
+    WNDPROC cur = (WNDPROC)GetWindowLongPtrA(hwnd, GWLP_WNDPROC);
+    if (cur == cod1reloaded_wnd_proc) {
+        g_subclassed_hwnd = hwnd;
+        return;
+    }
+
     g_original_wnd_proc = (WNDPROC)SetWindowLongPtrA(
         hwnd, GWLP_WNDPROC, (LONG_PTR)cod1reloaded_wnd_proc);
     if (g_original_wnd_proc) {
@@ -151,16 +177,19 @@ void subclass_window(HWND hwnd) {
     }
 }
 
+// --- Borderless ------------------------------------------------------------
+
 bool make_borderless(HWND hwnd) {
+    g_applying = true;
+
     HMONITOR hMon = pick_monitor(hwnd);
-    if (!hMon) return false;
+    if (!hMon) { g_applying = false; return false; }
 
     MONITORINFOEXA mi;
     ZeroMemory(&mi, sizeof(mi));
     mi.cbSize = sizeof(mi);
-    if (!GetMonitorInfoA(hMon, (LPMONITORINFO)&mi)) return false;
+    if (!GetMonitorInfoA(hMon, (LPMONITORINFO)&mi)) { g_applying = false; return false; }
 
-    // Enleve les styles de bordure / titre.
     LONG style = GetWindowLongA(hwnd, GWL_STYLE);
     style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX |
                WS_SYSMENU | WS_DLGFRAME | WS_BORDER);
@@ -179,71 +208,63 @@ bool make_borderless(HWND hwnd) {
 
     if (!SetWindowPos(hwnd, HWND_TOP, x, y, w, h,
                       SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOOWNERZORDER)) {
+        g_applying = false;
         return false;
     }
 
     logger::logf("window_patch: borderless applied on %s (%dx%d at %d,%d)",
                  mi.szDevice, w, h, x, y);
 
-    // Subclasse pour intercepter WM_ACTIVATEAPP et minimiser sur focus loss
     if (g_window_config.minimize_on_focus_loss) {
         subclass_window(hwnd);
     }
+
+    // S'assure que la fenetre a le focus pour capter souris/clavier
+    // (best-effort : cross-thread, peut etre ignore par Windows).
+    SetForegroundWindow(hwnd);
+
+    g_applying = false;
     return true;
 }
 
 DWORD WINAPI window_watcher_thread(LPVOID) {
-    // Perpetual watcher. The engine destroys + recreates the main window
-    // on vid_restart, mode switch, /r_mode change, etc. Without this loop,
-    // the new window keeps its default styles (non-borderless) AND never
-    // gets our WM_ACTIVATEAPP subclass, which breaks alt-tab : when the
-    // user tries to leave the game, the window stays on top covering the
-    // desktop because nothing minimizes it.
-    //
-    // We detect the destruction via IsWindow(g_subclassed_hwnd) returning
-    // FALSE, then re-apply the full borderless + subclass pipeline to the
-    // new window.
+    // Watcher perpetuel. Le moteur detruit + recree la fenetre principale sur
+    // vid_restart / changement de mode. On re-applique le pipeline complet a
+    // la nouvelle fenetre, en restaurant proprement l'ancienne.
     for (;;) {
-        bool need_reapply = false;
+        HWND target = find_main_window();
+        bool need = false;
 
         if (!g_applied) {
-            // Initial bring-up : no patched window yet.
-            need_reapply = true;
-        } else if (g_subclassed_hwnd && !IsWindow(g_subclassed_hwnd)) {
-            // Our patched window vanished - likely vid_restart.
-            logger::logf("window_patch: subclassed window 0x%p destroyed "
-                         "(vid_restart?), will re-apply",
+            need = (target != NULL);
+        } else if (!IsWindow(g_subclassed_hwnd) || !IsWindowVisible(g_subclassed_hwnd)) {
+            // Notre fenetre a disparu/ete cachee : elle n'existe plus, on
+            // oublie sans restaurer (rien sur quoi restaurer).
+            logger::logf("window_patch: fenetre subclassee 0x%p disparue, re-apply",
                          (void*)g_subclassed_hwnd);
-            need_reapply = true;
-        } else {
-            // Defensive: if a NEW visible main window appeared that's
-            // different from the one we subclassed, the old one became
-            // stale even if its handle is still valid.
-            HWND current = find_main_window();
-            if (current && current != g_subclassed_hwnd) {
-                logger::logf("window_patch: new main window 0x%p detected "
-                             "(was 0x%p), will re-apply",
-                             (void*)current, (void*)g_subclassed_hwnd);
-                need_reapply = true;
-            }
-        }
-
-        if (need_reapply) {
-            // Reset globals so subclass_window picks up the fresh wndproc.
-            g_applied = false;
-            g_subclassed_hwnd = nullptr;
+            g_subclassed_hwnd   = nullptr;
             g_original_wnd_proc = nullptr;
+            g_applied = false;
+            need = (target != NULL);
+        } else if (target && target != g_subclassed_hwnd &&
+                   target == GetForegroundWindow()) {
+            // Une AUTRE fenetre du jeu est devenue active (temp demarrage ->
+            // vraie fenetre GL). On restaure l'ancienne puis on bascule.
+            logger::logf("window_patch: fenetre active changee 0x%p -> 0x%p",
+                         (void*)g_subclassed_hwnd, (void*)target);
+            restore_subclass();
+            g_applied = false;
+            need = true;
+        }
 
-            HWND hwnd = find_main_window();
-            if (hwnd) {
-                Sleep(200);  // let new window stabilize before restyling
-                if (make_borderless(hwnd)) {
-                    g_applied = true;
-                }
+        if (need && target) {
+            Sleep(150);                 // laisse la nouvelle fenetre se stabiliser
+            target = find_main_window();
+            if (target && make_borderless(target)) {
+                g_applied = true;
             }
         }
 
-        // Healthy : slow poll (1s). Searching : fast poll (100ms).
         Sleep(g_applied ? 1000 : 100);
     }
     return 0;
