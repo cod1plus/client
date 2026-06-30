@@ -1,25 +1,36 @@
 name: Release
 
-# Déclenché quand on pousse un tag de version (ex: git tag v1.0.1 && git push origin v1.0.1)
+# Builds mss32.dll and attaches the assets to the release automatically.
+#  - fires when you PUBLISH a release on GitHub (uses that release's tag), or
+#  - run it by hand (Actions tab -> Release -> Run workflow) for an existing tag.
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version sans le v (ex: 1.0.1)'
+      tag:
+        description: "Existing release tag to build + attach assets to (e.g. 1.6.0)"
         required: true
 
 permissions:
-  contents: write   # requis pour créer la Release via GITHUB_TOKEN
+  contents: write   # required for gh release upload via GITHUB_TOKEN
 
 jobs:
-  release:
+  build-and-upload:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Toolchain MinGW 32-bit (identique au build local C:\msys64\mingw32)
+      - name: Resolve version tag
+        shell: bash
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          [ -z "$TAG" ] && TAG="${{ github.event.inputs.tag }}"
+          TAG="${TAG#v}"                       # strip a leading 'v' if present
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "Building cod1reloaded $TAG"
+
+      # Same toolchain as the local build (msys2 mingw32, 32-bit).
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW32
@@ -30,35 +41,35 @@ jobs:
             mingw-w64-i686-make
             zip
 
-      - name: Build & package
+      - name: Build mss32.dll
         shell: msys2 {0}
         run: |
           set -e
-          if [ -n "${{ github.event.inputs.version }}" ]; then VER="${{ github.event.inputs.version }}"; else VER="${GITHUB_REF_NAME#v}"; fi
-          echo "VERSION=$VER" >> "$GITHUB_ENV"
-          echo "=== cod1reloaded $VER ==="
-
-          # Stampe la version (depuis le tag) dans le binaire
-          sed -i "s/COD1RELOADED_VERSION = \"[0-9.]*\"/COD1RELOADED_VERSION = \"$VER\"/" src/updater.h
-
-          cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
-          cmake --build build
+          # keep the compiled version in sync with the release tag
+          sed -i "s/COD1RELOADED_VERSION = \"[^\"]*\"/COD1RELOADED_VERSION = \"$TAG\"/" src/features/updater.h
+          cmake -S . -B build -G "MinGW Makefiles"
+          cmake --build build --target mss32
           test -f build/mss32.dll
 
+      - name: Package assets
+        shell: msys2 {0}
+        run: |
+          set -e
           mkdir -p dist
-          cp build/mss32.dll dist/
-          cp cod1reloaded.ini dist/
-          printf '{\n  "version": "%s",\n  "download_url": "https://github.com/cod1plus/client/releases/latest/download/mss32.dll",\n  "notes": "cod1reloaded %s"\n}\n' "$VER" "$VER" > dist/manifest.json
-          (cd dist && zip -q "cod1reloaded-$VER.zip" mss32.dll cod1reloaded.ini)
+          cp build/mss32.dll cod1reloaded.ini dist/
+          printf '{\n  "version": "%s",\n  "download_url": "https://github.com/%s/releases/latest/download/mss32.dll",\n  "notes": "cod1reloaded %s - see CHANGELOG"\n}\n' \
+            "$TAG" "$GITHUB_REPOSITORY" "$TAG" > dist/manifest.json
+          ( cd dist && zip -q "cod1reloaded-$TAG.zip" mss32.dll cod1reloaded.ini )
+          ls -l dist
 
-      - name: Create GitHub Release
-        shell: pwsh
+      - name: Upload assets to the release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v$env:VERSION" `
-            "dist/mss32.dll" `
-            "dist/manifest.json" `
-            "dist/cod1reloaded-$env:VERSION.zip" `
-            --title "cod1reloaded $env:VERSION" `
-            --generate-notes
+          gh release upload "$TAG" \
+            dist/mss32.dll \
+            dist/cod1reloaded.ini \
+            dist/manifest.json \
+            "dist/cod1reloaded-$TAG.zip" \
+            --clobber
