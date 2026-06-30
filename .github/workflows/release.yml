@@ -3,6 +3,10 @@ name: Release
 # Builds mss32.dll and attaches the assets to the release automatically.
 #  - fires when you PUBLISH a release on GitHub (uses that release's tag), or
 #  - run it by hand (Actions tab -> Release -> Run workflow) for an existing tag.
+#
+# Uses the stable Ubuntu i686-w64-mingw32 cross-compiler (the rolling msys2
+# toolchain on windows runners ships a broken bleeding-edge gcc that fails to
+# static-link, hence the cross-compile here).
 on:
   release:
     types: [published]
@@ -17,12 +21,11 @@ permissions:
 
 jobs:
   build-and-upload:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Resolve version tag
-        shell: bash
         run: |
           TAG="${{ github.event.release.tag_name }}"
           [ -z "$TAG" ] && TAG="${{ github.event.inputs.tag }}"
@@ -30,31 +33,28 @@ jobs:
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "Building cod1reloaded $TAG"
 
-      # Same toolchain as the local build (msys2 mingw32, 32-bit).
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW32
-          update: false
-          install: >-
-            mingw-w64-i686-gcc
-            mingw-w64-i686-cmake
-            mingw-w64-i686-make
-            zip
+      - name: Install 32-bit MinGW (stable) + tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-i686 cmake zip
+          # match the local toolchain's POSIX threading model
+          sudo update-alternatives --set i686-w64-mingw32-gcc /usr/bin/i686-w64-mingw32-gcc-posix || true
+          sudo update-alternatives --set i686-w64-mingw32-g++ /usr/bin/i686-w64-mingw32-g++-posix || true
 
       - name: Build mss32.dll
-        shell: msys2 {0}
         run: |
-          set -e
           # keep the compiled version in sync with the release tag
           sed -i "s/COD1RELOADED_VERSION = \"[^\"]*\"/COD1RELOADED_VERSION = \"$TAG\"/" src/features/updater.h
-          cmake -S . -B build -G "MinGW Makefiles"
-          cmake --build build --target mss32
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=i686-w64-mingw32-gcc \
+            -DCMAKE_CXX_COMPILER=i686-w64-mingw32-g++ \
+            -DCMAKE_RC_COMPILER=i686-w64-mingw32-windres
+          cmake --build build --target mss32 -j
           test -f build/mss32.dll
 
       - name: Package assets
-        shell: msys2 {0}
         run: |
-          set -e
           mkdir -p dist
           cp build/mss32.dll cod1reloaded.ini dist/
           printf '{\n  "version": "%s",\n  "download_url": "https://github.com/%s/releases/latest/download/mss32.dll",\n  "notes": "cod1reloaded %s - see CHANGELOG"\n}\n' \
@@ -63,7 +63,6 @@ jobs:
           ls -l dist
 
       - name: Upload assets to the release
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

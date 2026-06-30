@@ -8,6 +8,13 @@ if (NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
         "Use a 32-bit MinGW (e.g. i686-w64-mingw32-g++) or pass -m32.")
 endif()
 
+# Native multilib gcc (msys2) needs -m32 to force 32-bit. The i686-w64-mingw32
+# cross-compiler is already 32-bit and rejects -m32, so only add it natively.
+if (NOT CMAKE_CROSSCOMPILING)
+    add_compile_options(-m32)
+    add_link_options(-m32)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -53,21 +60,19 @@ target_include_directories(mss32 PRIVATE src)
 
 target_compile_options(cod1reloaded PRIVATE
     -Wall -Wextra -Wno-unused-parameter
-    -m32 -O2
+    -O2
 )
 target_compile_options(mss32 PRIVATE
     -Wall -Wextra -Wno-unused-parameter
-    -m32 -O2
+    -O2
 )
 
 target_link_options(cod1reloaded PRIVATE
-    -m32
     -static -static-libgcc -static-libstdc++
     # -static embeds libwinpthread so the DLL has zero non-Windows deps.
     # No --kill-at: we want plain symbol names for now.
 )
 target_link_options(mss32 PRIVATE
-    -m32
     -static -static-libgcc -static-libstdc++
 )
 
