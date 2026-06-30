@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
+  "version": "1.6.0",
   "download_url": "https://github.com/cod1plus/client/releases/latest/download/mss32.dll",
-  "notes": "cod1reloaded 1.0.0"
+  "notes": "cod1reloaded 1.6 (beta) — protocole 10, nouveau master, fix lean/swing + anti lean-spam, persistance des fix au changement de map. Voir le CHANGELOG."
 }

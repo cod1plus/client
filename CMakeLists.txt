@@ -12,29 +12,31 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(COD1RELOADED_SOURCES
-    src/main.cpp
-    src/patches.cpp
-    src/viewheight_fix.cpp
-    src/lean_fix.cpp
-    src/swing_fix.cpp
-    src/lean_amplify.cpp
-    src/logger.cpp
-    src/version_patch.cpp
-    src/window_patch.cpp
-    src/fullscreen_patch.cpp
-    src/fps_cap.cpp
-    src/frame_limiter.cpp
-    src/updater.cpp
-    src/demo_upload.cpp
-    src/toast.cpp
-    src/cpu_affinity.cpp
-    src/process_priority.cpp
-    src/working_set.cpp
-    src/fso_disable.cpp
-    src/widescreen_fix.cpp
-    src/avatar_overlay.cpp
-    src/engine_2d.cpp
-    src/discord_rpc.cpp
+    src/core/main.cpp
+    src/core/patches.cpp
+    src/gameplay/viewheight_fix.cpp
+    src/gameplay/lean_fix.cpp
+    src/gameplay/swing_fix.cpp
+    src/core/logger.cpp
+    src/netcode/version_patch.cpp
+    src/netcode/protocol_patch.cpp
+    src/netcode/version_gate.cpp
+    src/video/window_patch.cpp
+    src/video/fullscreen_patch.cpp
+    src/performance/fps_cap.cpp
+    src/performance/frame_limiter.cpp
+    src/features/updater.cpp
+    src/features/demo_upload.cpp
+    src/core/toast.cpp
+    src/performance/cpu_affinity.cpp
+    src/performance/process_priority.cpp
+    src/performance/working_set.cpp
+    src/performance/fso_disable.cpp
+    src/video/widescreen_fix.cpp
+    src/features/avatar_overlay.cpp
+    src/features/engine_2d.cpp
+    src/features/discord_rpc.cpp
+    src/netcode/antilag.cpp
 )
 
 add_library(cod1reloaded SHARED
