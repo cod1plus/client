@@ -1,6 +1,8 @@
 name: Build
 
-# Vérifie que ça compile à chaque push / PR sur main.
+# Checks that it compiles on every push / PR to main.
+# Stable Ubuntu i686-w64-mingw32 cross-compiler (the windows-runner msys2 ships a
+# bleeding-edge gcc that fails to static-link).
 on:
   push:
     branches: [main]
@@ -9,25 +11,25 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW32
-          update: false
-          install: >-
-            mingw-w64-i686-gcc
-            mingw-w64-i686-cmake
-            mingw-w64-i686-make
+      - name: Install 32-bit MinGW
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-i686 cmake
+          sudo update-alternatives --set i686-w64-mingw32-gcc /usr/bin/i686-w64-mingw32-gcc-posix || true
+          sudo update-alternatives --set i686-w64-mingw32-g++ /usr/bin/i686-w64-mingw32-g++-posix || true
 
       - name: Build
-        shell: msys2 {0}
         run: |
-          set -e
-          cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
-          cmake --build build
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=i686-w64-mingw32-gcc \
+            -DCMAKE_CXX_COMPILER=i686-w64-mingw32-g++ \
+            -DCMAKE_RC_COMPILER=i686-w64-mingw32-windres
+          cmake --build build --target mss32 -j
           test -f build/mss32.dll
 
       - uses: actions/upload-artifact@v4
