@@ -1,8 +1,8 @@
 name: Build
 
-# Checks that it compiles on every push / PR to main.
-# Stable Ubuntu i686-w64-mingw32 cross-compiler (the windows-runner msys2 ships a
-# bleeding-edge gcc that fails to static-link).
+# Verifies mss32.dll compiles on every push / PR to main.
+# Uses MSYS2 MINGW32 (i686 gcc) — the same toolchain that builds locally,
+# so the CI matches the dev machine instead of a different cross-compiler.
 on:
   push:
     branches: [main]
@@ -11,24 +11,23 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install 32-bit MinGW
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y g++-mingw-w64-i686 cmake
-          sudo update-alternatives --set i686-w64-mingw32-gcc /usr/bin/i686-w64-mingw32-gcc-posix || true
-          sudo update-alternatives --set i686-w64-mingw32-g++ /usr/bin/i686-w64-mingw32-g++-posix || true
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: true
+          install: >-
+            mingw-w64-i686-gcc
+            mingw-w64-i686-cmake
+            mingw-w64-i686-ninja
 
-      - name: Build
+      - name: Build mss32.dll
+        shell: msys2 {0}
         run: |
-          cmake -S . -B build \
-            -DCMAKE_SYSTEM_NAME=Windows \
-            -DCMAKE_C_COMPILER=i686-w64-mingw32-gcc \
-            -DCMAKE_CXX_COMPILER=i686-w64-mingw32-g++ \
-            -DCMAKE_RC_COMPILER=i686-w64-mingw32-windres
+          cmake -S . -B build -G Ninja
           cmake --build build --target mss32 -j
           test -f build/mss32.dll
 
