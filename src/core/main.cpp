@@ -10,6 +10,7 @@
 #include "core/logger.h"
 #include "netcode/version_patch.h"
 #include "netcode/protocol_patch.h"
+#include "netcode/competitive.h"
 #include "netcode/version_gate.h"
 #include "video/window_patch.h"
 #include "video/fullscreen_patch.h"
@@ -93,8 +94,10 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
     for (;;) {
         if (!g_gamex86_patched) try_patch_gamex86();
         // register the version userinfo cvar as soon as the engine cvar system is up
-        if (*(volatile int*)patches::CODMP_CVAR_COUNT_VA > 0)
+        if (*(volatile int*)patches::CODMP_CVAR_COUNT_VA > 0) {
             patches::register_client_version_cvar();
+            patches::competitive_force_cvars();  // force/lock snaps+cl_maxpackets+rate for 40-tick
+        }
         monitor_cgame();
         Sleep(5);
     }
@@ -143,6 +146,9 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
 
             // protocol 6 -> 10 (separate from vanilla) + repoint master server
             patches::apply_protocol_patch();
+
+            // competitive: lift snaps (server-side) + cl_maxpackets (client-side) caps for real 40-tick
+            patches::apply_competitive_caps();
 
             // r_fullscreen default "0"; window_patch then makes it borderless (alt-tab works)
             patches::apply_fullscreen_patch();

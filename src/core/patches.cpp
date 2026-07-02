@@ -5,6 +5,7 @@
 #include "core/logger.h"
 #include "netcode/version_patch.h"
 #include "netcode/protocol_patch.h"
+#include "netcode/competitive.h"
 #include "netcode/version_gate.h"
 #include "video/window_patch.h"
 #include "video/fullscreen_patch.h"
@@ -131,6 +132,14 @@ void load_config(HMODULE self_module) {
         ini_path, "protocol_version", g_protocol_version);
     g_net_version = read_ini_int(
         ini_path, "net_version", g_net_version);
+    g_competitive_config.enable = read_ini_bool(
+        ini_path, "competitive_enable", g_competitive_config.enable);
+    g_competitive_config.snaps = read_ini_int(
+        ini_path, "competitive_snaps", g_competitive_config.snaps);
+    g_competitive_config.cl_maxpackets = read_ini_int(
+        ini_path, "competitive_cl_maxpackets", g_competitive_config.cl_maxpackets);
+    g_competitive_config.rate = read_ini_int(
+        ini_path, "competitive_rate", g_competitive_config.rate);
     g_version_gate_config.enable = read_ini_bool(
         ini_path, "version_gate_enable", g_version_gate_config.enable);
     g_version_gate_config.allow_unversioned = read_ini_bool(
