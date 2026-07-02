@@ -22,6 +22,7 @@ LeanFixConfig g_lean_fix_config = {
     /* diag_k_neg            */ 0.75f,
     /* lean_diag_scale       */ 1.0f,
     /* body_shift_lean_scale */ 1.0f,
+    /* body_shift_right_scale*/ 2.0f,   // right-lean shows too little body in CoD1
     /* body_yaw_lock         */ 0.0f,
     /* ctrl_smooth_enable    */ true,
     /* ctrl_smooth_time      */ 250,
@@ -91,8 +92,11 @@ extern "C" void apply_lean_adjust(float* controllers,
 
         // #3 lateral body shift; ADD to CoD1's existing strafe term. cbuf[22]=tag_origin_offset[1]
         if (g_lean_fix_config.body_shift_lean_scale != 0.0f && fabsf(lf) > 0.02f) {
-            const bool ll = lf < 0.0f;
-            const float K = is_crouch ? (ll ? 12.5f : 2.5f) : (ll ? 5.0f : 2.5f);
+            const bool ll = lf < 0.0f;   // lean-left (fLeanFrac<0)
+            float K = is_crouch ? (ll ? 12.5f : 2.5f) : (ll ? 5.0f : 2.5f);
+            // cod2x under-shifts the RIGHT lean (weapon side): body barely leaves the
+            // wall so the peeker shows only an arm. Boost the right side to expose it.
+            if (!ll) K *= g_lean_fix_config.body_shift_right_scale;
             cbuf[22] += -lf * K * g_lean_fix_config.body_shift_lean_scale;
         }
 

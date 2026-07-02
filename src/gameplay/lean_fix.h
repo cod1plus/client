@@ -67,6 +67,7 @@ struct LeanFixConfig {
 
     float lean_diag_scale;    // 0=off, 1.0=cod2x
     float body_shift_lean_scale;
+    float body_shift_right_scale;  // x on the right-lean body shift (weapon side)
 
     float body_yaw_lock;      // 0=straight (rifle), 1.0=vanilla
 

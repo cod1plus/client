@@ -104,6 +104,8 @@ void hot_reload_lean_reshape() {
         p, "lean_diag_scale", g_lean_fix_config.lean_diag_scale);
     g_lean_fix_config.body_shift_lean_scale = read_ini_float(
         p, "body_shift_lean_scale", g_lean_fix_config.body_shift_lean_scale);
+    g_lean_fix_config.body_shift_right_scale = read_ini_float(
+        p, "body_shift_right_scale", g_lean_fix_config.body_shift_right_scale);
     g_lean_fix_config.body_yaw_lock = read_ini_float(
         p, "body_yaw_lock", g_lean_fix_config.body_yaw_lock);
     // read live by redirected mov
@@ -157,6 +159,8 @@ void load_config(HMODULE self_module) {
         ini_path, "lean_diag_scale", g_lean_fix_config.lean_diag_scale);
     g_lean_fix_config.body_shift_lean_scale = read_ini_float(
         ini_path, "body_shift_lean_scale", g_lean_fix_config.body_shift_lean_scale);
+    g_lean_fix_config.body_shift_right_scale = read_ini_float(
+        ini_path, "body_shift_right_scale", g_lean_fix_config.body_shift_right_scale);
     g_lean_fix_config.body_yaw_lock = read_ini_float(
         ini_path, "body_yaw_lock", g_lean_fix_config.body_yaw_lock);
     g_swing_fix_config.enable = read_ini_bool(
