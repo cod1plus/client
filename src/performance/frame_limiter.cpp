@@ -7,6 +7,7 @@
 #include "netcode/version_patch.h" // CODMP_PREFERRED_BASE
 
 #include <cstdio>
+#include <immintrin.h>   // _mm_pause — not pulled in transitively by older mingw <windows.h>
 
 namespace patches {
 
