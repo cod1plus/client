@@ -2,10 +2,10 @@
 
 Reverse engineering des DLLs CoD1 pour porter les fonctionnalites CoD2x.
 
-> **Pour le lean fix complet (cible de port cod2x principale)**, voir le
-> document maitre dedie : [`lean_fix_reference.md`](./lean_fix_reference.md).
-> Il contient TOUS les RVAs, layouts, conventions de signe, knobs, etc.
-> Ce fichier-ci reste comme reference generale multi-DLL (gamex86 + cgame).
+> Pour le lean fix complet (cible de port cod2x principale), voir
+> [`lean_fix_reference.md`](./lean_fix_reference.md) : RVAs, layouts,
+> conventions de signe, knobs. Ce fichier-ci reste une reference generale
+> multi-DLL (gamex86 + cgame).
 
 ---
 
@@ -24,35 +24,35 @@ Reverse engineering des DLLs CoD1 pour porter les fonctionnalites CoD2x.
 | `0x20008580` | `Pmove` | Wrapper qui loop sur `PmoveSingle` (max 66ms par tick) |
 | `0x20007fd0` | `PmoveSingle` | Tick unique — appelle PM_GroundTrace, PM_UpdateViewHeight, etc. |
 | `0x20004f30` | `PM_GroundTrace` | Trace au sol (strings `"i:kickoff"`, `"i:steep"`, `"i:Land"`) |
-| `0x20005a80` | **`PM_UpdateViewHeight`** | **Lerp smooth du view height** — utilise offsets `+0xbc`/`+0xc0` |
+| `0x20005a80` | `PM_UpdateViewHeight` | Lerp smooth du view height — utilise offsets `+0xbc`/`+0xc0` |
 | `0x200051c0` | `PM_CheckStance` / clearance | Traces verticales pour valider stand-up (flag à `+0x101`) |
 | `0x20073f80` | Post-Pmove (cleanup/anim) | Appelée à la fin de `Pmove` |
 | `0x20017ff0` | `ClientCommand` | Parse "give", "noclip", "kill", "dropweapon"... |
 | `0x2001ed30` | `ClientBegin` (wrapper) | Setup viewmodel + tail call vers `fcn.2001fb10` |
 
-### Système de view height — déjà présent dans CoD1 !
+### Système de view height (déjà présent dans CoD1)
 
 CoD1 a un système de lerp pour le view height. Offsets dans la struct serveur joueur (depuis `[edi]` qui est `pmove->ps`) :
 
 | Offset | Rôle |
 |--------|------|
-| `+0xbc` | viewheight **target** |
-| `+0xc0` | viewheight **current** (lerpé) |
+| `+0xbc` | viewheight target |
+| `+0xc0` | viewheight current (lerpé) |
 | `+0xc4` | état du lerp (0 = stable, !=0 = en transition) |
 | `+0xc8` | viewheight de départ du lerp |
 | `+0xcc` | type/direction du lerp |
 | `+0xd0` | valeur initiale stockée |
 | `+0x320` | duck transition time (?) |
-| `+0x324` | **standing** height (60 par défaut, lu depuis `bg_viewheight_standing`) |
-| `+0x328` | **crouched** height (40) |
-| `+0x32c` | **prone** height (11) |
+| `+0x324` | standing height (60 par défaut, lu depuis `bg_viewheight_standing`) |
+| `+0x328` | crouched height (40) |
+| `+0x32c` | prone height (11) |
 | `+0x330` | default/last viewheight |
 
-### Constante critique : vitesse du lerp viewheight
+### Vitesse du lerp viewheight
 
-**Adresse** : `0x2009a1b0` (data section, .rdata)
-**Valeur actuelle** : `180.0f` (= `0x43340000` little-endian = `00 00 34 43`)
-**Utilisation** : `fmul dword [0x2009a1b0]` dans `PM_UpdateViewHeight` à `0x2000557b`
+Adresse : `0x2009a1b0` (data section, .rdata)
+Valeur actuelle : `180.0f` (= `0x43340000` little-endian = `00 00 34 43`)
+Utilisation : `fmul dword [0x2009a1b0]` dans `PM_UpdateViewHeight` à `0x2000557b`
 
 Formule du lerp :
 ```
@@ -65,23 +65,23 @@ Avec une vitesse de 180 unités/sec et un delta de 20 (stand 60 → crouch 40) :
 
 | Phase | Durée |
 |-------|-------|
-| Viewheight lerp (stand → crouch) | **20 / 180 = 111 ms** |
-| Animation transition (`BG_SetNewAnimation` constante `0xc8`) | **200 ms** |
-| **Fenêtre de désync** | **~89 ms** |
+| Viewheight lerp (stand → crouch) | 20 / 180 = 111 ms |
+| Animation transition (`BG_SetNewAnimation` constante `0xc8`) | 200 ms |
+| Fenêtre de désync | ~89 ms |
 
 Pendant ces ~89 ms, la caméra est déjà arrivée à hauteur basse mais le modèle 3D du corps continue son animation de crouch → le corps devient visible depuis la caméra qui regarde vers le bas.
 
 ### Fix proposé
 
-Aligner la vitesse du lerp sur la durée de l'animation : **100.0f** unités/sec
+Aligner la vitesse du lerp sur la durée de l'animation : 100.0f unités/sec
 - 100.0f en hex little-endian : `00 00 c8 42` (= `0x42c80000`)
-- Nouveau timing : 20 / 100 = **200 ms** — synchro parfaite avec l'anim
+- Nouveau timing : 20 / 100 = 200 ms, synchro avec l'anim
 
 ### Approche d'implémentation (hook DLL)
 
 Suivre le modèle CoD2x : injection via `mss32.dll` shim, puis patch mémoire au runtime.
 
-**Pas un patch direct du binaire** — on hook depuis notre DLL chargée par le jeu :
+Pas un patch direct du binaire : on hook depuis notre DLL chargée par le jeu.
 
 ```cpp
 // Dans le DLL cod1reloaded chargé par CoD1.exe
@@ -180,10 +180,10 @@ struct dvar_table_entry {
 | Adresse | Nom | Source / verifie |
 |---------|-----|--------|
 | `0x300051c0` | `CG_Player_DoControllers` | Loop sur les 6 bones, syscalls `0xaf`/`0xa0`/`0xa1` |
-| `0x30004960` | **`BG_Player_DoControllersInternal`** | Calcule les angles des 6 bones - `pdf` complet |
-| `0x30034180` | **`CG_OffsetFirstPersonView`** (STAND) | Camera path local player stand - `pdf` complet |
-| `0x30038300` | **`CG_OffsetFirstPersonView`** (CROUCH/PRONE ?) | 2e reader du leanf global - a `pdf` |
-| `0x30040df0` | **`BG_AddLeanToPosition`** | Applique l'offset lateral leanf - `pdf` complet, 5 call sites |
+| `0x30004960` | `BG_Player_DoControllersInternal` | Calcule les angles des 6 bones - `pdf` complet |
+| `0x30034180` | `CG_OffsetFirstPersonView` (STAND) | Camera path local player stand - `pdf` complet |
+| `0x30038300` | `CG_OffsetFirstPersonView` (CROUCH/PRONE ?) | 2e reader du leanf global - a `pdf` |
+| `0x30040df0` | `BG_AddLeanToPosition` | Applique l'offset lateral leanf - `pdf` complet, 5 call sites |
 | `0x3003db10` | `GetLeanFraction` (scale lerpLean) | Appelle depuis DoControllersInternal a `0x300049c5` |
 | `0x3003da20` | `LerpAngle` | Appele 5+ fois dans DoControllersInternal |
 | `0x30003870` | `BG_SetNewAnimation` | Contient `0xc8`/`0x190` (crouch/prone times) |
@@ -199,7 +199,7 @@ struct dvar_table_entry {
 | `0x3020af00` | `playerstate.commandtime` | int32 | base du playerstate local |
 | `0x3020af14` | `playerstate.origin` | vec3 | |
 | `0x3020af28/2c` | `origin.x/y` (alias) | float | verifie via diag mvmt dump |
-| `0x3020af54` | **`leanf`** | float | leanf signe ±0.5 (normalise = `*2`). Read-only |
+| `0x3020af54` | `leanf` | float | leanf signe ±0.5 (normalise = `*2`). Read-only |
 | `0x3020af94` | `eFlags` | uint32 | bits 0x40, 0x4000, 0x8000 |
 | `0x3020d348/4c/50` | view origin | vec3 | camera position finale |
 | `0x3020d380/84/88` | view angles | vec3 | [pitch, yaw, roll] |
@@ -214,7 +214,7 @@ struct dvar_table_entry {
 
 ### Layout de la struct des controllers (sortie de `fcn.30004960`)
 
-**CORRIGE 2026-05-28** : ordre verifie via `pdf @ fcn.30004960` aux writes
+Corrige 2026-05-28 : ordre verifie via `pdf @ fcn.30004960` aux writes
 `0x30004f8f-0x3000502b`. Le doc original avait l'ordre inverse - bug
 historique vu dans le commit lean_fix.h:35-44.
 
@@ -222,18 +222,18 @@ Le pointeur `edi` passe en sortie contient 8 vec3 consecutifs (96 bytes) :
 
 | Offset | Champ | Notes |
 |--------|-------|-------|
-| `+0x00` | `back_low_angles[3]` | **cible lean fix** (pitch, yaw, roll) |
-| `+0x0c` | `back_mid_angles[3]` | **cible lean fix** |
-| `+0x18` | `back_up_angles[3]` | **cible lean fix** |
-| `+0x24` | `neck_angles[3]` | neck[2] HARDCODE a 0 par engine |
+| `+0x00` | `back_low_angles[3]` | cible lean fix (pitch, yaw, roll) |
+| `+0x0c` | `back_mid_angles[3]` | cible lean fix |
+| `+0x18` | `back_up_angles[3]` | cible lean fix |
+| `+0x24` | `neck_angles[3]` | neck[2] hardcode a 0 par engine |
 | `+0x30` | `head_angles[3]` | |
-| `+0x3c` | `pelvis_angles[3]` | pelvis[1] et pelvis[2] HARDCODES a 0 |
+| `+0x3c` | `pelvis_angles[3]` | pelvis[1] et pelvis[2] hardcodes a 0 |
 | `+0x48` | `tag_origin_angles[3]` | root orientation (pitch, yaw, roll) |
 | `+0x54` | `tag_origin_offset[3]` | root position (x, y, z) - cible body_shift |
 
 Quand stocke dans le `clientInfo_t` (1200 bytes / 0x4b0), ces angles se trouvent a partir de `+0x3fc`.
 
-**Voir `docs/lean_fix_reference.md` pour le doc maitre du port cod2x.**
+Voir `docs/lean_fix_reference.md` pour le doc maitre du port cod2x.
 
 ### Offsets du `clientInfo_t` CoD1 (1200 bytes, indexé à `data.3018dc8c`)
 | Offset | Champ supposé |
@@ -242,24 +242,24 @@ Quand stocke dans le `clientInfo_t` (1200 bytes / 0x4b0), ces angles se trouvent
 | `+0x090` | clientNum ou similaire |
 | `+0x380` | angle (yaw?) |
 | `+0x3b0` | angle |
-| `+0x3b8` | **`lerpLean`** (utilisé avec `GetLeanFraction` = `fcn.3003db10`) |
+| `+0x3b8` | `lerpLean` (utilisé avec `GetLeanFraction` = `fcn.3003db10`) |
 | `+0x3e4` | pitch (avec masque `0x7fffffff` = `fabs`) |
 | `+0x3e8` / `+0x3ec` | angles head/torso |
 | `+0x474` | flags (test `0x30000`) |
-| `+0x3fc` → `+0x444` | **angles des 6 bones** (output de DoControllersInternal) |
+| `+0x3fc` → `+0x444` | angles des 6 bones (output de DoControllersInternal) |
 | `+0x444+` | `tag_origin_offset` |
 
 ### Plan d'implementation du lean fix
 
-**IMPLEMENTE** dans `src/lean_fix.cpp` (hook installe a `cgame+0x51d8`).
+Implemente dans `src/lean_fix.cpp` (hook installe a `cgame+0x51d8`).
 Pour le detail complet voir `docs/lean_fix_reference.md`.
 
 Notes critiques :
 - Bone offsets aux angles : `back_low=+0x00`, `back_mid=+0x0c`, `back_up=+0x18`
-  (PAS l'ordre inverse comme indique historiquement)
+  (pas l'ordre inverse comme indique historiquement)
 - `eFlags & 0x40` = bit "is_leaning" fiable (gate recommande)
 - `eFlags & 0xC000` (test ah,0xc0) = (CROUCH 0x4000 | PRONE 0x8000)
-- En STAND, l'engine ZERO le buffer entier - additions absolues uniquement
+- En STAND, l'engine zero le buffer entier - additions absolues uniquement
 - `BG_AddLeanToPosition` @ `cgame+0x40df0` est appele par 5 call sites
   patches par `lean_amplify` (immediates 16.0 et 20.0)
 
@@ -271,9 +271,9 @@ Notes critiques :
 - `tag_flash`, `tag_flash_2`, `tag_flash_11`, `tag_flash_22` — muzzle flash
 - `tag_player` — fixation tourelle
 
-### **Bones du squelette manipulables par le systeme de controllers**
+### Bones du squelette manipulables par le systeme de controllers
 
-Decouvert via la table de pointeurs a `0x30079670` (cgame_mp_x86.dll) qui sert au loop de `CG_Player_DoControllers` (`fcn.300051c0`). Les **6 bones controllables** :
+Decouvert via la table de pointeurs a `0x30079670` (cgame_mp_x86.dll) qui sert au loop de `CG_Player_DoControllers` (`fcn.300051c0`). Les 6 bones controllables :
 
 | Adresse string | Nom CoD1 | Equivalent CoD2 |
 |----------------|----------|-----------------|
@@ -287,9 +287,9 @@ Decouvert via la table de pointeurs a `0x30079670` (cgame_mp_x86.dll) qui sert a
 (NB : `back_low` est a `0x3006b2e8`, pas `0x3006b2ec` comme indique historiquement -
 verifie via `iz` sur cgame_mp_x86.dll.)
 
-**Implication majeure** : la philosophie du fix d'animation CoD2x (`BG_Player_DoControllersInternal`) est **directement portable** vers CoD1 — les mêmes 6 bones existent, juste avec un naming différent (pas de préfixe `tag_`, underscores au lieu de camelCase).
+Les mêmes 6 bones existent côté CoD1, juste avec un naming différent (pas de préfixe `tag_`, underscores au lieu de camelCase), donc la philosophie du fix d'animation CoD2x (`BG_Player_DoControllersInternal`) est portable.
 
-Le lean fix CoD2x (3 corrections dans `cod2x/src/shared/animation.cpp:330-365`) peut être adapté tel quel en remplaçant `tag_back_*_angles` par `back_*_angles` côté struct controllers CoD1.
+Le lean fix CoD2x (3 corrections dans `cod2x/src/shared/animation.cpp:330-365`) peut être adapté en remplaçant `tag_back_*_angles` par `back_*_angles` côté struct controllers CoD1.
 
 ---
 

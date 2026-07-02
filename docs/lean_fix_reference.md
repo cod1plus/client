@@ -1,7 +1,6 @@
-# Lean fix CoD1 — Reference complete pour port cod2x
+# Lean fix CoD1 — Reference pour port cod2x
 
-Document maitre consolidant TOUTES les decouvertes RE pour le lean fix.
-Cible : reproduire en CoD1 la fix anti-wallpeek competitive de cod2x.
+Notes RE pour le lean fix : reproduire en CoD1 la fix anti-wallpeek de cod2x.
 
 Sources verifiees :
 - Cutter/rizin sur `cgame_mp_x86.dll` (base `0x30000000`)
@@ -12,16 +11,16 @@ Sources verifiees :
 
 ## 1. Objectif fonctionnel
 
-En vanilla CoD1 multi, le **wallpeek exploit** :
+En vanilla CoD1 multi, le wallpeek exploit :
 - Camera lean sort du cover → joueur voit l'ennemi
 - Modele 3D / hitbox reste derriere le cover → ennemi ne tire pas
 - Asymetrie LEFT/RIGHT (bug "rolls forward / head clips out of view" specifique au LEFT)
 
 Cod2x a fix dans CoD2. On porte vers CoD1 en :
-1. Decalant physiquement le body model dans la direction du lean (`body_shift`)
+1. Decalant le body model dans la direction du lean (`body_shift`)
 2. Forcant les bones du dos a pencher en avant en crouch+lean (`headclip_fix`)
-3. Posant l'iconic "aimwalk" pose en lean+walk (`aimwalk_fix`)
-4. Ajoutant du ROLL aux bones pour une courbure spinale visible (`lean_roll_amount`)
+3. Posant la pose "aimwalk" en lean+walk (`aimwalk_fix`)
+4. Ajoutant du roll aux bones pour une courbure spinale visible (`lean_roll_amount`)
 5. Amplifiant le shift camera/body (`lean_amplify`)
 6. Snap legs/torso instant (`swing_fix`, port `BG_PlayerAngles`)
 
@@ -29,7 +28,7 @@ Cod2x a fix dans CoD2. On porte vers CoD1 en :
 
 ## 2. Architecture du lean dans CoD1
 
-### Deux chemins paralleles, **DECOUPLES**
+### Deux chemins paralleles, decouples
 
 ```
        playerstate.leanf @ 0x3020af54
@@ -52,7 +51,7 @@ Cod2x a fix dans CoD2. On porte vers CoD1 en :
    render bones                   au view_origin
 ```
 
-**Decouplage = root cause du wallpeek vanilla** : le camera path bouge sans que les bones du body suivent. Notre fix re-couple les deux.
+Le decouplage est la cause du wallpeek vanilla : le camera path bouge sans que les bones du body suivent. Notre fix re-couple les deux.
 
 ---
 
@@ -64,7 +63,7 @@ Cod2x a fix dans CoD2. On porte vers CoD1 en :
 |---|---|---|---|
 | `0x4960` | `BG_Player_DoControllersInternal` | Calcule 6 vec3 d'angles + tag_origin pour les bones du squelette | `pdf` OK |
 | `0x51c0` | `CG_Player_DoControllers` | Wrapper qui loop sur les bones, appelle DoControllersInternal | `pdf` partiel |
-| `0x51d8` | (call site dans CG_Player_DoControllers) | `call BG_Player_DoControllersInternal` - **point de hook** | confirme |
+| `0x51d8` | (call site dans CG_Player_DoControllers) | `call BG_Player_DoControllersInternal` - point de hook | confirme |
 | `0x34180` | `CG_OffsetFirstPersonView` (STAND only) | Calcule view origin + appelle AddLeanToPosition | `pdf` OK |
 | `0x38300` | Idem (CROUCH/PRONE ?) | 2e reader de leanf global | TODO `pdf` |
 | `0x40df0` | `BG_AddLeanToPosition` | Applique l'offset lateral au view origin | `pdf` OK |
@@ -75,7 +74,7 @@ Cod2x a fix dans CoD2. On porte vers CoD1 en :
 
 | Adresse | Nom | Type | Notes |
 |---|---|---|---|
-| `0x3020af54` | `cg.predictedPlayerState.leanf` | float | leanf signe ±0.5 (normalise [-1,1] = `*2`). **2 readers seulement**, read-only depuis cgame |
+| `0x3020af54` | `cg.predictedPlayerState.leanf` | float | leanf signe ±0.5 (normalise [-1,1] = `*2`). 2 readers seulement, read-only depuis cgame |
 | `0x3020af00` | `playerstate.commandtime` | int32 | base du playerstate |
 | `0x3020af14` | `playerstate.origin` | vec3 | passe a fcn.30012f00 (sweep ?) |
 | `0x3020af28` | `playerstate.origin.x` (alias) | float | confirme via diag mvmt dump |
@@ -91,11 +90,11 @@ Cod2x a fix dans CoD2. On porte vers CoD1 en :
 
 | Adresse | Valeur | Role |
 |---|---|---|
-| `0x3006b58c` | **1.0f** | unit float (utilise dans `1.0 - x`) |
-| `0x3006b588` | **1.0f** ? | autre unit |
-| `0x3006b594` | **0.0f** | compare zero |
-| `0x3006b608` | **pi/180 (DEG2RAD)** | `0x3C8EFA35` ≈ 0.01745329 |
-| `0x3006b648` | **-1.0f** | sign flip |
+| `0x3006b58c` | 1.0f | unit float (utilise dans `1.0 - x`) |
+| `0x3006b588` | 1.0f ? | autre unit |
+| `0x3006b594` | 0.0f | compare zero |
+| `0x3006b608` | pi/180 (DEG2RAD) | `0x3C8EFA35` ≈ 0.01745329 |
+| `0x3006b648` | -1.0f | sign flip |
 | `0x3006b620` | constante de scale | a verifier |
 | `0x3006b5e8` | diviseur du fsincos | a verifier |
 | `0x3006b814/18` | facteurs de scale dans DoControllers | a verifier |
@@ -109,7 +108,7 @@ Cod2x a fix dans CoD2. On porte vers CoD1 en :
 
 ### Buffer `controllers[]` — sortie de `BG_Player_DoControllersInternal`
 
-**Confirme via les writes a 0x30004f8f-0x3000502b**.
+Confirme via les writes a 0x30004f8f-0x3000502b.
 
 ```c
 struct controllers_buffer {  // 96 bytes (8 * vec3)
@@ -130,7 +129,7 @@ struct controllers_buffer {  // 96 bytes (8 * vec3)
 |---|---|---|
 | `+0x380` | float (anim lerp ?) | passe en var_58h, copie en sortie |
 | `+0x3b0` | float (ebp) | `fcn.30004988` |
-| `+0x3b8` | **`lerpLean`** | **CONFIRME** par xref leanf call et gate eFlags 0x40 |
+| `+0x3b8` | `lerpLean` | confirme par xref leanf call et gate eFlags 0x40 |
 | `+0x3e4` | float (avec masque `0x7fffffff` = abs) | facteur de blend `1.0 - |val|` |
 | `+0x3e8` | float | arg de `fcn.3003da20` (LerpAngle) |
 | `+0x3ec` | float | idem `fcn.3003da20` |
@@ -150,7 +149,7 @@ struct controllers_buffer {  // 96 bytes (8 * vec3)
 
 | Bit | Valeur | Sens |
 |---|---|---|
-| `0x40` | bit 6 | **is_leaning** (lean key active) |
+| `0x40` | bit 6 | is_leaning (lean key active) |
 | `0x4000` | bit 14 (ah=0x40) | CROUCH |
 | `0x8000` | bit 15 (ah=0x80) | PRONE |
 
@@ -226,10 +225,10 @@ void BG_Player_DoControllersInternal(controllers_t* out,
 
 ### Implications pour le patcher
 
-1. **En STAND**, tout le buffer sort a 0 → nos additions sont en absolu, pas en relatif.
-2. **PELVIS yaw/roll et NECK roll** sont ecrases a 0 → patcher leur scale est NO-OP. **A virer du config**.
-3. **L'engine fait deja une rotation 2D interne** (fsincos a 0x4b25) sur back_low. Notre `animation_adjust_rotation` cod2x port peut etre EN DOUBLON. A confirmer en lisant les constantes.
-4. **`eFlags & 0x40` = gate fiable "joueur en lean"**. Plus fiable que les heuristiques `sum_back_yaw` actuelles.
+1. En STAND, tout le buffer sort a 0 → nos additions sont en absolu, pas en relatif.
+2. Pelvis yaw/roll et neck roll sont ecrases a 0 → patcher leur scale est no-op. A virer du config.
+3. L'engine fait deja une rotation 2D interne (fsincos a 0x4b25) sur back_low. Notre `animation_adjust_rotation` cod2x port peut etre en doublon. A confirmer en lisant les constantes.
+4. `eFlags & 0x40` = gate fiable "joueur en lean". Plus fiable que les heuristiques `sum_back_yaw` actuelles.
 
 ---
 
@@ -274,21 +273,21 @@ void BG_AddLeanToPosition(vec3_t* origin, float yaw, float leanf, float w, float
 
 ### Convention de signe
 
-**`leanf` est utilise SANS flip de signe**. Donc :
+`leanf` est utilise sans flip de signe. Donc :
 - Sign convention identique a cod2x (a confirmer via test in-game : voir code `lean_fix.cpp:582` pour le diag log existant)
 - Hypothese : `leanf < 0` = LEFT (convention cod2x classique)
 
 ### Implications
 
-1. **5 call sites identifies** (voir `lean_amplify.h:37-43`) :
+1. 5 call sites identifies (voir `lean_amplify.h:37-43`) :
    - `0xbaea/0xbaf5` — site 1 (probablement camera 3rd person ?)
    - `0x1479d/0x147b3` — site 2
-   - `0x34473/0x34478` — site 3 = **INSIDE `fcn.30034180` STAND camera** (verifie)
-   - `0x38776/0x3878c` — site 4 = probablement INSIDE `fcn.30038300` CROUCH camera
+   - `0x34473/0x34478` — site 3 = inside `fcn.30034180` STAND camera (verifie)
+   - `0x38776/0x3878c` — site 4 = probablement inside `fcn.30038300` CROUCH camera
    - `0x3abc9/0x3abdd` — site 5
-2. Seuls les sites 3 et 4 lisent le leanf GLOBAL `0x3020af54` (= LOCAL player). Les autres recoivent leanf en parametre = clients distants (3rd person rendering).
-3. **lean_amplify patche les immediates 16.0 → 16.0\*factor et 20.0 → 20.0\*factor** aux 5 sites. Idempotent, sanity check sur opcode 0x68.
-4. **Pas de patch des constantes CROUCH** (12.5/2.5 inconnues actuellement) - lean_amplify ne touche que les sites a 16.0/20.0.
+2. Seuls les sites 3 et 4 lisent le leanf global `0x3020af54` (= local player). Les autres recoivent leanf en parametre = clients distants (3rd person rendering).
+3. lean_amplify patche les immediates 16.0 → 16.0\*factor et 20.0 → 20.0\*factor aux 5 sites. Idempotent, sanity check sur opcode 0x68.
+4. Pas de patch des constantes CROUCH (12.5/2.5 inconnues actuellement) - lean_amplify ne touche que les sites a 16.0/20.0.
 
 ---
 
@@ -330,8 +329,8 @@ void CG_OffsetFirstPersonView_Stand(void)
 
 ### Implications
 
-- **Cette fonction ne tourne qu'en STAND**. La fonction `fcn.30038300` (a inspecter) gere CROUCH/PRONE.
-- Le **camera path est totalement isole** du bone path. Modifier les bones ne change pas la camera, et vice-versa. C'est pour ca qu'on a besoin de `body_shift` ET `lean_amplify` separement.
+- Cette fonction ne tourne qu'en STAND. La fonction `fcn.30038300` (a inspecter) gere CROUCH/PRONE.
+- Le camera path est isole du bone path. Modifier les bones ne change pas la camera, et vice-versa. C'est pour ca qu'on a besoin de `body_shift` et `lean_amplify` separement.
 
 ---
 
@@ -344,12 +343,12 @@ void CG_OffsetFirstPersonView_Stand(void)
 - Apres call original, modifie le buffer `controllers[]` :
   - Damping scales par bone (pitch/yaw/roll, gauche/droite overrides)
   - Yaw offsets additifs (`left_*_yaw_offset`, `right_*_yaw_offset`)
-  - **v14 lean roll** : ajoute roll aux back bones pour courbure visible
-  - **v15 aimwalk** : forward pitch quand lean + walk (detecte via origin delta)
-  - **Headclip fix** : pitch bend forward en crouch+lean (cod2x port)
-  - **Body shift** : decale `tag_origin_offset[1]` pour exposer le body
-  - **Aimwalk fix v2.1** : tilts `tag_origin_angles` quand lean+walk diagonal-left
-  - **Diagonal rotation fix** : applique `animation_adjust_rotation` a back_low (cod2x animation.cpp:100-115 port)
+  - v14 lean roll : ajoute roll aux back bones pour courbure visible
+  - v15 aimwalk : forward pitch quand lean + walk (detecte via origin delta)
+  - Headclip fix : pitch bend forward en crouch+lean (cod2x port)
+  - Body shift : decale `tag_origin_offset[1]` pour exposer le body
+  - Aimwalk fix v2.1 : tilts `tag_origin_angles` quand lean+walk diagonal-left
+  - Diagonal rotation fix : applique `animation_adjust_rotation` a back_low (cod2x animation.cpp:100-115 port)
 - Tous les knobs sont dans `cod1reloaded.ini`, hot-tunable
 - Diag logger via `logger::logf` capped a `diag_log_count`
 
@@ -383,11 +382,11 @@ void CG_OffsetFirstPersonView_Stand(void)
 
 | cod2x lignes | Fonction | Statut port CoD1 |
 |---|---|---|
-| `100-115` | `animation_adjust_rotation` (rotate back_low (pitch,roll) par yaw_diff) | **PORTE** dans `lean_fix.cpp:35-48` |
-| `184-200` | Body sideways shift (tag_origin_offset[1] += ...) | **PORTE** dans `lean_fix.cpp:888-923` |
-| `332-348` | Aimwalk tilt (tag_origin_angles += pitch/roll) | **PORTE** dans `lean_fix.cpp:700-852` (avec smoothing v2.1) |
-| `351-357` | Headclip fix (crouch+lean → back bones pitch forward) | **PORTE** dans `lean_fix.cpp:854-869` |
-| `359-364` | Diagonal rotation fix (call `animation_adjust_rotation` sur back_low) | **PORTE** dans `lean_fix.cpp:955-962` |
+| `100-115` | `animation_adjust_rotation` (rotate back_low (pitch,roll) par yaw_diff) | porte dans `lean_fix.cpp:35-48` |
+| `184-200` | Body sideways shift (tag_origin_offset[1] += ...) | porte dans `lean_fix.cpp:888-923` |
+| `332-348` | Aimwalk tilt (tag_origin_angles += pitch/roll) | porte dans `lean_fix.cpp:700-852` (avec smoothing v2.1) |
+| `351-357` | Headclip fix (crouch+lean → back bones pitch forward) | porte dans `lean_fix.cpp:854-869` |
+| `359-364` | Diagonal rotation fix (call `animation_adjust_rotation` sur back_low) | porte dans `lean_fix.cpp:955-962` |
 
 ### Knobs vanilla cod2x vs cod1reloaded defaults
 
@@ -404,12 +403,12 @@ void CG_OffsetFirstPersonView_Stand(void)
 | headclip back_low_yaw = 30 | 30.0 | Match exact |
 | headclip back_mid_pitch = -20 | -20.0 | Match exact |
 | headclip back_up_pitch = -20 | -20.0 | Match exact |
-| roll back_low = N/A | 8.0 | **v14 nouveau** (cod2x n'a pas ce knob) |
+| roll back_low = N/A | 8.0 | v14 nouveau (cod2x n'a pas ce knob) |
 | roll back_mid = N/A | 13.0 | v14 |
 | roll back_up = N/A | 18.0 | v14 |
 | lean_amplify factor = N/A | 1.5x | Nouveau cod1 (patche les immediates) |
 
-### Knobs CoD1-SPECIFIQUE (anti-bug)
+### Knobs specifiques CoD1 (anti-bug)
 
 Ces knobs n'existent pas dans cod2x — adresses des bugs decouverts in-game :
 
@@ -425,7 +424,7 @@ Ces knobs n'existent pas dans cod2x — adresses des bugs decouverts in-game :
 
 ### Hypothese de travail
 
-`leanf < 0` = **LEFT** lean (convention cod2x).
+`leanf < 0` = LEFT lean (convention cod2x).
 
 ### Indices supportant l'hypothese
 
@@ -454,7 +453,7 @@ Code dans `lean_fix.cpp:586-596` log `real_leanf` et la direction detectee. Play
 | `0x3006b77c` | K_right pour leanf scaling | `pxw 4 @ 0x3006b77c` |
 | `0x3006b590` | K_left pour leanf scaling | `pxw 4 @ 0x3006b590` |
 
-Ces constantes determinent l'amplitude des bones angles. Si on veut amplifier/reduire SANS patcher le code post-hoc, on peut patcher ces flots directement (bien plus propre).
+Ces constantes determinent l'amplitude des bones angles. Si on veut amplifier/reduire sans patcher le code post-hoc, on peut patcher ces flots directement (plus propre).
 
 ---
 
@@ -462,7 +461,7 @@ Ces constantes determinent l'amplitude des bones angles. Si on veut amplifier/re
 
 | Fonction | Pourquoi | Priorite |
 |---|---|---|
-| `fcn.30038300` | CROUCH/PRONE variant de `OffsetFirstPersonView`. Donnera les constantes lean_width/forward pour crouch | **HAUTE** si on veut amplifier separement crouch |
+| `fcn.30038300` | CROUCH/PRONE variant de `OffsetFirstPersonView`. Donnera les constantes lean_width/forward pour crouch | haute si on veut amplifier separement crouch |
 | `fcn.3003db10` | `GetLeanFraction` - transforme lerpLean. Donnera la mapping exacte | Moyenne |
 | `fcn.3003da20` | `LerpAngle` - utilise partout dans DoControllersInternal | Basse (standard Q3 lerp) |
 | `fcn.300051c0` | `CG_Player_DoControllers` wrapper. Voir comment il loop sur les 6 bones | Basse (deja sufficient pour hook) |
@@ -562,23 +561,23 @@ Pas besoin de rebuild pour changer les knobs : edit `cod1reloaded.ini`, restart 
 
 ---
 
-## 16. Lessons learned (eviter les pieges historiques)
+## 16. Lessons learned (pieges historiques)
 
-1. **L'engine zero le buffer en STAND** : nos additions doivent etre absolues, pas relatives a une valeur engine (qui est 0). En CROUCH, les valeurs engine sont non-nulles, donc nos `*= scale` ont du sens.
+1. L'engine zero le buffer en STAND : nos additions doivent etre absolues, pas relatives a une valeur engine (qui est 0). En CROUCH, les valeurs engine sont non-nulles, donc nos `*= scale` ont du sens.
 
-2. **Bit 0x40 dans eFlags = is_leaning** : signal fiable. Eviter les heuristiques sur `sum_back_yaw` qui sont sensibles au strafe.
+2. Bit 0x40 dans eFlags = is_leaning : signal fiable. Eviter les heuristiques sur `sum_back_yaw` qui sont sensibles au strafe.
 
-3. **`lerpLean` (ci+0x3b8) n'est PAS une lean fraction propre** : c'est un angle 360-wrap. Convertir signe [-180,180] avant test. Pour une vraie lean fraction normalisee, lire le **global** `0x3020af54` (= `leanf`).
+3. `lerpLean` (ci+0x3b8) n'est pas une lean fraction propre : c'est un angle 360-wrap. Convertir signe [-180,180] avant test. Pour une vraie lean fraction normalisee, lire le global `0x3020af54` (= `leanf`).
 
-4. **Pelvis yaw/roll et neck roll sont ecrits a 0** : pas la peine de les patcher.
+4. Pelvis yaw/roll et neck roll sont ecrits a 0 : pas la peine de les patcher.
 
-5. **`QueryPerformanceCounter` obligatoire pour le smoothing** : `GetTickCount` a 16ms res = snap entre frames a 60fps.
+5. `QueryPerformanceCounter` obligatoire pour le smoothing : `GetTickCount` a 16ms res = snap entre frames a 60fps.
 
-6. **Sign convention asymetrique LEFT/RIGHT** : la rig d'anim CoD1 n'est PAS un miroir parfait. Toujours tester les deux cotes separement.
+6. Sign convention asymetrique LEFT/RIGHT : la rig d'anim CoD1 n'est pas un miroir parfait. Toujours tester les deux cotes separement.
 
-7. **lean_amplify factor > 2.5 = collision broken** : la prediction client utilise les memes constantes que le rendering, trop d'amplification peut faire traverser des murs.
+7. lean_amplify factor > 2.5 = collision broken : la prediction client utilise les memes constantes que le rendering, trop d'amplification peut faire traverser des murs.
 
-8. **STAND camera et CROUCH camera sont 2 fonctions differentes** : `fcn.30034180` STAND, `fcn.30038300` CROUCH. Si on veut tuner les deux, patcher les sites des deux.
+8. STAND camera et CROUCH camera sont 2 fonctions differentes : `fcn.30034180` STAND, `fcn.30038300` CROUCH. Si on veut tuner les deux, patcher les sites des deux.
 
 ---
 
