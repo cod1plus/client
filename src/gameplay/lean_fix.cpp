@@ -40,23 +40,18 @@ LeanFixConfig g_lean_fix_config = {
     // server; do not re-enable them as they are.
     /* lean_diag_scale       */ 0.0f,
     /* lean_diag_right_scale */ 0.0f,
-    // DISABLED 2026-07-30 - this made leaning players unhittable.
+    // RESTORED 2026-07-30. Briefly zeroed because it made leaning players unhittable -
+    // wrong call: it is the fix for the "helicopter" peek (CoD1 barely moves the body on
+    // a lean, so a peeker shows an arm and nothing else). Removing it brought that
+    // straight back.
     //
-    // The shift moved the RENDERED body sideways (tag_origin_offset[1]) on top of the
-    // engine's own 20-unit lean, by 5 (lean-left standing), 7.5 (lean-right, 2.5*3) or
-    // 12.5 (lean-left crouched). The server knows nothing about it: it places the head
-    // where the ENGINE lean puts it, ~17.6 units out. So the head you aim at sat 25 to
-    // 32.5 units out while its hit sphere (radius 4.5) was at 17.6 - a 7.4 to 14.9 unit
-    // gap, missing in all four stance/side combinations. enzo emptied three magazines
-    // into a leaning head with no hit, and it is also why the head/helmet looked
-    // detached from the body.
-    //
-    // No server-side tuning can fix this: the offset is cosmetic, client-side, and
-    // varies by stance and side. On a competitive mod the rendered player must be where
-    // the server says he is. Kept as knobs (not deleted) in case a future version syncs
-    // the offset to the server, which is the only way this could ever be re-enabled.
-    /* body_shift_lean_scale */ 0.0f,
-    /* body_shift_right_scale*/ 0.0f,
+    // The real defect was that the shift moved the DRAWN body without the server
+    // knowing, so the model sat 5-12.5 units off its own hitbox. Fixed properly by
+    // mirroring the exact same offset onto the server hitbox: lean_hitbox.c recomputes
+    // it from leanf + stance, which are values both sides already have, so no network
+    // sync is involved. See LEAN_BODY_SHIFT_* there - THE TWO MUST STAY IN STEP.
+    /* body_shift_lean_scale */ 1.0f,
+    /* body_shift_right_scale*/ 3.0f,   // right-lean shows too little body in CoD1
     /* body_yaw_lock         */ 1.0f,
     /* ctrl_smooth_enable    */ true,
     /* ctrl_smooth_time      */ 250,
