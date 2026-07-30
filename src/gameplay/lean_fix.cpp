@@ -27,10 +27,36 @@ LeanFixConfig g_lean_fix_config = {
     /* move_diag_parent      */ 0,
     /* diag_k_pos            */ 0.75f,
     /* diag_k_neg            */ 0.75f,
-    /* lean_diag_scale       */ 1.0f,
-    /* lean_diag_right_scale */ 0.4f,
-    /* body_shift_lean_scale */ 1.0f,
-    /* body_shift_right_scale*/ 3.0f,   // right-lean shows too little body in CoD1
+    // DISABLED 2026-07-30, same reason as body_shift below: both write cbuf[20], which
+    // IS the lean value (this file reads lf = cbuf[20]/3.75 from it), so they change how
+    // far the model leans ON SCREEN while the server keeps using the engine's own lean.
+    //   lean_diag_right_scale 0.4 -> cbuf[20] += 2.88 on a full right lean: 1.77x the
+    //     engine lean, so the visible head sits ~35 units out against a hit sphere at
+    //     17.6 - unhittable by a wide margin.
+    //   lean_diag_scale 1.0 -> cbuf[20] -= 7.20 on a left lean, which flips the sign:
+    //     the body visibly leans the WRONG WAY.
+    // Cosmetic pose tweaks cannot move the player relative to his own hitbox on a
+    // competitive mod. Keep the knobs for a future version that syncs the pose to the
+    // server; do not re-enable them as they are.
+    /* lean_diag_scale       */ 0.0f,
+    /* lean_diag_right_scale */ 0.0f,
+    // DISABLED 2026-07-30 - this made leaning players unhittable.
+    //
+    // The shift moved the RENDERED body sideways (tag_origin_offset[1]) on top of the
+    // engine's own 20-unit lean, by 5 (lean-left standing), 7.5 (lean-right, 2.5*3) or
+    // 12.5 (lean-left crouched). The server knows nothing about it: it places the head
+    // where the ENGINE lean puts it, ~17.6 units out. So the head you aim at sat 25 to
+    // 32.5 units out while its hit sphere (radius 4.5) was at 17.6 - a 7.4 to 14.9 unit
+    // gap, missing in all four stance/side combinations. enzo emptied three magazines
+    // into a leaning head with no hit, and it is also why the head/helmet looked
+    // detached from the body.
+    //
+    // No server-side tuning can fix this: the offset is cosmetic, client-side, and
+    // varies by stance and side. On a competitive mod the rendered player must be where
+    // the server says he is. Kept as knobs (not deleted) in case a future version syncs
+    // the offset to the server, which is the only way this could ever be re-enabled.
+    /* body_shift_lean_scale */ 0.0f,
+    /* body_shift_right_scale*/ 0.0f,
     /* body_yaw_lock         */ 1.0f,
     /* ctrl_smooth_enable    */ true,
     /* ctrl_smooth_time      */ 250,
