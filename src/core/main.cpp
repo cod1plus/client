@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "core/patches.h"
+#include "netcode/cheat_scan.h"
 #include "gameplay/viewheight_fix.h"
 #include "gameplay/lean_fix.h"
 #include "core/logger.h"
@@ -27,6 +28,8 @@
 #include "features/avatar_overlay.h"
 #include "features/engine_2d.h"
 #include "features/discord_rpc.h"
+#include "features/settings_menu.h"
+#include "video/gamma_fix.h"
 #include "netcode/antilag.h"
 
 namespace {
@@ -97,7 +100,11 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
         if (*(volatile int*)patches::CODMP_CVAR_COUNT_VA > 0) {
             patches::register_client_version_cvar();
             patches::competitive_force_cvars();  // force/lock snaps+cl_maxpackets+rate for 40-tick
+            patches::settings_menu_tick();       // register/poll cod1x_* cvars + cg_fov unlock + hotkey
+            patches::cheat_scan_tick();          // cvar-name cheat detection -> userinfo cod1x_ac
         }
+        patches::widescreen_update_stretch();    // drive the stretched-mode vfov ratio (live)
+        patches::gamma_fix_tick();               // per-monitor gamma: focus/monitor transitions
         monitor_cgame();
         Sleep(5);
     }
@@ -138,8 +145,11 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             patches::working_set_apply();
             patches::fso_disable_apply();
 
-            // FOV engine hook still TODO (CG_CalcFov addr unknown)
             patches::widescreen_fix_apply();
+            patches::settings_menu_start();  // in-game 1.6X settings menu (FOV + screen ratio)
+
+            // per-monitor hardware gamma (dual-screen light bugs; must precede vid init)
+            patches::gamma_fix_start();
 
             // patch before Com_Init declares the dvar via Cvar_Get
             patches::apply_short_version_patch();
@@ -165,6 +175,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             }
             break;
         case DLL_PROCESS_DETACH:
+            patches::gamma_fix_shutdown();   // never leave the desktop gamma modified
             patches::fps_cap_shutdown();
             patches::toast_shutdown();
             patches::avatar_overlay_shutdown();

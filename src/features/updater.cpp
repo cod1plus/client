@@ -1,9 +1,17 @@
-// manifest keys: version, download_url, min_version, notes
+// Blocking updater. On launch, BEFORE the game creates its window (IAT hook on
+// CoDMP.exe's CreateWindowExA), fetch the manifest and compare versions. If a newer
+// version exists, show ONE dialog and stop the game from launching with the old
+// version (click Yes -> auto-download + install, then the player relaunches). If the
+// build is up to date or the machine is offline, the game launches normally.
+//
+// manifest keys: version, download_url, notes
 
 #include "features/updater.h"
 #include "core/logger.h"
 
+#include <windows.h>
 #include <wininet.h>
+#include <shellapi.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -20,6 +28,11 @@ UpdaterConfig g_updater_config = {
 namespace {
 
 char g_dll_path[MAX_PATH] = {0};
+
+typedef ATOM (WINAPI *RegisterClassA_t)(const WNDCLASSA*);
+typedef LONG (WINAPI *ChangeDisplaySettingsA_t)(DEVMODEA*, DWORD);
+RegisterClassA_t         g_real_RegisterClassA         = nullptr;
+ChangeDisplaySettingsA_t g_real_ChangeDisplaySettingsA = nullptr;
 
 int version_compare(const char* a, const char* b) {
     while (*a && *b) {
@@ -57,12 +70,16 @@ bool json_extract_string(const char* json, const char* key, char* out, size_t ou
     return true;
 }
 
-// out_file_path != NULL -> file, else into out_buf
+// out_file_path != NULL -> file, else into out_buf. Short timeouts so an offline
+// machine fails fast instead of freezing the game at the window-creation gate.
 bool http_download(const char* url, char* out_buf, size_t out_buf_size,
                    const char* out_file_path) {
     HINTERNET h_inet = InternetOpenA(
         "cod1reloaded updater", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
     if (!h_inet) return false;
+
+    DWORD tmo = 6000;
+    InternetSetOptionA(h_inet, INTERNET_OPTION_CONNECT_TIMEOUT, &tmo, sizeof(tmo));
 
     HINTERNET h_url = InternetOpenUrlA(
         h_inet, url, NULL, 0,
@@ -71,6 +88,8 @@ bool http_download(const char* url, char* out_buf, size_t out_buf_size,
         InternetCloseHandle(h_inet);
         return false;
     }
+    DWORD rtmo = 15000;
+    InternetSetOptionA(h_url, INTERNET_OPTION_RECEIVE_TIMEOUT, &rtmo, sizeof(rtmo));
 
     DWORD status = 0;
     DWORD status_size = sizeof(status);
@@ -123,74 +142,142 @@ bool http_download(const char* url, char* out_buf, size_t out_buf_size,
     return ok;
 }
 
-DWORD WINAPI updater_thread(LPVOID) {
-    if (!g_updater_config.enable || g_updater_config.manifest_url[0] == '\0') {
-        logger::logf("updater: disabled (no manifest_url or enable=false)");
-        return 0;
+// Swap the freshly-downloaded dll into place: g_dll_path -> .old, new_path -> g_dll_path.
+// Windows allows renaming a mapped image; it takes effect at the next launch.
+bool apply_new(const char* new_path) {
+    if (g_dll_path[0] == '\0') return false;
+    char old_path[MAX_PATH];
+    snprintf(old_path, sizeof(old_path), "%s.old", g_dll_path);
+    DeleteFileA(old_path);
+    if (!MoveFileA(g_dll_path, old_path)) return false;
+    if (!MoveFileA(new_path, g_dll_path)) {
+        MoveFileA(old_path, g_dll_path);  // roll back
+        return false;
     }
+    MoveFileExA(old_path, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+    return true;
+}
 
-    logger::logf("updater: fetching manifest %s", g_updater_config.manifest_url);
+// Runs ONCE, on the main thread, right before the game creates its window. May
+// ExitProcess (update pending) or return (up to date / offline -> game continues).
+void updater_gate() {
+    if (!g_updater_config.enable || g_updater_config.manifest_url[0] == '\0') return;
+    if (g_dll_path[0] == '\0') return;
 
     char manifest[4096];
     if (!http_download(g_updater_config.manifest_url, manifest, sizeof(manifest), NULL)) {
-        logger::logf("updater: manifest fetch failed");
-        return 0;
+        logger::logf("updater: manifest fetch failed -> launching without check (offline?)");
+        return;  // never lock a player out because the network is down
     }
 
-    char remote_version[32]  = {0};
-    char download_url[512]   = {0};
-    char notes[512]          = "";
-
-    if (!json_extract_string(manifest, "version", remote_version, sizeof(remote_version))) {
-        logger::logf("updater: malformed manifest (no 'version')");
-        return 0;
-    }
-    if (!json_extract_string(manifest, "download_url", download_url, sizeof(download_url))) {
-        logger::logf("updater: malformed manifest (no 'download_url')");
-        return 0;
+    char remote[32] = {0}, url[512] = {0}, notes[512] = "";
+    if (!json_extract_string(manifest, "version", remote, sizeof(remote)) ||
+        !json_extract_string(manifest, "download_url", url, sizeof(url))) {
+        logger::logf("updater: malformed manifest -> launching without check");
+        return;
     }
     json_extract_string(manifest, "notes", notes, sizeof(notes));
 
-    const int cmp = version_compare(remote_version, COD1RELOADED_VERSION);
-    if (cmp <= 0) {
-        logger::logf("updater: up to date (local=%s remote=%s)",
-                     COD1RELOADED_VERSION, remote_version);
-        return 0;
+    if (version_compare(remote, COD1RELOADED_VERSION) <= 0) {
+        logger::logf("updater: up to date (local=%s remote=%s)", COD1RELOADED_VERSION, remote);
+        return;  // launch normally
     }
 
-    logger::logf("updater: NEW VERSION available %s -> %s",
-                 COD1RELOADED_VERSION, remote_version);
+    logger::logf("updater: update %s -> %s available, blocking launch",
+                 COD1RELOADED_VERSION, remote);
 
-    if (g_updater_config.auto_download) {
+    char msg[1400];
+    snprintf(msg, sizeof(msg),
+        "A COD1.6X update is available.\n\n"
+        "Current version: %s\n"
+        "New version:     %s\n\n"
+        "%s\n\n"
+        "Download and install it now?\n"
+        "(The game cannot launch with the old version.)",
+        COD1RELOADED_VERSION, remote, notes[0] ? notes : "");
+
+    const int r = MessageBoxA(NULL, msg, "COD1.6X - Update",
+                              MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
+
+    if (r == IDYES) {
         char new_path[MAX_PATH];
         snprintf(new_path, sizeof(new_path), "%s.new", g_dll_path);
-        logger::logf("updater: downloading %s -> %s", download_url, new_path);
-        if (http_download(download_url, NULL, 0, new_path)) {
-            logger::logf("updater: download OK, will apply on next launch");
+        logger::logf("updater: downloading %s -> %s", url, new_path);
+        if (http_download(url, NULL, 0, new_path) && apply_new(new_path)) {
+            char done[320];
+            snprintf(done, sizeof(done),
+                "Update installed!\n\nRestart the game to play on %s.", remote);
+            MessageBoxA(NULL, done, "COD1.6X",
+                        MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
         } else {
-            logger::logf("updater: download FAILED");
+            logger::logf("updater: auto-download/install FAILED, offering manual link");
+            char fail[720];
+            snprintf(fail, sizeof(fail),
+                "Automatic download failed.\n\n"
+                "Download the new version manually here:\n%s", url);
+            MessageBoxA(NULL, fail, "COD1.6X",
+                        MB_OK | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND);
+            ShellExecuteA(NULL, "open", url, NULL, NULL, SW_SHOWNORMAL);
         }
     }
 
-    if (g_updater_config.show_dialog) {
-        char msg[1024];
-        snprintf(msg, sizeof(msg),
-            "cod1reloaded update available\n\n"
-            "Current: %s\n"
-            "New:     %s\n\n"
-            "%s\n\n"
-            "%s",
-            COD1RELOADED_VERSION, remote_version, notes,
-            g_updater_config.auto_download
-                ? "Downloaded. Will apply at next launch."
-                : "Visit project page to download.");
-        MessageBoxA(NULL, msg, "cod1reloaded", MB_OK | MB_ICONINFORMATION);
+    // Yes (installed, needs relaunch) or No: the old version must never run.
+    ExitProcess(0);
+}
+
+// Gate the FIRST video-init call, before the game registers its window class or
+// changes the display mode -> the dialog shows on the desktop, never over the game.
+void gate_once() {
+    static LONG once = 0;
+    if (InterlockedCompareExchange(&once, 1, 0) == 0) {
+        updater_gate();  // may ExitProcess
     }
-    return 0;
+}
+ATOM WINAPI hk_RegisterClassA(const WNDCLASSA* wc) {
+    gate_once();
+    return g_real_RegisterClassA(wc);
+}
+LONG WINAPI hk_ChangeDisplaySettingsA(DEVMODEA* dm, DWORD flags) {
+    gate_once();
+    return g_real_ChangeDisplaySettingsA(dm, flags);
+}
+
+// Patch the IAT slot for a named user32 import in the main EXE; returns the real fn.
+void* iat_hook(const char* func, void* new_fn) {
+    BYTE* base = (BYTE*)GetModuleHandleA(NULL);
+    if (!base) return nullptr;
+    auto dos = (IMAGE_DOS_HEADER*)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+    auto nt = (IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return nullptr;
+    DWORD imp_rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    if (!imp_rva) return nullptr;
+    auto imp = (IMAGE_IMPORT_DESCRIPTOR*)(base + imp_rva);
+    for (; imp->Name; ++imp) {
+        const char* dll = (const char*)(base + imp->Name);
+        if (_stricmp(dll, "user32.dll") != 0) continue;
+        DWORD orig_rva = imp->OriginalFirstThunk ? imp->OriginalFirstThunk : imp->FirstThunk;
+        auto orig = (IMAGE_THUNK_DATA*)(base + orig_rva);
+        auto iat  = (IMAGE_THUNK_DATA*)(base + imp->FirstThunk);
+        for (; orig->u1.AddressOfData; ++orig, ++iat) {
+            if (orig->u1.Ordinal & IMAGE_ORDINAL_FLAG) continue;
+            auto ibn = (IMAGE_IMPORT_BY_NAME*)(base + orig->u1.AddressOfData);
+            if (strcmp((const char*)ibn->Name, func) != 0) continue;
+            void** slot = (void**)&iat->u1.Function;
+            void* real = *slot;
+            DWORD op = 0;
+            if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &op)) return nullptr;
+            *slot = new_fn;
+            VirtualProtect(slot, sizeof(void*), op, &op);
+            return real;
+        }
+    }
+    return nullptr;
 }
 
 }  // namespace
 
+// Apply a leftover .new (interrupted update) + clean the previous .old. Call early.
 void updater_apply_pending() {
     HMODULE self = GetModuleHandleA("cod1reloaded.dll");
     if (!self) self = GetModuleHandleA("mss32.dll");
@@ -199,22 +286,12 @@ void updater_apply_pending() {
 
     char new_path[MAX_PATH];
     snprintf(new_path, sizeof(new_path), "%s.new", g_dll_path);
-    if (GetFileAttributesA(new_path) == INVALID_FILE_ATTRIBUTES) return;
-
-    // can't overwrite our own mapped image, but Windows allows renaming it:
-    // .dll -> .old, .new -> .dll. takes effect next launch, no reboot.
+    if (GetFileAttributesA(new_path) != INVALID_FILE_ATTRIBUTES) {
+        apply_new(new_path);
+    }
     char old_path[MAX_PATH];
     snprintf(old_path, sizeof(old_path), "%s.old", g_dll_path);
     DeleteFileA(old_path);
-
-    if (!MoveFileA(g_dll_path, old_path)) {
-        return;
-    }
-    if (!MoveFileA(new_path, g_dll_path)) {
-        MoveFileA(old_path, g_dll_path);
-        return;
-    }
-    MoveFileExA(old_path, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
 }
 
 void updater_start() {
@@ -223,9 +300,18 @@ void updater_start() {
         if (!self) self = GetModuleHandleA("mss32.dll");
         if (self) GetModuleFileNameA(self, g_dll_path, MAX_PATH);
     }
-
-    HANDLE h = CreateThread(NULL, 0, updater_thread, NULL, 0, NULL);
-    if (h) CloseHandle(h);
+    // Gate as early as possible: ChangeDisplaySettingsA (fullscreen res change) and
+    // RegisterClassA (window class) are both called before the window exists.
+    void* rc = iat_hook("RegisterClassA", (void*)hk_RegisterClassA);
+    void* cd = iat_hook("ChangeDisplaySettingsA", (void*)hk_ChangeDisplaySettingsA);
+    g_real_RegisterClassA         = (RegisterClassA_t)rc;
+    g_real_ChangeDisplaySettingsA = (ChangeDisplaySettingsA_t)cd;
+    if (rc || cd) {
+        logger::logf("updater: video-init gate installed (RegisterClassA=%p ChangeDisplaySettingsA=%p)",
+                     rc, cd);
+    } else {
+        logger::logf("updater: IAT hook FAILED -> no update gate");
+    }
 }
 
 }  // namespace patches

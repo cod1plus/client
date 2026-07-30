@@ -1,5 +1,6 @@
 #include "netcode/protocol_patch.h"
 #include "core/logger.h"
+#include "features/updater.h"   // COD1RELOADED_VERSION - the single source of truth
 
 #include <cstring>
 #include <cstdio>
@@ -99,8 +100,24 @@ bool apply_protocol_patch() {
     return true;
 }
 
-// USERINFO cvar "cod1reloaded" = our net version; engine ships it in the connect
-// userinfo so the server can verify the client patch (see ClientConnect gate).
+// Turn "1.6.2" into 10602 - a single integer the server can compare with <.
+// Two digits per component, so 1.6.2 < 1.6.10 < 1.7.0 all order correctly.
+static int build_number_from(const char* v) {
+    int part[3] = {0, 0, 0};
+    int i = 0;
+    for (const char* p = v; *p && i < 3; ) {
+        while (*p >= '0' && *p <= '9') { part[i] = part[i] * 10 + (*p - '0'); ++p; }
+        if (*p == '.') { ++p; ++i; } else break;
+    }
+    return part[0] * 10000 + part[1] * 100 + part[2];
+}
+
+// Two USERINFO cvars, both ROM so a player cannot fake them from his console:
+//   cod1reloaded = net version (16 = "1.6"). Coarse: "is this a 1.6 client at all".
+//                  Never changes between releases.
+//   cod1x_build  = THIS build, e.g. 10602 for 1.6.2. What lets a server require an
+//                  up-to-date client instead of merely a patched one - without it a
+//                  player left on an old release connects exactly like a current one.
 void register_client_version_cvar() {
     static bool done = false;
     if (done) return;
@@ -113,8 +130,13 @@ void register_client_version_cvar() {
     snprintf(ver, sizeof(ver), "%d", g_net_version);
     Cvar_Get("cod1reloaded", ver, CVAR_USERINFO | CVAR_ROM);
 
+    char build[16];
+    snprintf(build, sizeof(build), "%d", build_number_from(COD1RELOADED_VERSION));
+    Cvar_Get("cod1x_build", build, CVAR_USERINFO | CVAR_ROM);
+
     done = true;
-    logger::logf("  version_gate: client userinfo cvar cod1reloaded=%s", ver);
+    logger::logf("  version_gate: client userinfo cod1reloaded=%s cod1x_build=%s (%s)",
+                 ver, build, COD1RELOADED_VERSION);
 }
 
 }  // namespace patches

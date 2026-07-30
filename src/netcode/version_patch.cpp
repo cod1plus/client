@@ -3,12 +3,17 @@
 
 #include "netcode/version_patch.h"
 #include "core/logger.h"
+#include "features/updater.h"   // COD1RELOADED_VERSION - single source of truth
 
 #include <cstdio>
 #include <cstring>
 
 namespace patches {
 
+// What the engine prints bottom-right in the menus (the "1.5" slot in vanilla). Filled at
+// patch time from COD1RELOADED_VERSION, so it can never drift from the build that is
+// actually running - it used to be a hardcoded "1.6", which told you the branch but not
+// which build you had, and that is exactly what you need to see when a player reports a bug.
 alignas(16) char g_short_version_buffer[SHORT_VERSION_MAX_LEN + 1] = "1.6";
 
 namespace {
@@ -23,6 +28,11 @@ bool apply_short_version_patch() {
         logger::logf("version_patch: GetModuleHandleA(NULL) returned null - aborted");
         return false;
     }
+
+    // "COD1.6X 1.6.2" - brand plus the full build. Vanilla shows "1.5" here and the mod
+    // previously showed "1.5 reloaded", so a string of this length is known to fit.
+    snprintf(g_short_version_buffer, sizeof(g_short_version_buffer),
+             "COD1.6X %s", COD1RELOADED_VERSION);
 
     const uintptr_t exe_base = (uintptr_t)exe;
     const uintptr_t opcode_addr  = exe_base + CODMP_SHORTVERSION_PUSH_OPCODE_RVA;

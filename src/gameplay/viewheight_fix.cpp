@@ -5,8 +5,11 @@
 
 namespace patches {
 
+// COMPETITIVE RELEASE: HARDCODED (not read from cod1reloaded.ini). The first-person
+// crouch view speed is the up/down mechanic - locked so it can't be tuned for an edge.
+// 80 = the tuned value as of 2026-07-24 (vanilla 180). Rebuild to change.
 ViewheightFixConfig g_viewheight_config = {
-    VIEWHEIGHT_LERP_SPEED_FALLBACK,
+    80.0f,
 };
 
 namespace {

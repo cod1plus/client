@@ -49,3 +49,16 @@ desktop.ini
 /tools/
 /scoreboard-clean*.png
 /TODO.md
+
+# --- Binaires serveur Linux copies ici pour analyse (pas des sources) ---
+/cod_lnxded
+/cod_lnxded.*
+/game.mp.i386.so
+/linux/
+# --- Outils tiers / experimentations hors perimetre ---
+/blender-mcp-main/
+/build_err.txt
+# --- Sources d'assets menu NON expedies (skin texture + police, rejetes 2026-07-17).
+#     Seuls ui_pk3/ui_mp/*.menu + les generateurs sont versionnes. 19 Mo evites. ---
+/ui_pk3/fonts/
+/ui_pk3/ui/

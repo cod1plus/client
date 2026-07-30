@@ -5,6 +5,9 @@
 #include "core/patches.h"
 #include "video/widescreen_fix.h"
 #include "gameplay/swing_fix.h"
+#include "gameplay/stance_fix.h"
+#include "gameplay/anim_clamp.h"
+#include "features/settings_menu.h"
 
 #include <cstdio>
 #include <cstring>
@@ -12,18 +15,23 @@
 
 namespace patches {
 
+// COMPETITIVE RELEASE: these are HARDCODED (no longer read from cod1reloaded.ini) so a
+// player can't edit the model/movement fixes to gain an advantage. Values = the tuned
+// set that was in the .ini as of 2026-07-24. To change them now you must rebuild.
 LeanFixConfig g_lean_fix_config = {
-    /* enable                */ false,
+    /* enable                */ true,
     /* apply_in_stand        */ true,
-    /* diag_log_count        */ 300,
-    /* move_diag_fix         */ 0,
-    /* move_diag_parent      */ 1,
+    /* diag_log_count        */ 0,      // release: no diag logging
+    /* move_diag_fix         */ 2,
+    /* move_diag_lean_only   */ false,
+    /* move_diag_parent      */ 0,
     /* diag_k_pos            */ 0.75f,
     /* diag_k_neg            */ 0.75f,
     /* lean_diag_scale       */ 1.0f,
+    /* lean_diag_right_scale */ 0.4f,
     /* body_shift_lean_scale */ 1.0f,
-    /* body_shift_right_scale*/ 2.0f,   // right-lean shows too little body in CoD1
-    /* body_yaw_lock         */ 0.0f,
+    /* body_shift_right_scale*/ 3.0f,   // right-lean shows too little body in CoD1
+    /* body_yaw_lock         */ 1.0f,
     /* ctrl_smooth_enable    */ true,
     /* ctrl_smooth_time      */ 250,
 };
@@ -48,6 +56,32 @@ static float diag_yawdiff(int mode, float childYaw, float originYaw) {
         case 3:  return -childYaw;
         default: return childYaw - originYaw;   // exact cod2x
     }
+}
+
+// Reproduce cod2x's movementYaw INVARIANT on our yawDiff.
+//
+// cod2x PM_SetMovementDir does, before the angle ever reaches the controllers:
+//     if (isMovingBackwards) moveyaw = AngleNormalize180(moveyaw + 180);
+//     moveyaw = fclamp(moveyaw, -90, 90);
+// so their legs-vs-view yaw (tag_origin_angles[1], the parent of the yawDiff) can
+// NEVER exceed +-90 and backward movement folds to ~0. cos(yawDiff) is therefore
+// never negative and animation_adjustRotation can safely run unconditionally.
+//
+// CoD1's movementDir is KEYS-based (no such normalize/clamp): moving straight back
+// leaves the legs ~180 deg from the view, so cos(180) = -1 FLIPS the back-bone pitch
+// -> "crouch + S dips the head". Folding here restores cod2x's invariant at the only
+// place we can reach it, and unlike gating on lean it also covers crouch+lean+back.
+__attribute__((unused)) static float diag_fold(float yd) {
+    while (yd >  180.0f) yd -= 360.0f;
+    while (yd < -180.0f) yd += 360.0f;
+    if (yd >  90.0f || yd < -90.0f) {          // backward-ish: fold like cod2x's +180
+        yd += 180.0f;
+        while (yd >  180.0f) yd -= 360.0f;
+        while (yd < -180.0f) yd += 360.0f;
+    }
+    if (yd >  90.0f) yd =  90.0f;              // cod2x's fclamp(-90, 90)
+    if (yd < -90.0f) yd = -90.0f;
+    return yd;
 }
 }  // namespace
 
@@ -118,12 +152,32 @@ extern "C" void apply_lean_adjust(float* controllers,
                 }
             }
         }
+
+        // right-lean pose — CoD1 gap: neither vanilla nor cod2x exposes the body on a
+        // right lean (the weapon side), so forward/backward + lean-right ("helicopter")
+        // shows only the arm. ROLL-ONLY whole-body tilt to the right (cod2x's forward
+        // pitch made the body nose-dive when combined with fwd+strafe — dropped). NO
+        // direction gate: moving straight has movementYaw=0 (keys-based), a direction
+        // gate misses it — exactly the exploit. Hot-reload knob (0=off).
+        if (g_lean_fix_config.lean_diag_right_scale != 0.0f && lf > 0.02f) {
+            const float off = lf * g_lean_fix_config.lean_diag_right_scale;
+            cbuf[20] += off * (is_crouch ? 3.8f : 7.2f);
+        }
     }
 
     // cod2x animation_adjustRotation: THE fix for the fwd+strafe+lean nose-dive.
     // reprojects back-bone pitch/roll by yaw delta vs tag_origin so lean roll
     // stays lateral instead of diving. identity when yawDiff~0.
-    if (g_lean_fix_config.move_diag_fix > 0) {
+    //
+    // move_diag_lean_only: cod2x's tag angles come from a VELOCITY-based movementDir,
+    // so with no lean the yawDiff is ~0 and the reprojection is identity. CoD1's
+    // movementDir is KEYS-based -> moving straight BACK (S) gives a ~180deg yawDiff,
+    // and cos(180)=-1 FLIPS the back-bone pitch => "crouch + S makes the head dip".
+    // Since this fix only matters while leaning, gate it on lean so plain crouch+back
+    // (no lean) never gets reprojected. Hot-reload knob (0 = old always-on behaviour).
+    const float lf_diag = ((const float*)controllers)[20] / 3.75f;   // side, ~fLeanFrac
+    if (g_lean_fix_config.move_diag_fix > 0 &&
+        (!g_lean_fix_config.move_diag_lean_only || fabsf(lf_diag) > 0.02f)) {
         float* bl   = (float*)((char*)controllers + CTRL_BACK_LOW_ANGLES);
         float* bm   = (float*)((char*)controllers + CTRL_BACK_MID_ANGLES);
         float* bu   = (float*)((char*)controllers + CTRL_BACK_UP_ANGLES);
@@ -345,7 +399,12 @@ bool apply_to_cgame(HMODULE cgame_module) {
     if (!cgame_module) return false;
 
     widescreen_apply_to_cgame(cgame_module);
+    settings_menu_apply_to_cgame(cgame_module);  // unlock cg_fov (before CG_Init proceeds)
     apply_swing_fix(cgame_module);
+    apply_stance_fix(cgame_module);  // sync model stance blend with 1st person
+    // apply_anim_clamp(cgame_module);  // REVERTED 2026-07-24: the `xor esi,esi` patch
+    //   clobbers a register the CALLER still needs (the old path called Com_Error and
+    //   never returned, so clobbering was harmless there) -> camera/mouse glitches.
     if (!g_lean_fix_config.enable) {
         logger::logf("  lean hook NOT installed (disabled)");
         return true;

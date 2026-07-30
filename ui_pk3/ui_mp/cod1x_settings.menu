@@ -1,0 +1,348 @@
+#include "ui/menudef.h"
+// COD1.6X in-game settings menu — flat dark style (engine-drawn, the validated look).
+// Binds directly to cvars the mod handles:
+//   FIELD OF VIEW -> cg_fov          (unlocked by the mod; live value shown, mod keeps it integer)
+//   VIEW MODE     -> cod1x_viewmode  (0 = classic zoomed / 1 = widescreen / 2 = stretched)
+//   ASPECT RATIO  -> cod1x_aspect    (click-to-cycle presets)
+//   REFRESH RATE  -> cod1x_refresh   (AUTO / MAX / fixed Hz; mod resolves MAX -> r_displayRefresh;
+//                                     APPLY VIDEO runs vid_restart)
+// No full-screen dim on purpose: the game stays visible so the FOV slider is judged live.
+
+#define BAT_BG			.05 .06 .08 .96
+#define BAT_BORDER		.16 .18 .22 .8
+#define BAT_ROW			.10 .12 .15 .90
+#define BAT_ROW_HOV		.16 .19 .24 .95
+#define BAT_ORANGE		.98 .55 .10 1
+#define BAT_ORANGE_DIM	.98 .55 .10 .35
+#define BAT_TEXT		.93 .94 .96 1
+#define BAT_DIM			.52 .55 .60 1
+#define BAT_LINE		.22 .24 .29 .55
+#define BAT_BTN			.12 .14 .18 .92
+#define BAT_BTN_HOV		.98 .55 .10 .92
+#define BAT_LABEL_X		170
+
+{
+	menuDef
+	{
+		name		cod1x_settings
+		fullScreen	0
+		rect		90 116 460 268
+		focusColor	.98 .60 .15 1
+		style		WINDOW_STYLE_EMPTY
+		onOpen		{ setcvar cod1x_menu_open "1" }
+		onClose		{ setcvar cod1x_menu_open "0" }
+		onESC		{ close cod1x_settings }
+
+		// ------------------------------------------------ panel chrome
+		itemDef { name panel_shadow rect 6 7 460 268 style WINDOW_STYLE_FILLED backcolor 0 0 0 .5 visible 1 decoration }
+		itemDef { name panel_body rect 0 0 460 268 style WINDOW_STYLE_FILLED backcolor BAT_BG border 1 bordercolor BAT_BORDER visible 1 decoration }
+		itemDef { name panel_edge rect 0 0 3 268 style WINDOW_STYLE_FILLED backcolor BAT_ORANGE visible 1 decoration }
+
+		// ------------------------------------------------ header
+		itemDef { name title_tick rect 16 13 3 18 style WINDOW_STYLE_FILLED backcolor BAT_ORANGE visible 1 decoration }
+		itemDef
+		{
+			name		title
+			type		ITEM_TYPE_TEXT
+			text		"COD 1.6X"
+			rect		26 8 200 30
+			textalign	ITEM_ALIGN_LEFT
+			textalignx	0
+			textaligny	24
+			textscale	.40
+			textstyle	ITEM_TEXTSTYLE_SHADOWED
+			textfont	UI_FONT_NORMAL
+			forecolor	BAT_TEXT
+			visible		1
+			decoration
+		}
+
+		// tab: SETTINGS (active)
+		itemDef
+		{
+			name		tab_settings
+			type		ITEM_TYPE_TEXT
+			text		"SETTINGS"
+			rect		296 12 74 22
+			textalign	ITEM_ALIGN_CENTER
+			textalignx	37
+			textaligny	16
+			textscale	.21
+			textstyle	ITEM_TEXTSTYLE_SHADOWED
+			textfont	UI_FONT_NORMAL
+			forecolor	BAT_ORANGE
+			visible		1
+			decoration
+		}
+		itemDef { name tab_settings_bar rect 296 34 74 2 style WINDOW_STYLE_FILLED backcolor BAT_ORANGE visible 1 decoration }
+
+		// FILES tab removed: configs + demos are now opened from the MAIN MENU
+		// ("1.6X DEMOS" button), not from this settings panel.
+
+		itemDef { name header_line rect 12 44 436 1 style WINDOW_STYLE_FILLED backcolor BAT_LINE visible 1 decoration }
+
+		// ------------------------------------------------ section : DISPLAY
+		itemDef
+		{
+			name		section_display
+			type		ITEM_TYPE_TEXT
+			text		"DISPLAY"
+			rect		16 50 200 14
+			textalign	ITEM_ALIGN_LEFT
+			textalignx	0
+			textaligny	11
+			textscale	.20
+			textstyle	ITEM_TEXTSTYLE_SHADOWED
+			textfont	UI_FONT_NORMAL
+			forecolor	BAT_ORANGE
+			visible		1
+			decoration
+		}
+		itemDef { name section_display_line rect 88 56 360 1 style WINDOW_STYLE_FILLED backcolor BAT_LINE visible 1 decoration }
+
+		// ------------------------------------------------ rows
+		itemDef { name tick_fov rect 16 70 3 22 style WINDOW_STYLE_FILLED backcolor BAT_ORANGE_DIM visible 1 decoration }
+		itemDef
+		{
+			name		row_fov
+			type		ITEM_TYPE_SLIDER
+			text		"FIELD OF VIEW"
+			cvarfloat	"cg_fov" 90 65 130
+			rect		21 70 423 22
+			textalign	ITEM_ALIGN_RIGHT
+			textalignx	BAT_LABEL_X
+			textaligny	16
+			textscale	.23
+			textfont	UI_FONT_NORMAL
+			style		WINDOW_STYLE_FILLED
+			backcolor	BAT_ROW
+			forecolor	BAT_TEXT
+			visible		1
+			mouseEnter	{ play "mouse_over";
+						  setitemcolor row_fov backcolor BAT_ROW_HOV;
+						  setitemcolor tick_fov backcolor BAT_ORANGE }
+			mouseExit	{ setitemcolor row_fov backcolor BAT_ROW;
+						  setitemcolor tick_fov backcolor BAT_ORANGE_DIM }
+		}
+
+		// live FOV value (paints the cg_fov cvar string; the mod keeps it a clean integer)
+		itemDef
+		{
+			name		fov_value
+			type		ITEM_TYPE_TEXT
+			cvar		"cg_fov"
+			rect		310 70 60 22
+			textalign	ITEM_ALIGN_LEFT
+			textalignx	0
+			textaligny	16
+			textscale	.26
+			textstyle	ITEM_TEXTSTYLE_SHADOWED
+			textfont	UI_FONT_NORMAL
+			forecolor	BAT_ORANGE
+			visible		1
+			decoration
+		}
+
+		itemDef { name tick_viewmode rect 16 98 3 22 style WINDOW_STYLE_FILLED backcolor BAT_ORANGE_DIM visible 1 decoration }
+		itemDef
+		{
+			name		row_viewmode
+			type		ITEM_TYPE_MULTI
+			text		"VIEW MODE"
+			cvar		"cod1x_viewmode"
+			cvarFloatList	{ "CLASSIC (ZOOMED)" 0 "WIDESCREEN" 1 "STRETCHED (4:3)" 2 }
+			rect		21 98 423 22
+			textalign	ITEM_ALIGN_RIGHT
+			textalignx	BAT_LABEL_X
+			textaligny	16
+			textscale	.23
+			textfont	UI_FONT_NORMAL
+			style		WINDOW_STYLE_FILLED
+			backcolor	BAT_ROW
+			forecolor	BAT_TEXT
+			visible		1
+			action		{ play "mouse_click"; }
+			mouseEnter	{ play "mouse_over";
+						  setitemcolor row_viewmode backcolor BAT_ROW_HOV;
+						  setitemcolor tick_viewmode backcolor BAT_ORANGE }
+			mouseExit	{ setitemcolor row_viewmode backcolor BAT_ROW;
+						  setitemcolor tick_viewmode backcolor BAT_ORANGE_DIM }
+		}
+
+		itemDef { name tick_aspect rect 16 126 3 22 style WINDOW_STYLE_FILLED backcolor BAT_ORANGE_DIM visible 1 decoration }
+		// click to cycle presets (no manual entry)
+		itemDef
+		{
+			name		row_aspect
+			type		ITEM_TYPE_MULTI
+			text		"ASPECT RATIO"
+			cvar		"cod1x_aspect"
+			cvarStrList	{ "AUTO", "auto", "4:3", "4:3", "16:9", "16:9", "16:10", "16:10", "21:9", "21:9" }
+			rect		21 126 423 22
+			textalign	ITEM_ALIGN_RIGHT
+			textalignx	BAT_LABEL_X
+			textaligny	16
+			textscale	.23
+			textfont	UI_FONT_NORMAL
+			style		WINDOW_STYLE_FILLED
+			backcolor	BAT_ROW
+			forecolor	BAT_TEXT
+			visible		1
+			action		{ play "mouse_click"; }
+			mouseEnter	{ play "mouse_over";
+						  setitemcolor row_aspect backcolor BAT_ROW_HOV;
+						  setitemcolor tick_aspect backcolor BAT_ORANGE }
+			mouseExit	{ setitemcolor row_aspect backcolor BAT_ROW;
+						  setitemcolor tick_aspect backcolor BAT_ORANGE_DIM }
+		}
+
+		// ------------------------------------------------ section : VIDEO
+		itemDef
+		{
+			name		section_video
+			type		ITEM_TYPE_TEXT
+			text		"VIDEO"
+			rect		16 152 200 14
+			textalign	ITEM_ALIGN_LEFT
+			textalignx	0
+			textaligny	11
+			textscale	.20
+			textstyle	ITEM_TEXTSTYLE_SHADOWED
+			textfont	UI_FONT_NORMAL
+			forecolor	BAT_ORANGE
+			visible		1
+			decoration
+		}
+		itemDef { name section_video_line rect 72 158 376 1 style WINDOW_STYLE_FILLED backcolor BAT_LINE visible 1 decoration }
+
+		itemDef { name tick_refresh rect 16 172 3 22 style WINDOW_STYLE_FILLED backcolor BAT_ORANGE_DIM visible 1 decoration }
+		// AUTO = engine/desktop default; MAX = highest Hz of the display (mod-resolved).
+		itemDef
+		{
+			name		row_refresh
+			type		ITEM_TYPE_MULTI
+			text		"REFRESH RATE"
+			cvar		"cod1x_refresh"
+			cvarStrList	{ "AUTO", "auto", "MAX", "max", "60 HZ", "60", "75 HZ", "75", "85 HZ", "85", "100 HZ", "100", "120 HZ", "120", "144 HZ", "144", "165 HZ", "165", "240 HZ", "240", "280 HZ", "280", "320 HZ", "320", "360 HZ", "360" }
+			rect		21 172 423 22
+			textalign	ITEM_ALIGN_RIGHT
+			textalignx	BAT_LABEL_X
+			textaligny	16
+			textscale	.23
+			textfont	UI_FONT_NORMAL
+			style		WINDOW_STYLE_FILLED
+			backcolor	BAT_ROW
+			forecolor	BAT_TEXT
+			visible		1
+			action		{ play "mouse_click"; }
+			mouseEnter	{ play "mouse_over";
+						  setitemcolor row_refresh backcolor BAT_ROW_HOV;
+						  setitemcolor tick_refresh backcolor BAT_ORANGE }
+			mouseExit	{ setitemcolor row_refresh backcolor BAT_ROW;
+						  setitemcolor tick_refresh backcolor BAT_ORANGE_DIM }
+		}
+
+		// resolved target Hz (mod-published: "320 HZ" for MAX, "DEFAULT" for AUTO)
+		itemDef
+		{
+			name		refresh_value
+			type		ITEM_TYPE_TEXT
+			cvar		"cod1x_refresh_hz"
+			rect		310 172 100 22
+			textalign	ITEM_ALIGN_LEFT
+			textalignx	0
+			textaligny	16
+			textscale	.23
+			textstyle	ITEM_TEXTSTYLE_SHADOWED
+			textfont	UI_FONT_NORMAL
+			forecolor	BAT_ORANGE
+			visible		1
+			decoration
+		}
+
+		// ------------------------------------------------ footer
+		itemDef { name footer_line rect 12 204 436 1 style WINDOW_STYLE_FILLED backcolor BAT_LINE visible 1 decoration }
+
+		itemDef
+		{
+			name		footer_hint
+			type		ITEM_TYPE_TEXT
+			text		"INSERT : OPEN / CLOSE"
+			rect		16 211 180 24
+			textalign	ITEM_ALIGN_LEFT
+			textalignx	0
+			textaligny	15
+			textscale	.17
+			textfont	UI_FONT_NORMAL
+			forecolor	BAT_DIM
+			visible		1
+			decoration
+		}
+
+		// applies REFRESH RATE (runs vid_restart; closes the panel first)
+		itemDef
+		{
+			name		applybtn
+			type		ITEM_TYPE_BUTTON
+			text		"APPLY VIDEO"
+			style		1
+			border		1
+			textstyle	3
+			rect		206 211 120 24
+			textalign	ITEM_ALIGN_CENTER
+			textalignx	60
+			textaligny	17
+			textscale	.23
+			textfont	UI_FONT_NORMAL
+			forecolor	BAT_TEXT
+			backcolor	BAT_BTN
+			bordercolor	BAT_BORDER
+			visible		1
+			mouseEnter	{ play "mouse_over"; setitemcolor applybtn backcolor BAT_BTN_HOV }
+			mouseExit	{ setitemcolor applybtn backcolor BAT_BTN }
+			action		{ play "mouse_click"; close cod1x_settings; exec "vid_restart" }
+		}
+
+		itemDef
+		{
+			name		closebtn
+			type		ITEM_TYPE_BUTTON
+			text		"CLOSE"
+			style		1
+			border		1
+			textstyle	3
+			rect		334 211 110 24
+			textalign	ITEM_ALIGN_CENTER
+			textalignx	55
+			textaligny	17
+			textscale	.23
+			textfont	UI_FONT_NORMAL
+			forecolor	BAT_TEXT
+			backcolor	BAT_BTN
+			bordercolor	BAT_BORDER
+			visible		1
+			mouseEnter	{ play "mouse_over"; setitemcolor closebtn backcolor BAT_BTN_HOV }
+			mouseExit	{ setitemcolor closebtn backcolor BAT_BTN }
+			action		{ play "mouse_click"; close cod1x_settings }
+		}
+
+		// ------------------------------------------------ permanent warning banner
+		itemDef { name warn_bg rect 12 242 436 20 style WINDOW_STYLE_FILLED backcolor .16 .09 .03 .95 border 1 bordercolor BAT_ORANGE visible 1 decoration }
+		itemDef
+		{
+			name		warn_txt
+			type		ITEM_TYPE_TEXT
+			text		"VIDEO CHANGES RESTART THE RENDERER - THE SCREEN WILL FLICKER"
+			rect		12 242 436 20
+			textalign	ITEM_ALIGN_CENTER
+			textalignx	218
+			textaligny	14
+			textscale	.17
+			textstyle	ITEM_TEXTSTYLE_SHADOWED
+			textfont	UI_FONT_NORMAL
+			forecolor	BAT_ORANGE
+			visible		1
+			decoration
+		}
+	}
+}

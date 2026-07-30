@@ -2,6 +2,7 @@
 #include "gameplay/viewheight_fix.h"
 #include "gameplay/lean_fix.h"
 #include "gameplay/swing_fix.h"
+#include "gameplay/stance_fix.h"
 #include "core/logger.h"
 #include "netcode/version_patch.h"
 #include "netcode/protocol_patch.h"
@@ -20,6 +21,8 @@
 #include "video/widescreen_fix.h"
 #include "features/avatar_overlay.h"
 #include "features/discord_rpc.h"
+#include "features/settings_menu.h"
+#include "video/gamma_fix.h"
 #include "netcode/antilag.h"
 
 #include <cstdio>
@@ -59,8 +62,10 @@ bool read_ini_bool(const char* path, const char* key, bool fallback) {
     DWORD n = GetPrivateProfileStringA(
         "cod1reloaded", key, "", buf, sizeof(buf), path);
     if (n == 0) return fallback;
-    if (!_stricmp(buf, "true") || !_stricmp(buf, "1") || !_stricmp(buf, "yes")) return true;
-    if (!_stricmp(buf, "false") || !_stricmp(buf, "0") || !_stricmp(buf, "no")) return false;
+    if (!_stricmp(buf, "true") || !_stricmp(buf, "1") || !_stricmp(buf, "yes") ||
+        !_stricmp(buf, "on") || !_stricmp(buf, "enabled")) return true;
+    if (!_stricmp(buf, "false") || !_stricmp(buf, "0") || !_stricmp(buf, "no") ||
+        !_stricmp(buf, "off") || !_stricmp(buf, "disabled")) return false;
     return fallback;
 }
 
@@ -86,35 +91,11 @@ void read_ini_string(const char* path, const char* key,
 
 static char g_ini_path_cache[MAX_PATH] = {0};
 
-void hot_reload_lean_reshape() {
-    if (!g_ini_path_cache[0]) return;
-    const char* p = g_ini_path_cache;
-    g_lean_fix_config.move_diag_fix = read_ini_int(
-        p, "move_diag_fix", g_lean_fix_config.move_diag_fix);
-    g_lean_fix_config.move_diag_parent = read_ini_int(
-        p, "move_diag_parent", g_lean_fix_config.move_diag_parent);
-    g_lean_fix_config.diag_k_pos = read_ini_float(
-        p, "diag_k_pos", g_lean_fix_config.diag_k_pos);
-    g_lean_fix_config.diag_k_neg = read_ini_float(
-        p, "diag_k_neg", g_lean_fix_config.diag_k_neg);
-    g_lean_fix_config.ctrl_smooth_enable = read_ini_bool(
-        p, "ctrl_smooth_enable", g_lean_fix_config.ctrl_smooth_enable);
-    g_lean_fix_config.ctrl_smooth_time = read_ini_int(
-        p, "ctrl_smooth_time", g_lean_fix_config.ctrl_smooth_time);
-    g_lean_fix_config.lean_diag_scale = read_ini_float(
-        p, "lean_diag_scale", g_lean_fix_config.lean_diag_scale);
-    g_lean_fix_config.body_shift_lean_scale = read_ini_float(
-        p, "body_shift_lean_scale", g_lean_fix_config.body_shift_lean_scale);
-    g_lean_fix_config.body_shift_right_scale = read_ini_float(
-        p, "body_shift_right_scale", g_lean_fix_config.body_shift_right_scale);
-    g_lean_fix_config.body_yaw_lock = read_ini_float(
-        p, "body_yaw_lock", g_lean_fix_config.body_yaw_lock);
-    // read live by redirected mov
-    g_torso_yaw_speed_live = read_ini_float(
-        p, "swing_torso_yaw_speed", g_torso_yaw_speed_live);
-    g_torso_yaw_movefrac_live = read_ini_float(
-        p, "swing_torso_yaw_movefrac", g_torso_yaw_movefrac_live);
-}
+// COMPETITIVE RELEASE: the gameplay/model params are HARDCODED (see their config
+// initializers), so there is nothing to hot-reload from the .ini anymore. Kept as a
+// no-op stub so the periodic call site stays valid. Removing the reads also closes the
+// "edit ini, wait 400ms, gain an advantage mid-match" vector.
+void hot_reload_lean_reshape() {}
 
 void load_config(HMODULE self_module) {
     char ini_path[MAX_PATH];
@@ -123,74 +104,28 @@ void load_config(HMODULE self_module) {
     strncpy(g_ini_path_cache, ini_path, sizeof(g_ini_path_cache) - 1);
     g_ini_path_cache[sizeof(g_ini_path_cache) - 1] = '\0';
 
-    g_viewheight_config.viewheight_lerp_speed = read_ini_float(
-        ini_path, "viewheight_lerp_speed", VIEWHEIGHT_LERP_SPEED_FALLBACK);
-
-    g_lean_fix_config.enable = read_ini_bool(
-        ini_path, "lean_fix_enable", g_lean_fix_config.enable);
-    g_protocol_version = read_ini_int(
-        ini_path, "protocol_version", g_protocol_version);
-    g_net_version = read_ini_int(
-        ini_path, "net_version", g_net_version);
-    g_competitive_config.enable = read_ini_bool(
-        ini_path, "competitive_enable", g_competitive_config.enable);
-    g_competitive_config.snaps = read_ini_int(
-        ini_path, "competitive_snaps", g_competitive_config.snaps);
-    g_competitive_config.cl_maxpackets = read_ini_int(
-        ini_path, "competitive_cl_maxpackets", g_competitive_config.cl_maxpackets);
-    g_competitive_config.rate = read_ini_int(
-        ini_path, "competitive_rate", g_competitive_config.rate);
-    g_version_gate_config.enable = read_ini_bool(
-        ini_path, "version_gate_enable", g_version_gate_config.enable);
-    g_version_gate_config.allow_unversioned = read_ini_bool(
-        ini_path, "version_gate_allow_unversioned", g_version_gate_config.allow_unversioned);
+    // Sanity: every key lives under [cod1reloaded]. Without that section header the Win32
+    // profile API silently returns the fallback for EVERY key, so the file looks fine but
+    // nothing in it applies (this actually shipped once). Detect and shout in the log.
     {
-        char buf[CODMP_MASTER_HOST_MAX + 1];
-        DWORD n = GetPrivateProfileStringA(
-            "cod1reloaded", "master_server", g_master_host, buf, sizeof(buf), ini_path);
-        if (n > 0) { strncpy(g_master_host, buf, CODMP_MASTER_HOST_MAX); g_master_host[CODMP_MASTER_HOST_MAX] = 0; }
-    }
-    g_lean_fix_config.apply_in_stand = read_ini_bool(
-        ini_path, "lean_fix_apply_in_stand", g_lean_fix_config.apply_in_stand);
-    g_lean_fix_config.move_diag_fix = read_ini_int(
-        ini_path, "move_diag_fix", g_lean_fix_config.move_diag_fix);
-    g_lean_fix_config.move_diag_parent = read_ini_int(
-        ini_path, "move_diag_parent", g_lean_fix_config.move_diag_parent);
-    g_lean_fix_config.diag_k_pos = read_ini_float(
-        ini_path, "diag_k_pos", g_lean_fix_config.diag_k_pos);
-    g_lean_fix_config.diag_k_neg = read_ini_float(
-        ini_path, "diag_k_neg", g_lean_fix_config.diag_k_neg);
-    g_lean_fix_config.ctrl_smooth_enable = read_ini_bool(
-        ini_path, "ctrl_smooth_enable", g_lean_fix_config.ctrl_smooth_enable);
-    g_lean_fix_config.ctrl_smooth_time = read_ini_int(
-        ini_path, "ctrl_smooth_time", g_lean_fix_config.ctrl_smooth_time);
-    g_lean_fix_config.lean_diag_scale = read_ini_float(
-        ini_path, "lean_diag_scale", g_lean_fix_config.lean_diag_scale);
-    g_lean_fix_config.body_shift_lean_scale = read_ini_float(
-        ini_path, "body_shift_lean_scale", g_lean_fix_config.body_shift_lean_scale);
-    g_lean_fix_config.body_shift_right_scale = read_ini_float(
-        ini_path, "body_shift_right_scale", g_lean_fix_config.body_shift_right_scale);
-    g_lean_fix_config.body_yaw_lock = read_ini_float(
-        ini_path, "body_yaw_lock", g_lean_fix_config.body_yaw_lock);
-    g_swing_fix_config.enable = read_ini_bool(
-        ini_path, "swing_fix_enable", g_swing_fix_config.enable);
-    g_swing_fix_config.legs_tolerance = read_ini_float(
-        ini_path, "swing_legs_tolerance", g_swing_fix_config.legs_tolerance);
-    g_swing_fix_config.torso_pitch_speed = read_ini_float(
-        ini_path, "swing_torso_pitch_speed", g_swing_fix_config.torso_pitch_speed);
-    g_torso_yaw_speed_live = read_ini_float(
-        ini_path, "swing_torso_yaw_speed", g_torso_yaw_speed_live);
-    g_torso_yaw_movefrac_live = read_ini_float(
-        ini_path, "swing_torso_yaw_movefrac", g_torso_yaw_movefrac_live);
-    {
-        char buf[SHORT_VERSION_MAX_LEN + 1];
-        DWORD n = GetPrivateProfileStringA(
-            "cod1reloaded", "short_version", "", buf, sizeof(buf), ini_path);
-        if (n > 0 && n <= SHORT_VERSION_MAX_LEN) {
-            strncpy(g_short_version_buffer, buf, SHORT_VERSION_MAX_LEN);
-            g_short_version_buffer[SHORT_VERSION_MAX_LEN] = '\0';
+        char probe[8];
+        if (GetPrivateProfileStringA("cod1reloaded", "menu_key", "", probe, sizeof(probe),
+                                     ini_path) == 0) {
+            logger::logf("*** cod1reloaded.ini: section [cod1reloaded] is MISSING or empty "
+                         "-> the whole file is being IGNORED and compiled defaults are used. "
+                         "Add a line [cod1reloaded] above the settings.");
         }
     }
+
+    // -----------------------------------------------------------------------------
+    // COMPETITIVE RELEASE: gameplay + netcode + ecosystem settings are HARDCODED in
+    // the DLL (baked into their config initializers), NOT read from cod1reloaded.ini,
+    // so a player cannot edit the ini to gain an advantage. Locked here: viewheight,
+    // lean_*, move_diag_*, diag_*, ctrl_smooth_*, body_*, swing_*, stance_*,
+    // competitive_*, protocol/net/master/version_gate/short_version. Only VISUAL
+    // (fov/view_mode/aspect/widescreen/window/menu) and PERF (smoothness/fps) below
+    // remain editable. To change a locked value, rebuild the mod.
+    // -----------------------------------------------------------------------------
     {
         char buf[16];
         DWORD n = GetPrivateProfileStringA(
@@ -274,8 +209,17 @@ void load_config(HMODULE self_module) {
             "cod1reloaded", "frame_limiter_bias_us", "", buf, sizeof(buf), ini_path);
         if (n > 0) g_frame_limiter_config.deadline_bias_us = atoi(buf);
     }
-    g_fullscreen_config.force_windowed_default = read_ini_bool(
-        ini_path, "force_windowed_default", g_fullscreen_config.force_windowed_default);
+    {
+        // Friendly key "fullscreen = on/off"; internally force_windowed_default is its
+        // inverse (kept for back-compat). Old key still honored; `fullscreen` wins if set.
+        bool windowed = read_ini_bool(ini_path, "force_windowed_default",
+                                      g_fullscreen_config.force_windowed_default);
+        char probe[16];
+        if (GetPrivateProfileStringA("cod1reloaded", "fullscreen", "",
+                                     probe, sizeof(probe), ini_path) > 0)
+            windowed = !read_ini_bool(ini_path, "fullscreen", !windowed);
+        g_fullscreen_config.force_windowed_default = windowed;
+    }
     g_window_config.borderless_enable = read_ini_bool(
         ini_path, "window_borderless", g_window_config.borderless_enable);
     g_window_config.follow_current_monitor = read_ini_bool(
@@ -284,19 +228,37 @@ void load_config(HMODULE self_module) {
         ini_path, "window_minimize_on_focus_loss", g_window_config.minimize_on_focus_loss);
     {
         char buf[16];
+        // friendly "window_monitor" with back-compat "window_monitor_index"
         DWORD n = GetPrivateProfileStringA(
-            "cod1reloaded", "window_monitor_index", "", buf, sizeof(buf), ini_path);
+            "cod1reloaded", "window_monitor", "", buf, sizeof(buf), ini_path);
+        if (n == 0)
+            n = GetPrivateProfileStringA(
+                "cod1reloaded", "window_monitor_index", "", buf, sizeof(buf), ini_path);
         if (n > 0) g_window_config.preferred_monitor_index = atoi(buf);
     }
-    {
-        char buf[16];
-        DWORD n = GetPrivateProfileStringA(
-            "cod1reloaded", "lean_diag_log_count", "", buf, sizeof(buf), ini_path);
-        if (n > 0) g_lean_fix_config.diag_log_count = atoi(buf);
-    }
+    // lean_diag_log_count: HARDCODED to 0 (release, no diag logging)
 
-    g_widescreen_config.horplus_fov_enable = read_ini_bool(
-        ini_path, "widescreen_horplus_fov", g_widescreen_config.horplus_fov_enable);
+    {
+        // view_mode: classic (Vert-, old zoomed) / widescreen (Hor+ corrected) / stretched
+        // (4:3 stretched to fill the screen, wider models). Back-compat: derive the default
+        // from the old widescreen_fov / widescreen_horplus_fov bool.
+        const bool old_wide = read_ini_bool(ini_path, "widescreen_fov",
+            read_ini_bool(ini_path, "widescreen_horplus_fov", g_widescreen_config.horplus_fov_enable));
+        char def[16];
+        snprintf(def, sizeof(def), "%s", old_wide ? "widescreen" : "classic");
+        char vm[16];
+        read_ini_string(ini_path, "view_mode", vm, sizeof(vm), def);
+        if (!_stricmp(vm, "stretched")) {
+            g_widescreen_config.horplus_fov_enable = false;
+            g_widescreen_config.stretch_enable     = true;
+        } else if (!_stricmp(vm, "widescreen")) {
+            g_widescreen_config.horplus_fov_enable = true;
+            g_widescreen_config.stretch_enable     = false;
+        } else {  // classic
+            g_widescreen_config.horplus_fov_enable = false;
+            g_widescreen_config.stretch_enable     = false;
+        }
+    }
     g_widescreen_config.horplus_hook_caller2 = read_ini_bool(
         ini_path, "widescreen_horplus_hook_caller2", g_widescreen_config.horplus_hook_caller2);
 
@@ -314,26 +276,71 @@ void load_config(HMODULE self_module) {
                     g_avatar_overlay_config.test_url,
                     sizeof(g_avatar_overlay_config.test_url),
                     g_avatar_overlay_config.test_url);
+    // Display resolution — player-friendly keys (old widescreen_* names still honored).
     g_widescreen_config.force_resolution = read_ini_bool(
-        ini_path, "widescreen_force_resolution", g_widescreen_config.force_resolution);
-    g_widescreen_config.width = read_ini_int(
-        ini_path, "widescreen_width", g_widescreen_config.width);
-    g_widescreen_config.height = read_ini_int(
-        ini_path, "widescreen_height", g_widescreen_config.height);
+        ini_path, "force_resolution",
+        read_ini_bool(ini_path, "widescreen_force_resolution", g_widescreen_config.force_resolution));
+    {
+        // resolution = "WIDTHxHEIGHT" (e.g. 1920x1080). Falls back to the old
+        // widescreen_width / widescreen_height pair, then the compiled default.
+        char buf[32];
+        read_ini_string(ini_path, "resolution", buf, sizeof(buf), "");
+        int w = 0, h = 0;
+        if (buf[0] && (sscanf(buf, "%dx%d", &w, &h) == 2 ||
+                       sscanf(buf, "%d x %d", &w, &h) == 2 ||
+                       sscanf(buf, "%dX%d", &w, &h) == 2) && w > 0 && h > 0) {
+            g_widescreen_config.width  = w;
+            g_widescreen_config.height = h;
+        } else {
+            g_widescreen_config.width = read_ini_int(
+                ini_path, "widescreen_width", g_widescreen_config.width);
+            g_widescreen_config.height = read_ini_int(
+                ini_path, "widescreen_height", g_widescreen_config.height);
+        }
+    }
+    // NOTE: "refresh_rate" belongs to the in-game menu (it writes that key back itself,
+    // and supports MAX/DEFAULT). Do NOT read it here too - both paths would emit their
+    // own r_displayRefresh. This one stays on its own advanced key, only used by the
+    // force_resolution autoexec path.
     g_widescreen_config.refresh_hz = read_ini_int(
         ini_path, "widescreen_refresh_hz", g_widescreen_config.refresh_hz);
-    g_widescreen_config.custom_ratio = read_ini_float(
-        ini_path, "widescreen_custom_ratio", g_widescreen_config.custom_ratio);
     {
+        // aspect_ratio: "auto"/"4:3"/"16:9"/"16:10"/"21:9" or a number like "1.6".
+        // Replaces the old widescreen_aspect_mode + widescreen_custom_ratio pair; both old
+        // keys are still honored as the fallback default so existing configs keep working.
+        char oldmode[16];
+        read_ini_string(ini_path, "widescreen_aspect_mode", oldmode, sizeof(oldmode), "");
+        char def[16] = "auto";
+        if (!_stricmp(oldmode, "custom")) {
+            const float oc = read_ini_float(ini_path, "widescreen_custom_ratio",
+                                            g_widescreen_config.custom_ratio);
+            snprintf(def, sizeof(def), "%.4g", oc);
+        } else if (oldmode[0]) {
+            snprintf(def, sizeof(def), "%s", oldmode);
+        }
         char buf[16];
-        read_ini_string(ini_path, "widescreen_aspect_mode", buf, sizeof(buf), "auto");
-        if      (!_stricmp(buf, "auto"))   g_widescreen_config.aspect_mode = AspectMode::Auto;
-        else if (!_stricmp(buf, "4:3"))    g_widescreen_config.aspect_mode = AspectMode::R_4_3;
-        else if (!_stricmp(buf, "16:9"))   g_widescreen_config.aspect_mode = AspectMode::R_16_9;
-        else if (!_stricmp(buf, "16:10"))  g_widescreen_config.aspect_mode = AspectMode::R_16_10;
-        else if (!_stricmp(buf, "21:9"))   g_widescreen_config.aspect_mode = AspectMode::R_21_9;
-        else if (!_stricmp(buf, "custom")) g_widescreen_config.aspect_mode = AspectMode::Custom;
+        read_ini_string(ini_path, "aspect_ratio", buf, sizeof(buf), def);
+        widescreen_set_aspect(buf);
     }
+
+    // menu_*/fov_unlock (old settings_menu_* names still honored for back-compat).
+    g_settings_menu_config.enable = read_ini_bool(
+        ini_path, "menu_enable",
+        read_ini_bool(ini_path, "settings_menu_enable", g_settings_menu_config.enable));
+    g_settings_menu_config.toggle_key = read_ini_int(
+        ini_path, "menu_key",
+        read_ini_int(ini_path, "settings_menu_toggle_key", g_settings_menu_config.toggle_key));
+    g_settings_menu_config.fov_unlock = read_ini_bool(
+        ini_path, "fov_unlock",
+        read_ini_bool(ini_path, "settings_menu_fov_unlock", g_settings_menu_config.fov_unlock));
+    read_ini_string(ini_path, "refresh_rate",
+                    g_settings_menu_config.refresh_rate,
+                    sizeof(g_settings_menu_config.refresh_rate),
+                    g_settings_menu_config.refresh_rate);
+
+    // per-monitor hardware gamma (dual-screen light bug fix, cod2x port)
+    g_gamma_fix_config.enable = read_ini_bool(
+        ini_path, "gamma_fix_enable", g_gamma_fix_config.enable);
 
     g_discord_rpc_config.enable = read_ini_bool(
         ini_path, "discord_rpc_enable", g_discord_rpc_config.enable);

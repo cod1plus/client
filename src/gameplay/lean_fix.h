@@ -61,11 +61,13 @@ struct LeanFixConfig {
     int   diag_log_count;     // log first N invocations (0 = off)
 
     int   move_diag_fix;      // 0=off, 1=back_low, 2=+back_mid, 3=+back_up
+    bool  move_diag_lean_only;// only reproject while leaning (stops crouch+back head-dip)
     int   move_diag_parent;   // yawDiff mode (0=cod2x exact)
     float diag_k_pos;         // roll>=0 side (rig not mirrored)
     float diag_k_neg;         // roll<0 side
 
     float lean_diag_scale;    // 0=off, 1.0=cod2x
+    float lean_diag_right_scale;  // right-side mirror (no cod2x equivalent), 0=off
     float body_shift_lean_scale;
     float body_shift_right_scale;  // x on the right-lean body shift (weapon side)
 

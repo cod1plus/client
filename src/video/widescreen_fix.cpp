@@ -25,7 +25,13 @@ WidescreenConfig g_widescreen_config = {
     /* width                 */ 1920,
     /* height                */ 1080,
     /* refresh_hz            */ 0,
+    /* stretch_enable        */ false,
 };
+
+// Read by the two redirected `fild` instructions in CG_CalcViewValues (see the header).
+// external so -O2 keeps them; the vfov = f(g_stretch_h / g_stretch_w). Seeded nonzero
+// before any frame runs (install reads glConfig), so the fild never divides by zero.
+extern "C" { int g_stretch_w = 16; int g_stretch_h = 9; }
 
 namespace {
 
@@ -133,8 +139,7 @@ void write_autoexec_cfg() {
         fprintf(f, "seta r_mode \"-1\"\n");
         fprintf(f, "seta r_customwidth \"%d\"\n",  g_widescreen_config.width);
         fprintf(f, "seta r_customheight \"%d\"\n", g_widescreen_config.height);
-        fprintf(f, "seta r_aspectratio \"%g\"\n",
-                widescreen_get_aspect_ratio());
+        // note: CoD1 has no working r_aspectratio cvar (RE'd dead), so we don't write it.
     }
 
     if (want_refresh) {
@@ -263,11 +268,55 @@ bool patch_call_site(uintptr_t call_site, uintptr_t expected_target,
     return true;
 }
 
-bool install_horplus_hook(HMODULE cgame_module) {
-    if (!g_widescreen_config.horplus_fov_enable) {
-        logger::logf("widescreen: horplus hook disabled by config");
-        return true;
+// Redirect the two vfov `fild` operands (refdef.width/height) to our g_stretch_w/h ints.
+// Idempotent. After this, the per-frame vfov is computed from g_stretch_h/g_stretch_w,
+// which widescreen_update_stretch() drives (real dims = no change, or 4:3 = stretch).
+bool install_stretch_hook(HMODULE cgame_module) {
+    if (!cgame_module) return false;
+    const uintptr_t base = (uintptr_t)cgame_module;
+
+    struct Op { uintptr_t site_rva, orig_rva; void* target; };
+    // Each site must receive the variable matching the global it originally read:
+    // the fild @0x345e8 reads refdef.HEIGHT, the one @0x345ee reads refdef.WIDTH
+    // (proved by the FPU trace in the header). Feeding these the wrong way round is
+    // what turned stretched (4:3) into a 3:4 portrait aspect.
+    const Op ops[2] = {
+        { CGAME_VFOV_HEIGHT_OP_RVA, CGAME_REFDEF_HEIGHT_RVA, &g_stretch_h },
+        { CGAME_VFOV_WIDTH_OP_RVA,  CGAME_REFDEF_WIDTH_RVA,  &g_stretch_w },
+    };
+
+    // seed the ints from live glConfig so the fild is valid before the first frame
+    const int vw = *(const int*)(base + CGAME_VIDWIDTH_RVA);
+    const int vh = *(const int*)(base + CGAME_VIDHEIGHT_RVA);
+    g_stretch_w = (vw > 0) ? vw : 16;
+    g_stretch_h = (vh > 0) ? vh : 9;
+
+    bool ok = true;
+    for (int i = 0; i < 2; i++) {
+        uint32_t* operand   = (uint32_t*)(base + ops[i].site_rva);
+        const uint32_t ours = (uint32_t)(uintptr_t)ops[i].target;
+        const uint32_t orig = (uint32_t)(base + ops[i].orig_rva);
+        if (*operand == ours) continue;            // already ours (idempotent)
+        if (*operand != orig) {                    // not what we expected -> don't touch
+            logger::logf("widescreen: stretch operand %d @0x%x = 0x%08x (expected 0x%08x), skip",
+                         i, (unsigned)(base + ops[i].site_rva), *operand, orig);
+            ok = false; continue;
+        }
+        DWORD old = 0;
+        if (!VirtualProtect(operand, 4, PAGE_EXECUTE_READWRITE, &old)) { ok = false; continue; }
+        *operand = ours;
+        VirtualProtect(operand, 4, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), operand, 4);
     }
+    logger::logf("widescreen: stretch operands redirected (%s), seed dims %dx%d",
+                 ok ? "ok" : "PARTIAL", g_stretch_w, g_stretch_h);
+    return ok;
+}
+
+bool install_horplus_hook(HMODULE cgame_module) {
+    // Always install the hook (idempotent) so the in-game menu can toggle Hor+ live
+    // both ways; the runtime check in apply_horplus_fov gates the actual correction,
+    // so with horplus disabled the wrapper returns the vanilla fov unchanged.
     if (!cgame_module) return false;
 
     const uintptr_t base    = (uintptr_t)cgame_module;
@@ -309,6 +358,38 @@ float widescreen_get_aspect_ratio() {
                            g_widescreen_config.custom_ratio);
 }
 
+void widescreen_set_aspect(const char* s) {
+    if (!s || !*s) return;
+    if      (!_stricmp(s, "auto"))  g_widescreen_config.aspect_mode = AspectMode::Auto;
+    else if (!_stricmp(s, "4:3"))   g_widescreen_config.aspect_mode = AspectMode::R_4_3;
+    else if (!_stricmp(s, "16:9"))  g_widescreen_config.aspect_mode = AspectMode::R_16_9;
+    else if (!_stricmp(s, "16:10")) g_widescreen_config.aspect_mode = AspectMode::R_16_10;
+    else if (!_stricmp(s, "21:9"))  g_widescreen_config.aspect_mode = AspectMode::R_21_9;
+    else {
+        // a bare number = custom aspect ratio (e.g. "1.6")
+        char* end = nullptr;
+        const float f = strtof(s, &end);
+        if (end != s && f > 0.5f && f < 5.0f) {
+            g_widescreen_config.aspect_mode  = AspectMode::Custom;
+            g_widescreen_config.custom_ratio = f;
+        }
+        // otherwise leave unchanged (ignore garbage input)
+    }
+}
+
+void widescreen_get_aspect(char* out, size_t n) {
+    if (!out || n == 0) return;
+    switch (g_widescreen_config.aspect_mode) {
+        case AspectMode::Auto:    snprintf(out, n, "auto");  break;
+        case AspectMode::R_4_3:   snprintf(out, n, "4:3");   break;
+        case AspectMode::R_16_9:  snprintf(out, n, "16:9");  break;
+        case AspectMode::R_16_10: snprintf(out, n, "16:10"); break;
+        case AspectMode::R_21_9:  snprintf(out, n, "21:9");  break;
+        case AspectMode::Custom:  snprintf(out, n, "%.4g", g_widescreen_config.custom_ratio); break;
+        default:                  snprintf(out, n, "auto");  break;
+    }
+}
+
 float widescreen_horplus_hfov(float cg_fov_43, float actual_aspect) {
     // vfov the 4:3 setup would have, then re-derive hfov for actual_aspect
     const float vfov_rad = 2.0f * atanf(
@@ -337,13 +418,54 @@ void widescreen_fix_apply() {
                      fov80_horplus, fov90_horplus);
     }
 
-    write_autoexec_cfg();
-    ensure_exec_line_in_config_mp();
+    // The player's own config wins: only generate the helper cfg (and touch their
+    // config_mp.cfg) when they actually asked us to force something. With the shipped
+    // defaults nothing is forced, so we leave their files completely untouched.
+    if (g_widescreen_config.force_resolution || g_widescreen_config.refresh_hz > 0) {
+        write_autoexec_cfg();
+        ensure_exec_line_in_config_mp();
+    } else {
+        logger::logf("widescreen: nothing forced -> player's config_mp.cfg left untouched");
+    }
     // hook itself applied later via widescreen_apply_to_cgame() once cgame loads
 }
 
 bool widescreen_apply_to_cgame(HMODULE cgame_module) {
-    return install_horplus_hook(cgame_module);
+    // "classic" = the player's own config wins: install NOTHING. Previously both hooks
+    // were installed unconditionally (so the in-game menu could toggle them live), which
+    // meant the FOV path was patched even for players who asked for vanilla behaviour -
+    // and any mistake in those constants then changed everyone's FOV. With neither mode
+    // enabled we now leave cgame's FOV code completely alone; switching mode from the
+    // menu takes effect on the next map load (the watcher re-runs this on cgame reload).
+    if (!g_widescreen_config.horplus_fov_enable && !g_widescreen_config.stretch_enable) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            logger::logf("widescreen: view_mode=classic -> no FOV hook installed "
+                         "(vanilla rendering, player's config untouched)");
+        }
+        return true;
+    }
+    const bool a = install_horplus_hook(cgame_module);
+    const bool b = install_stretch_hook(cgame_module);
+    return a && b;
+}
+
+// Called every watcher tick. When stretched: force a 4:3 ratio into the vfov calc so the
+// widescreen buffer gets a 4:3 vertical FOV -> horizontal stretch. Otherwise feed the real
+// framebuffer dims so vfov is unchanged (identical to vanilla). Live, no vid_restart.
+void widescreen_update_stretch() {
+    if (g_widescreen_config.stretch_enable) {
+        g_stretch_w = 4;
+        g_stretch_h = 3;
+        return;
+    }
+    HMODULE cgame = GetModuleHandleA("cgame_mp_x86.dll");
+    if (!cgame) return;
+    const uintptr_t base = (uintptr_t)cgame;
+    const int vw = *(const int*)(base + CGAME_VIDWIDTH_RVA);
+    const int vh = *(const int*)(base + CGAME_VIDHEIGHT_RVA);
+    if (vw > 0 && vh > 0) { g_stretch_w = vw; g_stretch_h = vh; }
 }
 
 }  // namespace patches

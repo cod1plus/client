@@ -164,10 +164,39 @@ bool make_borderless(HWND hwnd) {
             WS_EX_WINDOWEDGE);
     SetWindowLongA(hwnd, GWL_EXSTYLE, ex);
 
-    const int x = mi.rcMonitor.left;
-    const int y = mi.rcMonitor.top;
-    const int w = mi.rcMonitor.right  - mi.rcMonitor.left;
-    const int h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    int x = mi.rcMonitor.left;
+    int y = mi.rcMonitor.top;
+    int w = mi.rcMonitor.right  - mi.rcMonitor.left;
+    int h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+
+    // The renderer's backbuffer is whatever size the engine created the window at
+    // (r_mode / r_customwidth+height). Blindly stretching the window to the monitor
+    // leaves the rendered image pinned to one corner and the rest of the window black:
+    // e.g. r_customwidth 1440 on a 1920 monitor = a 480px black band on the right.
+    // That is exactly what happened after a vid_restart, because on the first apply the
+    // engine had switched the DISPLAY MODE to 1440x1080 (so monitor == backbuffer), and
+    // after the restart the desktop was back to 1920 while the backbuffer stayed 1440.
+    // So: only fill the monitor when the backbuffer actually covers it; otherwise keep
+    // the backbuffer size and CENTER it (symmetric bars instead of a one-sided band).
+    // Self-correcting: the engine resizes the window on a real mode change, and we read
+    // the client rect fresh on every apply.
+    // REVERTED 2026-07-24: an attempt to center the window on the backbuffer size (to
+    // avoid the one-sided black band when the game renders smaller than the monitor)
+    // broke fullscreen even at native resolution - GetClientRect at this point does not
+    // reliably report the final backbuffer size. Back to filling the monitor, which is
+    // the known-good behaviour. The black band is a RESOLUTION MISMATCH: fix it by
+    // running the game at the monitor's resolution (view_mode=stretched then gives the
+    // 4:3 look without changing the render size). Only diagnose it here, never resize.
+    {
+        RECT cr;
+        if (GetClientRect(hwnd, &cr)) {
+            const int rw = cr.right - cr.left, rh = cr.bottom - cr.top;
+            if (rw >= 640 && rh >= 480 && (rw < w || rh < h))
+                logger::logf("window_patch: NOTE backbuffer %dx%d < monitor %dx%d - the "
+                             "unused area will be black; set the game's resolution to "
+                             "%dx%d to fill the screen", rw, rh, w, h, w, h);
+        }
+    }
 
     if (!SetWindowPos(hwnd, HWND_TOP, x, y, w, h,
                       SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOOWNERZORDER)) {

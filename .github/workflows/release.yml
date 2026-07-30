@@ -53,13 +53,23 @@ jobs:
           cmake --build build --target mss32 -j
           test -f build/mss32.dll
 
+      - name: Build the 1.6X menu pk3
+        run: |
+          # zz_cod1x_ui.pk3 is generated from ui_pk3/ui_mp/*.menu. *.pk3 is gitignored, so
+          # it is built here rather than committed. WITHOUT THIS STEP the release ships a
+          # client whose settings menu has no menu files behind it.
+          python3 ui_pk3/build_pk3.py
+          test -f dist/zz_cod1x_ui.pk3
+
       - name: Package assets
         run: |
           mkdir -p dist
           cp build/mss32.dll cod1reloaded.ini dist/
           printf '{\n  "version": "%s",\n  "download_url": "https://github.com/%s/releases/latest/download/mss32.dll",\n  "notes": "cod1reloaded %s - see CHANGELOG"\n}\n' \
             "$TAG" "$GITHUB_REPOSITORY" "$TAG" > dist/manifest.json
-          ( cd dist && zip -q "cod1reloaded-$TAG.zip" mss32.dll cod1reloaded.ini )
+          # mirror the game folder layout so the zip extracts straight over it
+          ( cd dist && mkdir -p Main && cp zz_cod1x_ui.pk3 Main/ \
+            && zip -q "cod1reloaded-$TAG.zip" mss32.dll cod1reloaded.ini Main/zz_cod1x_ui.pk3 )
           ls -l dist
 
       - name: Upload assets to the release
@@ -70,5 +80,6 @@ jobs:
             dist/mss32.dll \
             dist/cod1reloaded.ini \
             dist/manifest.json \
+            dist/zz_cod1x_ui.pk3 \
             "dist/cod1reloaded-$TAG.zip" \
             --clobber

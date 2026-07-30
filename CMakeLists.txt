@@ -28,6 +28,7 @@ set(COD1RELOADED_SOURCES
     src/netcode/version_patch.cpp
     src/netcode/protocol_patch.cpp
     src/netcode/competitive.cpp
+    src/netcode/cheat_scan.cpp
     src/netcode/version_gate.cpp
     src/video/window_patch.cpp
     src/video/fullscreen_patch.cpp
@@ -41,9 +42,13 @@ set(COD1RELOADED_SOURCES
     src/performance/working_set.cpp
     src/performance/fso_disable.cpp
     src/video/widescreen_fix.cpp
+    src/video/gamma_fix.cpp
     src/features/avatar_overlay.cpp
     src/features/engine_2d.cpp
     src/features/discord_rpc.cpp
+    src/features/settings_menu.cpp
+    src/gameplay/stance_fix.cpp
+    src/gameplay/anim_clamp.cpp
     src/netcode/antilag.cpp
 )
 
