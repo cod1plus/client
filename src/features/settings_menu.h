@@ -7,14 +7,10 @@
 namespace patches {
 
 // In-game "1.6X SETTINGS" menu bridge: registers cvars the ui_mp/cod1x_settings.menu
-// binds to (FOV + screen ratio), unlocks cg_fov, opens the menu on a hotkey, and
+// binds to (FOV + screen ratio), unlocks cg_fov, and
 // mirrors live changes back into cod1reloaded.ini.
 struct SettingsMenuConfig {
     bool enable       = true;
-    int  toggle_key   = 0;      // 0 = no hotkey. The menu is reached from the main
-                                // menu; an in-game hotkey fired during play (and
-                                // INSERT is bindable by players). Set menu_key in
-                                // the .ini to a VK code to re-enable one.
     bool fov_unlock   = true;   // patch cgame so cg_fov isn't cheat-locked/clamped to 80
     char menu_name[48] = "cod1x_settings";
     char menu_file[96] = "ui_mp/cod1x_settings.menu";

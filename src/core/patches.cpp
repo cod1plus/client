@@ -327,9 +327,6 @@ void load_config(HMODULE self_module) {
     g_settings_menu_config.enable = read_ini_bool(
         ini_path, "menu_enable",
         read_ini_bool(ini_path, "settings_menu_enable", g_settings_menu_config.enable));
-    g_settings_menu_config.toggle_key = read_ini_int(
-        ini_path, "menu_key",
-        read_ini_int(ini_path, "settings_menu_toggle_key", g_settings_menu_config.toggle_key));
     g_settings_menu_config.fov_unlock = read_ini_bool(
         ini_path, "fov_unlock",
         read_ini_bool(ini_path, "settings_menu_fov_unlock", g_settings_menu_config.fov_unlock));

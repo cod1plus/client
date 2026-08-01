@@ -332,38 +332,10 @@ bool poke_byte(uintptr_t va, uint8_t expect, uint8_t val) {
     return true;
 }
 
-// press-edge + toggle. Uses ui_cod1x_open (set by the menu's onOpen/onClose) to decide
-// whether the key should open or close. Only reacts when the game window is focused.
-void poll_toggle_key() {
-    const int vk = g_settings_menu_config.toggle_key;
-    if (vk <= 0) return;
-
-    static bool was_down = false;
-    const bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
-    if (down && !was_down) {
-        HWND game = get_game_window();
-        HWND fg   = GetForegroundWindow();
-        if (!game || fg == game) {
-            void* open_cv = Cvar_FindVar("cod1x_menu_open");
-            const bool is_open = open_cv &&
-                *(int*)((char*)open_cv + CVAR_OFF_INTEGER) != 0;
-            if (is_open) {
-                char cmd[128];
-                // either page may be the open one — close both
-                snprintf(cmd, sizeof(cmd), "close cod1x_files\nclose %s\n",
-                         g_settings_menu_config.menu_name);
-                Cbuf_ExecuteText(EXEC_APPEND, cmd);
-            } else {
-                char cmd[288];
-                snprintf(cmd, sizeof(cmd),
-                         "loadmenu %s\nloadmenu ui_mp/cod1x_files.menu\nopen %s\n",
-                         g_settings_menu_config.menu_file, g_settings_menu_config.menu_name);
-                Cbuf_ExecuteText(EXEC_APPEND, cmd);
-            }
-        }
-    }
-    was_down = down;
-}
+// NO IN-GAME HOTKEY. A global key poll fires while the player is aiming, shooting
+// or typing, and any key we pick (INSERT included) is one a player may have bound
+// to something else - it caused more trouble than it solved. The settings menu is
+// reached from the MAIN MENU only. Removed on purpose; do not add it back.
 
 }  // namespace
 
@@ -372,8 +344,7 @@ void settings_menu_start() {
         logger::logf("settings_menu: disabled");
         return;
     }
-    logger::logf("settings_menu: enabled (toggle key 0x%02x, fov_unlock=%d, menu=%s)",
-                 g_settings_menu_config.toggle_key,
+    logger::logf("settings_menu: enabled (no hotkey, fov_unlock=%d, menu=%s)",
                  g_settings_menu_config.fov_unlock,
                  g_settings_menu_config.menu_name);
 }
@@ -528,7 +499,6 @@ void settings_menu_tick() {
     }
 
     // (4) hotkey open/close
-    poll_toggle_key();
 }
 
 }  // namespace patches
