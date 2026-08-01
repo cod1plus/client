@@ -19,7 +19,10 @@ FrameLimiterConfig g_frame_limiter_config = {
 namespace {
 
 LARGE_INTEGER g_qpc_freq = {0};
-LONGLONG      g_last_frame_qpc = 0;
+LONGLONG      g_next_deadline = 0;   // theoretical, NOT the last wake time
+LONGLONG      g_deadline_met  = 0;   // the deadline this frame satisfied
+LONGLONG      g_step_frac = 0;       // running remainder of freq/maxfps
+int           g_last_maxfps = 0;
 bool          g_applied = false;
 
 int read_com_maxfps_dvar() {
@@ -48,29 +51,69 @@ extern "C" int __cdecl frame_wait_replacement() {
 
     int maxfps = read_com_maxfps_dvar();
 
-    if (maxfps > 0 && maxfps <= 10000 && g_last_frame_qpc > 0) {
-        const LONGLONG ticks_per_frame = g_qpc_freq.QuadPart / maxfps;
+    if (maxfps > 0 && maxfps <= 10000) {
+        // EXACT frame step: freq/maxfps rarely divides evenly, and truncating loses a
+        // fraction of a tick every frame - visible as a permanent 1-2 fps shortfall.
+        // Carry the remainder so the average is exactly maxfps.
+        const LONGLONG step_int = g_qpc_freq.QuadPart / maxfps;
+        const LONGLONG step_rem = g_qpc_freq.QuadPart % maxfps;
         const LONGLONG bias_ticks = (LONGLONG)g_frame_limiter_config.deadline_bias_us
                                     * g_qpc_freq.QuadPart / 1000000LL;
-        const LONGLONG deadline = g_last_frame_qpc + ticks_per_frame + bias_ticks;
 
+        if (maxfps != g_last_maxfps || g_next_deadline == 0) {
+            g_last_maxfps   = maxfps;
+            g_step_frac     = 0;
+            g_next_deadline = now.QuadPart + step_int + bias_ticks;
+        }
+
+        g_deadline_met = g_next_deadline;   // the tick we hand back as "now"
+        const LONGLONG deadline = g_next_deadline;
         while (now.QuadPart < deadline) {
-            // sleep with slack, spin the last <1.5ms
             const LONGLONG remaining_us =
                 ((deadline - now.QuadPart) * 1000000LL) / g_qpc_freq.QuadPart;
-            if (remaining_us > 1500) {
+            // Sleep(1) can overshoot well past a millisecond even at 1ms timer
+            // resolution; at 250fps the whole frame is 4ms, so only sleep while
+            // there is real slack and spin the tail.
+            if (remaining_us > 2500) {
                 Sleep(1);
             } else {
                 _mm_pause();
             }
             QueryPerformanceCounter(&now);
         }
-    }
-    g_last_frame_qpc = now.QuadPart;
 
-    // ms from QPC. engine stores at [0x01912ad0], compares vs [0x008eda90]; consistent
-    // call-to-call so the diff exits the loop. (physics breakage was server sv_fps, not this)
-    return (int)((now.QuadPart * 1000) / g_qpc_freq.QuadPart);
+        // ANCHOR ON THE DEADLINE, not on the wake time: waking late is normal (sleep
+        // granularity, scheduling) and re-anchoring on it made every frame start its
+        // budget late, so the rate drifted permanently below the target - the
+        // "248 instead of 250" flicker. Advancing the theoretical clock instead makes
+        // a late frame steal from the next one and the average stay exact.
+        LONGLONG step = step_int;
+        g_step_frac += step_rem;
+        if (g_step_frac >= maxfps) { g_step_frac -= maxfps; step += 1; }
+        g_next_deadline += step;
+
+        // Hitch / alt-tab / map load: if we fell more than a few frames behind, do not
+        // sprint to catch up - restart the cadence from now.
+        if (now.QuadPart > g_next_deadline + 4 * step_int) {
+            g_next_deadline = now.QuadPart + step_int + bias_ticks;
+            g_step_frac = 0;
+            g_deadline_met = now.QuadPart;   // resync: fall back to real time
+        }
+    } else {
+        g_next_deadline = 0;
+        g_deadline_met  = 0;
+    }
+
+    // Hand back the THEORETICAL tick we just waited for, not the actual wake time.
+    // The engine derives frame time - and everything paced by it - from the delta
+    // between successive returns of this function, in whole milliseconds. Real wake
+    // times wander by a few microseconds, and truncating them to ms turns that into a
+    // 3/4/5 ms jitter: the frame counter reads a locked 250 while the pacing visibly
+    // shimmers. The deadline clock advances by exactly one frame step every frame, so
+    // the deltas are uniform. It tracks real time (it is built from it and resyncs
+    // after any hitch), so engine timing stays honest.
+    const LONGLONG t = (g_deadline_met > 0) ? g_deadline_met : now.QuadPart;
+    return (int)((t * 1000) / g_qpc_freq.QuadPart);
 }
 
 bool apply_frame_limiter_patch() {

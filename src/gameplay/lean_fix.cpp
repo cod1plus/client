@@ -51,7 +51,10 @@ LeanFixConfig g_lean_fix_config = {
     // it from leanf + stance, which are values both sides already have, so no network
     // sync is involved. See LEAN_BODY_SHIFT_* there - THE TWO MUST STAY IN STEP.
     /* body_shift_lean_scale */ 1.0f,
-    /* body_shift_right_scale*/ 3.0f,   // right-lean shows too little body in CoD1
+    // 2.0 = the value the players actually validated (last .ini before the hardcode
+    // migration). It was bumped to 3.0 mid-firefight on 2026-07-30 without validation;
+    // audit 2026-07-31 reverts it. MUST equal PB_BODY_SHIFT_RIGHT_SCALE server-side.
+    /* body_shift_right_scale*/ 2.0f,
     /* body_yaw_lock         */ 1.0f,
     /* ctrl_smooth_enable    */ true,
     /* ctrl_smooth_time      */ 250,

@@ -1,5 +1,35 @@
 # cod1reloaded — Changelog
 
+## v1.6.3 (2026-07-31)
+
+### 🎯 Hitbox des joueurs penchés
+- **Refonte complète du calcul des impacts sur un joueur qui lean.** Le squelette
+  testé par le serveur est désormais posé à chaque tir et aligné sur le modèle que
+  tu vois à l'écran : tirer sur la tête visible d'un joueur penché compte enfin
+  comme un headshot, debout comme accroupi.
+- **Fini les impacts fantômes** : plus de dégâts à côté du corps, plus de tir qui
+  compte sur la silhouette « debout » d'un joueur penché, plus de balle qui touche
+  à côté des jambes.
+- **Plus de balles avalées** : un tir qui touche vraiment le corps ne peut plus
+  être annulé en silence.
+- Le tireur ne peut plus se toucher lui-même en leanant ; les joueurs à plat ventre
+  et les morts ne bloquent plus les balles.
+
+### ⏱️ Limiteur de FPS
+- **Cadence réellement stable** à la valeur choisie (250 ou 125) : fini le
+  248-250 qui oscillait, et le scénario de jeu ne « scintille » plus.
+
+### 🔒 Client ↔ serveur
+- **Correction majeure** : les informations envoyées par le client au serveur
+  (version du mod, rapport anti-triche) n'arrivaient jamais à destination — un
+  drapeau interne erroné les publiait dans le mauvais canal. La vérification de
+  version et le contrôle anti-triche côté serveur sont donc **opérationnels pour
+  la première fois**.
+- Le serveur peut suivre automatiquement la dernière version publiée sur GitHub et
+  refuser les clients périmés, sans intervention manuelle.
+- **Règles de jeu équitable** poussées par le serveur à tous les clients du mod
+  (fps, snaps, cl_maxpackets, rate, réglages graphiques avantageux…).
+
 ## v1.6 — BÊTA DE TEST (2026-06-30)
 
 > ⚠️ **Build BÊTA destinée aux tests communautaires.** Merci de remonter tout bug

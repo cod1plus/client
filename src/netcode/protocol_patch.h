@@ -34,7 +34,15 @@ extern int  g_net_version;                      // ini: net_version (16 = "1.6")
 // CoD1 Cvar API (CoDMP.exe @0x400000), RE'd:
 constexpr uintptr_t CODMP_CVAR_GET_VA   = 0x0043b880; // cvar_t* Cvar_Get(name, def, flags) cdecl
 constexpr uintptr_t CODMP_CVAR_COUNT_VA = 0x01912aec; // cvar count (>0 once cvar system is up)
-constexpr int       CVAR_USERINFO       = 0x01;
+// idTech3 cvar flags. USERINFO is 0x02, NOT 0x01 - 0x01 is ARCHIVE. Proven from
+// CoDMP.exe itself: the engine registers `snaps` and `rate` (both userinfo cvars)
+// with `push 3` = ARCHIVE|USERINFO, and `cl_maxpackets` (archive only) with `push 1`.
+// With the old 0x01 value every cvar we published as "userinfo" was really archive-
+// only, so it NEVER reached the server: that is why cod1x_ac always logged
+// "no cod1x_ac report (old client?)" even for an up-to-date client, and why the
+// server-side version gate never saw a build number.
+constexpr int       CVAR_ARCHIVE        = 0x01;
+constexpr int       CVAR_USERINFO       = 0x02;
 constexpr int       CVAR_ROM            = 0x40;
 
 bool apply_protocol_patch();        // protocol bump + master repoint in CoDMP.exe

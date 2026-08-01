@@ -8,13 +8,20 @@
 
 namespace patches {
 
+// RESTORED (enzo 2026-07-31): the vanilla revert killed the validated feel. These
+// values make the drawn torso/lean track the VIEW instantly (no dead zone) — which
+// desyncs the drawing from the server's vanilla-swing hit skeleton by up to ~10u on
+// leaners. The server-side counterpart (cod1plushookserver) must therefore FORCE its
+// swing state to the view before posing for bullet tests: with the client locked to
+// the view, the drawn pose is a pure function of the view angles — reproducible
+// server-side with no history. THE TWO SIDES MUST STAY IN STEP.
 SwingFixConfig g_swing_fix_config = {
     /* enable             */ true,
     /* legs_tolerance     */ 0.0f,   // vanilla 40.0
-    /* torso_pitch_speed  */ 1.0f,   // vanilla 0.15
+    /* torso_pitch_speed  */ 1.0f,   // vanilla 0.15 (really the LEAN swing channel)
 };
 
-// torso yaw swingSpeed, read by redirected mov (patch 3). 1.0=locked to view, ~0.15=vanilla swing
+// torso yaw swingSpeed, read by redirected mov (patch 3). 1.0=locked to view, ~0.2=vanilla
 extern "C" float g_torso_yaw_speed_live = 1.0f;
 
 // movementYaw fraction added to torso yaw target, read by redirected fmul (patch 4). 0=lock to view, 0.3=vanilla

@@ -5,7 +5,7 @@
 
 namespace patches {
 
-constexpr const char* COD1RELOADED_VERSION = "1.6.2";
+constexpr const char* COD1RELOADED_VERSION = "1.6.3";
 
 struct UpdaterConfig {
     bool        enable;
