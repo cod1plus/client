@@ -136,11 +136,32 @@ void remember_locked(const char* name) {
 //     name=min:max      -> clamp the cvar into [min,max] (player picks inside)
 // Empty / cvar absent  -> not in competitive mode. We pre-register it (init) so it
 // always exists locally and systeminfo just updates its value.
+// The engine refuses a cvar value over MAX_CVAR_VALUE_STRING (256) - it aborts the
+// SERVER on the next map change - so a long spec is split across sv_competitive,
+// sv_competitive2, ... Read them all back and join them with a space.
+constexpr int SPEC_PARTS = 4;
+constexpr int SPEC_JOINED_MAX = 1024;
+
 const char* read_spec() {
-    void* cv = cv_find("sv_competitive");
-    if (!cv) return "";
-    const char* s = *(const char**)((char*)cv + COMP_CVAR_STRING);
-    return s ? s : "";
+    static char joined[SPEC_JOINED_MAX];
+    joined[0] = 0;
+    size_t len = 0;
+    for (int i = 0; i < SPEC_PARTS; ++i) {
+        char nm[32];
+        if (i == 0) snprintf(nm, sizeof(nm), "sv_competitive");
+        else        snprintf(nm, sizeof(nm), "sv_competitive%d", i + 1);
+        void* cv = cv_find(nm);
+        if (!cv) continue;
+        const char* s = *(const char**)((char*)cv + COMP_CVAR_STRING);
+        if (!s || !s[0]) continue;
+        const size_t n = strlen(s);
+        if (len + n + 2 >= sizeof(joined)) break;
+        if (len) joined[len++] = ' ';
+        memcpy(joined + len, s, n);
+        len += n;
+        joined[len] = 0;
+    }
+    return joined;
 }
 
 // Apply one "name=..." token. Returns nothing; only touches cvars that exist locally
@@ -166,9 +187,17 @@ void competitive_force_cvars() {
     // CODMP_CVAR_COUNT_VA > 0, so the engine is ready. Ensures the cvar exists locally so
     // the server's systeminfo just updates its value.
     static bool s_registered = false;
-    if (!s_registered) { s_registered = true; cv_get("sv_competitive", "", 0); }
+    if (!s_registered) {
+        s_registered = true;
+        for (int i = 0; i < SPEC_PARTS; ++i) {
+            char nm[32];
+            if (i == 0) snprintf(nm, sizeof(nm), "sv_competitive");
+            else        snprintf(nm, sizeof(nm), "sv_competitive%d", i + 1);
+            cv_get(nm, "", 0);
+        }
+    }
 
-    static char  s_applied[256] = "";   // last spec we acted on (detect changes)
+    static char  s_applied[SPEC_JOINED_MAX] = "";   // last spec we acted on (detect changes)
     static DWORD s_last = 0;
     const  DWORD now = GetTickCount();
 
@@ -197,7 +226,7 @@ void competitive_force_cvars() {
     }
 
     // parse "name=rhs" tokens separated by spaces
-    char buf[256];
+    char buf[SPEC_JOINED_MAX];
     strncpy(buf, spec, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = 0;
     for (char* tok = strtok(buf, " \t"); tok; tok = strtok(nullptr, " \t")) {
