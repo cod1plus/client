@@ -1,5 +1,18 @@
 # cod1reloaded — Changelog
 
+## Non publié
+
+### 🖥️ Résolutions personnalisées / stretch
+- **Correction** : une résolution personnalisée plus grande que ton bureau
+  (2128x1330, 1776x1332… sur un écran 1080p) était tout simplement ignorée. Seul
+  le plein écran exclusif peut changer le mode d'affichage ; le mod démarrait en
+  fenêtre sans bordure, où une telle résolution ne peut pas tenir. Le mod détecte
+  maintenant le cas au lancement et **repasse en plein écran tout seul**.
+- Une résolution plus **petite** que le bureau (1440x1080 par exemple) fonctionne
+  en fenêtre mais n'est **pas étirée par le GPU** : le mod l'écrit désormais dans
+  `cod1reloaded.log` au lieu de laisser chercher.
+- `cod1reloaded.ini` explique la règle en clair dans la section DISPLAY.
+
 ## v1.6.3 (2026-07-31)
 
 ### 🎯 Hitbox des joueurs penchés

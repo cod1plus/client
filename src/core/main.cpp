@@ -15,6 +15,7 @@
 #include "netcode/version_gate.h"
 #include "video/window_patch.h"
 #include "video/fullscreen_patch.h"
+#include "video/display_probe.h"
 #include "performance/fps_cap.h"
 #include "performance/frame_limiter.h"
 #include "features/updater.h"
@@ -159,6 +160,11 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
 
             // competitive: lift snaps (server-side) + cl_maxpackets (client-side) caps for real 40-tick
             patches::apply_competitive_caps();
+
+            // A resolution the desktop is not already in can ONLY be presented by an
+            // exclusive-fullscreen mode switch. Must run before the two patches below,
+            // which it can turn off for this launch.
+            patches::display_mode_guard();
 
             // r_fullscreen default "0"; window_patch then makes it borderless (alt-tab works)
             patches::apply_fullscreen_patch();

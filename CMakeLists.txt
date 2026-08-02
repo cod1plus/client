@@ -32,6 +32,7 @@ set(COD1RELOADED_SOURCES
     src/netcode/version_gate.cpp
     src/video/window_patch.cpp
     src/video/fullscreen_patch.cpp
+    src/video/display_probe.cpp
     src/performance/fps_cap.cpp
     src/performance/frame_limiter.cpp
     src/features/updater.cpp

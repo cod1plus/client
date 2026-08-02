@@ -13,6 +13,7 @@
 #include "features/settings_menu.h"
 #include "video/widescreen_fix.h"     // g_widescreen_config, AspectMode
 #include "video/window_patch.h"       // get_game_window()
+#include "video/display_probe.h"      // resolution_for_r_mode()
 #include "netcode/protocol_patch.h"   // CODMP_CVAR_GET_VA, CODMP_CVAR_COUNT_VA
 #include "netcode/competitive.h"      // CODMP_CVAR_SET_VA
 #include "core/logger.h"
@@ -73,19 +74,13 @@ const char* viewmode_apply(int v) {
 // fallback if the mode fails). "max" = highest Hz the display supports at the game's
 // resolution (r_mode table / r_customwidth), else the highest it supports at all.
 
-// Q3-lineage r_mode table (CoD1 default r_mode 3 = 640x480).
-constexpr int VIDMODES[][2] = {
-    {320,240},{400,300},{512,384},{640,480},{800,600},{960,720},{1024,768},
-    {1152,864},{1280,1024},{1600,1200},{2048,1536},{856,480}
-};
-
 int resolve_max_hz() {
     int gw = 0, gh = 0;
     void* mode = Cvar_FindVar("r_mode");
     if (mode) {
         const int m = *(int*)((char*)mode + CVAR_OFF_INTEGER);
-        if (m >= 0 && m < (int)(sizeof(VIDMODES)/sizeof(VIDMODES[0]))) {
-            gw = VIDMODES[m][0]; gh = VIDMODES[m][1];
+        if (resolution_for_r_mode(m, &gw, &gh)) {
+            // resolved from the r_mode table
         } else if (m == -1) {
             void* cw = Cvar_FindVar("r_customwidth");
             void* ch = Cvar_FindVar("r_customheight");
