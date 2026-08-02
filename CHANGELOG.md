@@ -1,6 +1,22 @@
 # cod1reloaded — Changelog
 
-## Non publié
+## v1.6.4 (2026-08-02)
+
+### 🧍 Up / down
+- **Retour au comportement de la 1.6.0**, celui qui avait été validé au lancement.
+  En 1.6.3 le modèle suivait de trop près un joueur qui spamme accroupi, et ça se
+  lisait comme du clignotement (« on voit le joueur briller »). Un modèle lent et
+  lisible est justement ce qui rend l'abus d'up-down punissable.
+- **Correction du limiteur de FPS** : il renvoyait au moteur une horloge théorique
+  au lieu du temps réel. C'est l'horloge qui sert à l'interpolation des snapshots,
+  au blending d'animation et aux transitions de posture — elle dérivait de la
+  timeline réseau et faisait scintiller les modèles adverses, y compris ceux qui
+  ne spammaient rien.
+
+### ⌨️ Menu 1.6X
+- **La touche INSERT est totalement supprimée.** Le sondage clavier global se
+  déclenchait pendant que tu vises, tires ou écris. Le menu s'ouvre désormais
+  uniquement depuis le MENU PRINCIPAL.
 
 ### 🖱️ Raw input souris (`m_rinput`)
 - **Portage du `m_rinput` de cod2x.** La souris est lue directement sur le
@@ -24,6 +40,11 @@
   en fenêtre mais n'est **pas étirée par le GPU** : le mod l'écrit désormais dans
   `cod1reloaded.log` au lieu de laisser chercher.
 - `cod1reloaded.ini` explique la règle en clair dans la section DISPLAY.
+
+### 🔒 Règles de jeu équitable
+- Le serveur peut désormais pousser une **liste de réglages beaucoup plus longue**
+  (découpée en plusieurs cvars). Au-delà de ~250 caractères l'ancienne version
+  arrêtait le serveur au changement de map.
 
 ## v1.6.3 (2026-07-31)
 
