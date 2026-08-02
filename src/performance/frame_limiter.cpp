@@ -104,16 +104,14 @@ extern "C" int __cdecl frame_wait_replacement() {
         g_deadline_met  = 0;
     }
 
-    // Hand back the THEORETICAL tick we just waited for, not the actual wake time.
-    // The engine derives frame time - and everything paced by it - from the delta
-    // between successive returns of this function, in whole milliseconds. Real wake
-    // times wander by a few microseconds, and truncating them to ms turns that into a
-    // 3/4/5 ms jitter: the frame counter reads a locked 250 while the pacing visibly
-    // shimmers. The deadline clock advances by exactly one frame step every frame, so
-    // the deltas are uniform. It tracks real time (it is built from it and resyncs
-    // after any hitch), so engine timing stays honest.
-    const LONGLONG t = (g_deadline_met > 0) ? g_deadline_met : now.QuadPart;
-    return (int)((t * 1000) / g_qpc_freq.QuadPart);
+    // REAL time, always. Returning the theoretical deadline instead was tried (it
+    // makes the ms deltas perfectly uniform) and REVERTED: this value is the clock the
+    // engine uses for everything time-based - snapshot interpolation, animation
+    // blending, stance transitions. A synthetic clock drifts from the network
+    // timeline by a few ms, the interpolation window slides, and remote player models
+    // flicker ("on voit le joueur briller", reported live on crouch spam). The
+    // deadline is what we WAIT for; it must never be what we REPORT.
+    return (int)((now.QuadPart * 1000) / g_qpc_freq.QuadPart);
 }
 
 bool apply_frame_limiter_patch() {

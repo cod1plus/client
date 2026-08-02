@@ -17,8 +17,13 @@ namespace patches {
 //   `add ecx, 0x190` @ cgame+0x397d, imm32 @ +0x397f.
 // Independent from viewheight_lerp_speed (gamex86 rate-path): no interaction.
 struct StanceFixConfig {
-    bool enable   = true;
-    int  blend_ms = 250;   // HARDCODED for competitive (not from .ini); 250=tuned 2026-07-24, 400=vanilla
+    // OFF since 2026-08-01: shortening the model's stance blend made it track a
+    // crouch-spammer closely, which players read as flicker. The 1.6.0 behaviour
+    // (vanilla 400 ms blend + viewheight_lerp_speed 150) keeps the model slow and
+    // readable, which is what makes up-down abuse punishable. Re-enabling this
+    // without also re-tuning viewheight_lerp_speed brings the flicker back.
+    bool enable   = false;
+    int  blend_ms = 250;   // only used when enable=true; 400=vanilla
 };
 
 extern StanceFixConfig g_stance_fix_config;

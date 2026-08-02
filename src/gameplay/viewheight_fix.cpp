@@ -9,7 +9,13 @@ namespace patches {
 // crouch view speed is the up/down mechanic - locked so it can't be tuned for an edge.
 // 80 = the tuned value as of 2026-07-24 (vanilla 180). Rebuild to change.
 ViewheightFixConfig g_viewheight_config = {
-    80.0f,
+    // 150 = the 1.6.0 value (~133 ms), restored 2026-08-01. Paired with the VANILLA
+    // 400 ms model stance blend (stance_fix off), this is the anti up-down behaviour
+    // players validated at launch: a crouch-spammer's model moves slowly and stays
+    // readable, so he is easy to track and to shoot. Speeding the model up to 250 ms
+    // made it follow the spam closely and it read as flicker ("on voit le joueur
+    // briller"). Change these two together or not at all.
+    150.0f,
 };
 
 namespace {
