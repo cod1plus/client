@@ -10,6 +10,7 @@
 #include "netcode/version_gate.h"
 #include "video/window_patch.h"
 #include "video/fullscreen_patch.h"
+#include "input/rinput.h"
 #include "performance/fps_cap.h"
 #include "performance/frame_limiter.h"
 #include "features/updater.h"
@@ -222,6 +223,10 @@ void load_config(HMODULE self_module) {
     }
     g_window_config.borderless_enable = read_ini_bool(
         ini_path, "window_borderless", g_window_config.borderless_enable);
+    // Only the DEFAULT of the m_rinput cvar: the cvar is archived, so a player who has
+    // already chosen keeps his choice and this decides what a fresh install gets.
+    g_rinput_config.enable_default = read_ini_bool(
+        ini_path, "raw_mouse_input", g_rinput_config.enable_default);
     g_window_config.follow_current_monitor = read_ini_bool(
         ini_path, "window_follow_current_monitor", g_window_config.follow_current_monitor);
     g_window_config.minimize_on_focus_loss = read_ini_bool(

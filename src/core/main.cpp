@@ -16,6 +16,7 @@
 #include "video/window_patch.h"
 #include "video/fullscreen_patch.h"
 #include "video/display_probe.h"
+#include "input/rinput.h"
 #include "performance/fps_cap.h"
 #include "performance/frame_limiter.h"
 #include "features/updater.h"
@@ -103,6 +104,7 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::competitive_force_cvars();  // force/lock snaps+cl_maxpackets+rate for 40-tick
             patches::settings_menu_tick();       // register/poll cod1x_* cvars + cg_fov unlock + hotkey
             patches::cheat_scan_tick();          // cvar-name cheat detection -> userinfo cod1x_ac
+            patches::rinput_tick();              // follow m_rinput, publish m_rinput_hz
         }
         patches::widescreen_update_stretch();    // drive the stretched-mode vfov ratio (live)
         patches::gamma_fix_tick();               // per-monitor gamma: focus/monitor transitions
@@ -171,6 +173,9 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
 
             patches::apply_frame_limiter_patch();
 
+            // raw mouse input: hook GetCursorPos now, stays idle until m_rinput 1
+            patches::rinput_start();
+
             // window doesn't exist at DllMain yet
             patches::start_window_watcher();
 
@@ -181,6 +186,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             }
             break;
         case DLL_PROCESS_DETACH:
+            patches::rinput_shutdown();      // unregister the raw input device + join its thread
             patches::gamma_fix_shutdown();   // never leave the desktop gamma modified
             patches::fps_cap_shutdown();
             patches::toast_shutdown();

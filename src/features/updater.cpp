@@ -8,6 +8,7 @@
 
 #include "features/updater.h"
 #include "core/logger.h"
+#include "core/iat.h"
 
 #include <windows.h>
 #include <wininet.h>
@@ -242,39 +243,6 @@ LONG WINAPI hk_ChangeDisplaySettingsA(DEVMODEA* dm, DWORD flags) {
     return g_real_ChangeDisplaySettingsA(dm, flags);
 }
 
-// Patch the IAT slot for a named user32 import in the main EXE; returns the real fn.
-void* iat_hook(const char* func, void* new_fn) {
-    BYTE* base = (BYTE*)GetModuleHandleA(NULL);
-    if (!base) return nullptr;
-    auto dos = (IMAGE_DOS_HEADER*)base;
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
-    auto nt = (IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return nullptr;
-    DWORD imp_rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-    if (!imp_rva) return nullptr;
-    auto imp = (IMAGE_IMPORT_DESCRIPTOR*)(base + imp_rva);
-    for (; imp->Name; ++imp) {
-        const char* dll = (const char*)(base + imp->Name);
-        if (_stricmp(dll, "user32.dll") != 0) continue;
-        DWORD orig_rva = imp->OriginalFirstThunk ? imp->OriginalFirstThunk : imp->FirstThunk;
-        auto orig = (IMAGE_THUNK_DATA*)(base + orig_rva);
-        auto iat  = (IMAGE_THUNK_DATA*)(base + imp->FirstThunk);
-        for (; orig->u1.AddressOfData; ++orig, ++iat) {
-            if (orig->u1.Ordinal & IMAGE_ORDINAL_FLAG) continue;
-            auto ibn = (IMAGE_IMPORT_BY_NAME*)(base + orig->u1.AddressOfData);
-            if (strcmp((const char*)ibn->Name, func) != 0) continue;
-            void** slot = (void**)&iat->u1.Function;
-            void* real = *slot;
-            DWORD op = 0;
-            if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &op)) return nullptr;
-            *slot = new_fn;
-            VirtualProtect(slot, sizeof(void*), op, &op);
-            return real;
-        }
-    }
-    return nullptr;
-}
-
 }  // namespace
 
 // Apply a leftover .new (interrupted update) + clean the previous .old. Call early.
@@ -302,8 +270,8 @@ void updater_start() {
     }
     // Gate as early as possible: ChangeDisplaySettingsA (fullscreen res change) and
     // RegisterClassA (window class) are both called before the window exists.
-    void* rc = iat_hook("RegisterClassA", (void*)hk_RegisterClassA);
-    void* cd = iat_hook("ChangeDisplaySettingsA", (void*)hk_ChangeDisplaySettingsA);
+    void* rc = iat_hook("user32.dll", "RegisterClassA", (void*)hk_RegisterClassA);
+    void* cd = iat_hook("user32.dll", "ChangeDisplaySettingsA", (void*)hk_ChangeDisplaySettingsA);
     g_real_RegisterClassA         = (RegisterClassA_t)rc;
     g_real_ChangeDisplaySettingsA = (ChangeDisplaySettingsA_t)cd;
     if (rc || cd) {

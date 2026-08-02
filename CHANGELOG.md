@@ -2,6 +2,18 @@
 
 ## Non publié
 
+### 🖱️ Raw input souris (`m_rinput`)
+- **Portage du `m_rinput` de cod2x.** La souris est lue directement sur le
+  périphérique au lieu de passer par le curseur Windows : plus d'accélération
+  pointeur, plus de dépendance au curseur du bureau, plus d'arrondi au pixel. Ta
+  sensibilité en jeu ne change pas, c'est la couche Windows qui disparaît.
+- `m_rinput 0/1` (sauvegardé dans ta config) ou `raw_mouse_input` dans
+  `cod1reloaded.ini`. **Désactivé par défaut** : ça modifie la visée, personne ne
+  doit se le prendre sans l'avoir choisi.
+- `m_rinput_hz` affiche le **taux de sondage réel** de ta souris (500, 1000…), et
+  `m_rinput_hz_max` le maximum vu — de quoi vérifier qu'une souris annoncée à
+  1000 Hz tient vraiment 1000 Hz.
+
 ### 🖥️ Résolutions personnalisées / stretch
 - **Correction** : une résolution personnalisée plus grande que ton bureau
   (2128x1330, 1776x1332… sur un écran 1080p) était tout simplement ignorée. Seul
