@@ -109,9 +109,13 @@ void load_config(HMODULE self_module) {
     // profile API silently returns the fallback for EVERY key, so the file looks fine but
     // nothing in it applies (this actually shipped once). Detect and shout in the log.
     {
-        char probe[8];
-        if (GetPrivateProfileStringA("cod1reloaded", "menu_key", "", probe, sizeof(probe),
-                                     ini_path) == 0) {
+        // Ask for the SECTION, not for one key: the probe used to be `menu_key`, which
+        // stopped shipping when the in-game hotkey was removed in 1.6.4 - so a perfectly
+        // good ini started reporting itself as ignored on every launch. Any key can be
+        // deleted by a player or by us; the section either has content or it does not.
+        char section[64];
+        if (GetPrivateProfileSectionA("cod1reloaded", section, sizeof(section),
+                                      ini_path) == 0) {
             logger::logf("*** cod1reloaded.ini: section [cod1reloaded] is MISSING or empty "
                          "-> the whole file is being IGNORED and compiled defaults are used. "
                          "Add a line [cod1reloaded] above the settings.");
