@@ -378,6 +378,8 @@ void load_config(HMODULE self_module) {
                     g_discord_rpc_config.state_text);
     g_discord_rpc_config.register_launch = read_ini_bool(
         ini_path, "discord_rpc_register_launch", g_discord_rpc_config.register_launch);
+    g_discord_rpc_config.share_password = read_ini_bool(
+        ini_path, "discord_rpc_share_password", g_discord_rpc_config.share_password);
     read_ini_string(ini_path, "discord_rpc_map_images",
                     g_discord_rpc_config.map_images,
                     sizeof(g_discord_rpc_config.map_images),

@@ -28,6 +28,12 @@ struct DiscordRpcConfig {
     // not merely stop writing it: it deletes the key, so the switch actually undoes
     // what it did.
     bool register_launch = true;
+
+    // Put the server password in the join secret, so Join also works on a private
+    // server. It travels to everyone who can see the presence - friends and every
+    // mutual server - so a match password stops being a match password. Kept behind
+    // its own switch so it can be dropped in one line.
+    bool share_password = true;
 };
 
 extern DiscordRpcConfig g_discord_rpc_config;

@@ -179,10 +179,30 @@ bool is_safe_address(const char* s) {
         const char c = s[n];
         const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
                         (c >= 'A' && c <= 'Z') || c == '.' || c == '-' || c == ':';
-        if (!ok) return false;                         // kills ; \n " and every separator
+        if (!ok) return false;                         // kills ; \n " / and every separator
         if (c == ':') ++colons;
     }
     return n >= 7 && colons <= 1;                      // "1.2.3.4" at the very least
+}
+
+// The password rides in the secret as "<address>/<password>". '/' cannot occur in
+// either half - the address charset excludes it and so does this one - so the split is
+// never ambiguous.
+//
+// The password ends up inside `set password "..."` on the receiving machine. A quote,
+// a semicolon or a newline in it would escape that command, so the charset is
+// deliberately narrower than what CoD1 would accept as a password: anything outside it
+// simply means no password is shared, never a mangled console command.
+bool is_safe_password(const char* s) {
+    if (!s || !*s) return false;
+    for (size_t n = 0; s[n]; ++n) {
+        if (n >= 32) return false;
+        const char c = s[n];
+        const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                        (c >= 'A' && c <= 'Z') || c == '-' || c == '_' || c == '.';
+        if (!ok) return false;
+    }
+    return true;
 }
 
 // CoD1 colour codes are '^' + one digit; they would show up literally on a profile.
@@ -255,17 +275,38 @@ char  g_rx[8192];
 size_t g_rx_len = 0;
 
 void on_join(const char* secret) {
-    if (!is_safe_address(secret)) {
-        logger::logf("discord_rpc: join secret rejected (not an address): refusing to "
-                     "run it as a console command");
+    char addr[96] = {0}, pw[48] = {0};
+    const char* slash = strchr(secret, '/');
+    if (slash) {
+        const size_t n = (size_t)(slash - secret);
+        if (n >= sizeof(addr)) return;
+        memcpy(addr, secret, n);
+        addr[n] = '\0';
+        snprintf(pw, sizeof(pw), "%s", slash + 1);
+    } else {
+        snprintf(addr, sizeof(addr), "%s", secret);
+    }
+
+    if (!is_safe_address(addr)) {
+        logger::logf("discord_rpc: secret de join refuse (pas une adresse) - rien "
+                     "n'est passe a la console");
         return;
     }
+    if (pw[0] && !is_safe_password(pw)) {
+        logger::logf("discord_rpc: mot de passe du secret refuse (caracteres interdits) "
+                     "- connexion tentee sans lui");
+        pw[0] = '\0';
+    }
     if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000) return;
-    char cmd[96];
-    snprintf(cmd, sizeof(cmd), "connect %s\n", secret);
+
     typedef void (__cdecl *Cbuf_ExecuteText_t)(int, const char*);
-    ((Cbuf_ExecuteText_t)CODMP_CBUF_EXECTEXT_VA)(2 /* EXEC_APPEND */, cmd);
-    logger::logf("discord_rpc: ACTIVITY_JOIN -> connect %s", secret);
+    const Cbuf_ExecuteText_t Cbuf = (Cbuf_ExecuteText_t)CODMP_CBUF_EXECTEXT_VA;
+    char cmd[192];
+    if (pw[0]) snprintf(cmd, sizeof(cmd), "set password \"%s\"\nconnect %s\n", pw, addr);
+    else       snprintf(cmd, sizeof(cmd), "connect %s\n", addr);
+    Cbuf(2 /* EXEC_APPEND */, cmd);
+    logger::logf("discord_rpc: ACTIVITY_JOIN -> connect %s (mot de passe %s)",
+                 addr, pw[0] ? "fourni" : "absent");
 }
 
 void pipe_drain() {
@@ -508,6 +549,30 @@ bool update_presence(bool in_match) {
         if (is_safe_address(addr)) {
             char a[96];
             json_escape(addr, a, sizeof(a));
+
+            // The password is appended so Join also works on a private server. It then
+            // travels to everyone who can see this presence, which is why it sits
+            // behind its own switch.
+            char secret[152];
+            snprintf(secret, sizeof(secret), "%s", a);
+            if (g_discord_rpc_config.share_password) {
+                const char* pw = cvar_str("password");
+                static int last_pw_state = -1;
+                const int pw_state = pw[0] ? (is_safe_password(pw) ? 1 : 2) : 0;
+                if (pw_state != last_pw_state) {
+                    last_pw_state = pw_state;
+                    logger::logf("discord_rpc: mot de passe serveur %s",
+                                 pw_state == 1 ? "JOINT au secret (visible de tous ceux "
+                                                 "qui voient ta presence)"
+                                 : pw_state == 2 ? "non joint (caracteres hors charset sur)"
+                                                 : "absent");
+                }
+                if (pw_state == 1) {
+                    char e[64];
+                    json_escape(pw, e, sizeof(e));
+                    snprintf(secret, sizeof(secret), "%s/%s", a, e);
+                }
+            }
             // Discord rejects the whole activity with "secrets cannot match the party
             // id" when the two are equal - and a rejected activity leaves the previous
             // presence frozen, so this took the map and the server down with it. The
@@ -515,7 +580,8 @@ bool update_presence(bool in_match) {
             // secret stays the bare address the receiving side connects to and
             // validates.
             snprintf(party, sizeof(party),
-                     ",\"party\":{\"id\":\"srv-%s\"},\"secrets\":{\"join\":\"%s\"}", a, a);
+                     ",\"party\":{\"id\":\"srv-%s\"},\"secrets\":{\"join\":\"%s\"}",
+                     a, secret);
         }
     }
 
