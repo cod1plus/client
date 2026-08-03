@@ -144,14 +144,29 @@ void register_launch_handler() {
     char exe[MAX_PATH];
     if (GetModuleFileNameA(NULL, exe, MAX_PATH) == 0) return;
 
-    char cmd_key[192], cmd[MAX_PATH + 16], desc[160];
+    // Discord starts the process with ITS OWN working directory, not the game's, and
+    // idTech3 resolves its file system from the working directory. Launched that way
+    // the engine dies on "Couldn't load default_mp.cfg. Make sure Call of Duty is run
+    // from the correct folder." - which is exactly what a player who clicked Join got.
+    // fs_basepath states the folder outright so the launch no longer depends on where
+    // it was started from.
+    char dir[MAX_PATH];
+    snprintf(dir, sizeof(dir), "%s", exe);
+    char* slash = strrchr(dir, '\\');
+    if (slash) *slash = '\0';
+
+    // "%1" comes BEFORE the +set on purpose: the engine only reads arguments from the
+    // first '+' onwards, so the URI sitting ahead of it is ignored outright. Put it
+    // after and it would be swallowed as a third argument to `set`.
+    char cmd_key[192], cmd[2 * MAX_PATH + 64], desc[160];
     snprintf(cmd_key, sizeof(cmd_key), "%s\\shell\\open\\command", base);
-    snprintf(cmd, sizeof(cmd), "\"%s\" \"%%1\"", exe);
+    snprintf(cmd, sizeof(cmd), "\"%s\" \"%%1\" +set fs_basepath \"%s\"", exe, dir);
     snprintf(desc, sizeof(desc), "URL:Run game %s", g_discord_rpc_config.client_id);
 
     // Rewriting identical values on every launch would be pointless registry churn,
     // and would hide a real change in the logs.
-    char current[MAX_PATH + 16] = {0};
+    char current[2 * MAX_PATH + 64] = {0};   // doit tenir la commande complete, sinon
+                                             // la comparaison echoue et on reecrit sans arret
     if (reg_get(HKEY_CURRENT_USER, cmd_key, nullptr, current, sizeof(current)) &&
         strcmp(current, cmd) == 0) return;
 
