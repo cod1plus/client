@@ -147,11 +147,20 @@ void compose(bool in_match, char* details, size_t details_size,
         snprintf(gt,     sizeof(gt),     "%s", cvar_str("g_gametype"));
         strip_colors(cvar_str("sv_hostname"), host, sizeof(host));
 
+        // One-shot survey of everything the richer presence features would need, so a
+        // single log line from a real server settles what is reachable:
+        //   party "3 of 6"  needs a player count and sv_maxclients
+        //   Join button     needs the server's address, to hand back as the join secret
         static bool probed = false;
         if (!probed) {
             probed = true;
-            logger::logf("discord_rpc: server info mapname='%s' g_gametype='%s' sv_hostname='%s'",
-                         mapraw, gt, host);
+            static const char* kProbe[] = {
+                "mapname", "g_gametype", "sv_hostname", "sv_maxclients",
+                "sv_privateClients", "cl_currentServerAddress", "cl_currentServerIP",
+                "com_errorMessage", "ui_serverStatusTimeOut", "cg_scoreboardPlayers",
+            };
+            for (size_t k = 0; k < sizeof(kProbe) / sizeof(kProbe[0]); ++k)
+                logger::logf("discord_rpc: probe %-24s = '%s'", kProbe[k], cvar_str(kProbe[k]));
         }
 
         char mapname[64];
