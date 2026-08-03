@@ -32,15 +32,16 @@ bool    g_installed_for = false;
 
 LARGE_INTEGER g_qpc_freq = {};
 LONGLONG      g_prev_qpc = 0;
-// Averaged as a FRAME TIME, not as a rate. Averaging 1/dt is biased upward - the mean
-// of the reciprocals is not the reciprocal of the mean - and a simulation of a locked
-// 250 fps with realistic jitter read 253-256 that way, and 329 for a true 333.
-double        g_avg_dt   = 0.0;
+// Frames counted over elapsed time. Every "clever" estimator tried here was biased:
+// averaging 1/dt overstates (mean of reciprocals), and averaging dt with a
+// dt-proportional weight understates. Counting is neither.
+double        g_win_dt   = 0.0;    // seconds accumulated in the open window
+int           g_win_n    = 0;      // frames in it
+double        g_avg_fps  = 0.0;    // last closed windows, lightly smoothed
 int           g_shown    = 0;      // exactly what the engine will print
 int           g_total    = 0;      // the sum handed to it to make that happen
 
 double g_held = 0.0;               // how long the average has been outside the band
-int    g_rejected = 0;             // hitches dropped since the last diagnostic line
 int    g_frames   = 0;
 
 constexpr double kWindow   = 1.0;   // seconds of memory in the average
@@ -101,17 +102,30 @@ extern "C" void cg_drawfps_pre_run() {
     const double dt = (double)(now.QuadPart - prev) / (double)g_qpc_freq.QuadPart;
     if (dt <= 0.0 || dt > 1.0) return;           // alt-tab, load, breakpoint: ignore
 
-    // A hitch is not the cruising rate. Left in the average, the occasional 10 ms
-    // frame drags the MEAN FRAME TIME up and so the figure down - which is why the
-    // counter sat on 248 at a locked 250 rather than on the value it was holding.
     ++g_frames;
-    if (g_avg_dt > 0.0 && dt > 2.0 * g_avg_dt) { ++g_rejected; return; }
 
-    // Memory expressed per-frame, so the smoothing does not itself depend on the
-    // frame rate.
-    const double alpha = dt / (kWindow + dt);
-    g_avg_dt = (g_avg_dt == 0.0) ? dt : g_avg_dt + alpha * (dt - g_avg_dt);
-    const double fps = 1.0 / g_avg_dt;
+    // Frames counted over elapsed time - which is what "frames per second" means, and
+    // is exact by construction.
+    //
+    // The previous estimator was an exponential average of the frame time with
+    // alpha = dt/(window+dt). Weighting each sample by its own duration makes long
+    // frames count for more, so it converges on the TIME-weighted mean of dt, which
+    // exceeds the arithmetic mean whenever there is any variance at all: alternating
+    // 3 and 5 ms frames average 4 ms but that estimator returns 4.25, i.e. 235 fps for
+    // a true 250. The diagnostic caught it red-handed - 499 frames in 2 s, so exactly
+    // 250 fps, reported as 239. It was the same bias already rejected for 1/dt,
+    // reintroduced through another door, and the hitch filter was only papering over
+    // it.
+    g_win_dt += dt;
+    g_win_n  += 1;
+    if (g_win_dt >= kWindow) {
+        const double measured = (double)g_win_n / g_win_dt;
+        g_avg_fps = (g_avg_fps == 0.0) ? measured : (g_avg_fps + measured) * 0.5;
+        g_win_dt  = 0.0;
+        g_win_n   = 0;
+    }
+    if (g_avg_fps <= 0.0) return;          // first window not closed yet
+    const double fps = g_avg_fps;
 
     // The decisive simplification. Estimating the rate to the nearest unit and hoping
     // it holds still was the wrong problem: the rate is IMPOSED by this mod's own
@@ -155,9 +169,8 @@ extern "C" void cg_drawfps_pre_run() {
         if (last == 0) last = tick;
         if (tick - last >= 2000) {
             logger::logf("fps_display: avg=%.2f cible=%.1f affiche=%d cap=%d "
-                         "(%d/%d frames rejetees)", fps, target, g_shown, cap,
-                         g_rejected, g_frames);
-            last = tick; g_rejected = 0; g_frames = 0;
+                         "(%d frames)", fps, target, g_shown, cap, g_frames);
+            last = tick; g_frames = 0;
         }
     }
 
@@ -206,7 +219,9 @@ void fps_display_install(HMODULE cgame) {
 
     g_cg_drawfps_original = (void*)(fn + CGAME_CG_DRAWFPS_STEAL);
     g_prev_qpc = 0;
-    g_avg_dt   = 0.0;
+    g_win_dt   = 0.0;
+    g_win_n    = 0;
+    g_avg_fps  = 0.0;
     g_held     = 0.0;
     g_total    = 0;
     g_shown    = 0;
