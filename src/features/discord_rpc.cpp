@@ -122,14 +122,24 @@ bool update_presence(bool in_match) {
     if (st_esc[0])
         snprintf(stf, sizeof(stf), ",\"state\":\"%s\"", st_esc);
 
+    // Only send an assets block when an image name is configured. large_image must be
+    // the key of an asset uploaded under Rich Presence > Art Assets - the application
+    // ICON is a different thing and is NOT reachable by name. Sending a key that does
+    // not exist gets you no image at all, whereas sending no assets block lets Discord
+    // fall back to the application icon, which is what most setups actually have.
+    char assets[300] = "";
+    if (limg[0]) {
+        snprintf(assets, sizeof(assets),
+                 ",\"assets\":{\"large_image\":\"%s\",\"large_text\":\"%s\"}", limg, ltxt);
+    }
+
     char payload[1024];
     snprintf(payload, sizeof(payload),
         "{\"cmd\":\"SET_ACTIVITY\",\"args\":{\"pid\":%lu,\"activity\":{"
-        "\"details\":\"%s\"%s%s,"
-        "\"assets\":{\"large_image\":\"%s\",\"large_text\":\"%s\"}"
+        "\"details\":\"%s\"%s%s%s"
         "}},\"nonce\":\"%u\"}",
         (unsigned long)GetCurrentProcessId(),
-        det, stf, ts, limg, ltxt, ++g_nonce);
+        det, stf, ts, assets, ++g_nonce);
 
     if (!pipe_write_frame(1, payload)) return false;
     g_sent_state     = state;
