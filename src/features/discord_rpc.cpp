@@ -435,7 +435,22 @@ bool update_presence(bool in_match) {
     return true;
 }
 
+// "Am I on a server?" used to mean "the HUD drew a frame in the last 1.5 s", which
+// reported the menus while connected: the HUD does not tick during a map load, and
+// anything that stops drawing it - the ESC menu, the scoreboard, a stall - looked
+// exactly like a disconnect.
+//
+// cgame is loaded per map and unloaded on disconnect, and it only holds a map name
+// once the server info has been parsed, so the pair answers the question directly
+// instead of inferring it from a side effect. The HUD tick stays as a fallback for
+// the case where cgame is loaded but its layout differs from what we expect.
 bool in_match_now() {
+    HMODULE cg = cgame_module();
+    if (cg) {
+        char m[80];
+        cgs_string(cg, CGS_MAPNAME_RVA, 64, m, sizeof(m));
+        if (m[0]) return true;
+    }
     const DWORD t = engine_2d_last_hud_tick();
     return t != 0 && (GetTickCount() - t) < IN_MATCH_TIMEOUT_MS;
 }
