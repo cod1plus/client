@@ -29,6 +29,7 @@
 #include "video/widescreen_fix.h"
 #include "features/avatar_overlay.h"
 #include "features/engine_2d.h"
+#include "features/fps_display.h"
 #include "features/discord_rpc.h"
 #include "features/settings_menu.h"
 #include "video/gamma_fix.h"
@@ -71,6 +72,8 @@ bool apply_cgame_patches(HMODULE cgame, bool fresh) {
         patches::g_discord_rpc_config.client_id[0] != '\0') {
         patches::engine_2d_install_hook(cgame);
     }
+
+    patches::fps_display_install(cgame);   // steady cg_drawFPS 1
 
     const bool ok = patches::apply_to_cgame(cgame);
     logger::logf("  [%s] cgame patches applied (lean=%d)", ok ? "OK" : "RETRY",

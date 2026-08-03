@@ -50,6 +50,7 @@ set(COD1RELOADED_SOURCES
     src/features/engine_2d.cpp
     src/features/discord_rpc.cpp
     src/features/settings_menu.cpp
+    src/features/fps_display.cpp
     src/gameplay/stance_fix.cpp
     src/gameplay/anim_clamp.cpp
     src/netcode/antilag.cpp
