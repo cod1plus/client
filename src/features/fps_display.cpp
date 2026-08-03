@@ -13,6 +13,7 @@
 // re-quantised to the millisecond 250 times a second.
 
 #include "features/fps_display.h"
+#include "performance/frame_limiter.h"   // com_maxfps: the rate WE impose
 #include "core/logger.h"
 
 #include <cstdio>
@@ -40,19 +41,20 @@ int           g_total    = 0;      // the sum handed to it to make that happen
 
 double g_held = 0.0;               // how long the average has been outside the band
 
-// Tuned by simulating jittery frame pacing at 60/125/144/250/333 fps: this is the
-// shortest settling time that gives ZERO changes at all of them while still landing on
-// the exact figure. Loosening any of the three brings the flicker back.
-constexpr double kWindow = 1.0;    // seconds of memory in the average
-constexpr double kDwell  = 0.6;    // the average must stay out of band this long
-constexpr double kHystK  = 1.0;    // band width, in units of the display's own step
+constexpr double kWindow   = 1.0;   // seconds of memory in the average
+constexpr double kDwell    = 0.6;   // the average must stay out of band this long
+constexpr double kDeadZone = 0.02;  // 2% band, so noise never moves the figure
+constexpr double kSnap     = 0.02;  // how close to the cap counts as "at the cap"
 
-// The engine can only print 32000/total for an integer total, so the printable values
-// are not evenly spaced: 250 and 251 are adjacent, but above 300 the gaps widen fast
-// (333 then 329) and past 900 they are enormous. A fixed hysteresis is therefore too
-// tight at high frame rates and pointlessly wide at low ones - it has to scale with
-// the local step, which is fps^2/32000.
-double display_step(double fps) { return fps * fps / 32000.0; }
+// The rate is not an unknown to be estimated: the mod's own frame limiter imposes it.
+// Reading com_maxfps turns the hard half of the problem into a lookup.
+int capped_fps() {
+    if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000) return 0;
+    void** slot = (void**)CODMP_COM_MAXFPS_DVAR_SLOT_VA;
+    if (!slot || !*slot) return 0;
+    const int v = *(int*)((char*)*slot + CODMP_DVAR_INTEGER_OFFSET);
+    return (v > 0 && v <= 1000) ? v : 0;
+}
 
 // The total whose PRINTED result is closest to fps. Rounding 32000/fps instead lands
 // on a neighbour surprisingly often: at a true 250 it settled on 248 and stayed there.
@@ -96,27 +98,38 @@ extern "C" void cg_drawfps_pre_run() {
     const double dt = (double)(now.QuadPart - prev) / (double)g_qpc_freq.QuadPart;
     if (dt <= 0.0 || dt > 1.0) return;           // alt-tab, load, breakpoint: ignore
 
+    // A hitch is not the cruising rate. Left in the average, the occasional 10 ms
+    // frame drags the MEAN FRAME TIME up and so the figure down - which is why the
+    // counter sat on 248 at a locked 250 rather than on the value it was holding.
+    if (g_avg_dt > 0.0 && dt > 2.0 * g_avg_dt) return;
+
     // Memory expressed per-frame, so the smoothing does not itself depend on the
     // frame rate.
     const double alpha = dt / (kWindow + dt);
     g_avg_dt = (g_avg_dt == 0.0) ? dt : g_avg_dt + alpha * (dt - g_avg_dt);
     const double fps = 1.0 / g_avg_dt;
 
-    // Adopt a new figure only once the average has stayed out of band for a while. A
-    // band alone is not enough: the average wanders across it now and then, and one
-    // crossing was enough to make the counter tick over every few seconds.
-    const double band = display_step(fps) * kHystK;
-    const double h = band < 1.0 ? 1.0 : band;
+    // The decisive simplification. Estimating the rate to the nearest unit and hoping
+    // it holds still was the wrong problem: the rate is IMPOSED by this mod's own
+    // limiter. Within 2% of com_maxfps the figure is the cap, exactly and immovably -
+    // that residual is measurement quantisation, not frames being missed. Below that,
+    // the smoothed measurement is shown, because a real drop must be visible.
+    const int cap = capped_fps();
+    double target = fps;
+    if (cap > 0 && fps > cap * (1.0 - kSnap) && fps < cap * (1.0 + kSnap))
+        target = cap;
+
+    const double h = target * kDeadZone < 1.0 ? 1.0 : target * kDeadZone;
     if (g_shown == 0) {
         g_held = kDwell;
-    } else if (fps > g_shown + h || fps < g_shown - h) {
+    } else if (target > g_shown + h || target < g_shown - h) {
         g_held += dt;
     } else {
         g_held = 0.0;
     }
     if (g_held >= kDwell) {
         g_held  = 0.0;
-        g_total = best_total(fps);
+        g_total = best_total(target);
         g_shown = 32000 / g_total;   // compare against what is really printed
     }
     if (g_total <= 0) return;
