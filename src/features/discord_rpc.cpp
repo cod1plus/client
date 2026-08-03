@@ -29,6 +29,7 @@ unsigned      g_nonce          = 0;
 
 char g_sent_details[192] = {0};   // resend when the text changes, not just the state
 char g_sent_state_txt[192] = {0};
+char g_sent_image[96] = {0};
 
 // ---- what the client knows about the server it is on --------------------------------
 // The cvars named mapname / sv_hostname / g_gametype are NOT the answer: the binary
@@ -163,12 +164,32 @@ void json_escape(const char* in, char* out, size_t out_size) {
     out[o] = '\0';
 }
 
+// Is this map declared as having an art asset? Matches whole words only, so listing
+// "mp_carentan" never accidentally covers "mp_carentan2".
+bool map_has_asset(const char* map) {
+    if (!map[0]) return false;
+    const char* list = g_discord_rpc_config.map_images;
+    if (list[0] == '*' && list[1] == '\0') return true;
+    const size_t len = strlen(map);
+    for (const char* p = list; *p; ) {
+        while (*p == ' ' || *p == ',' || *p == '\t') ++p;
+        const char* start = p;
+        while (*p && *p != ' ' && *p != ',' && *p != '\t') ++p;
+        if ((size_t)(p - start) == len && _strnicmp(start, map, len) == 0) return true;
+    }
+    return false;
+}
+
 // details = what you are playing, state = where. Falls back to the .ini strings when
 // cgame is not loaded (i.e. in the menus), so the presence is never blank.
 void compose(bool in_match, char* details, size_t details_size,
-                            char* state_txt, size_t state_size) {
+                            char* state_txt, size_t state_size,
+                            char* image, size_t image_size,
+                            char* image_text, size_t image_text_size) {
     details[0] = '\0';
     state_txt[0] = '\0';
+    snprintf(image,      image_size,      "%s", g_discord_rpc_config.large_image);
+    snprintf(image_text, image_text_size, "%s", g_discord_rpc_config.large_text);
 
     HMODULE cg = cgame_module();
     char mapraw[80] = {0}, gt[32] = {0}, hostraw[256] = {0}, host[160] = {0};
@@ -207,6 +228,17 @@ void compose(bool in_match, char* details, size_t details_size,
         if (mapname[0] && gtup[0])      snprintf(details, details_size, "%s on %s", gtup, mapname);
         else if (mapname[0])            snprintf(details, details_size, "%s", mapname);
         if (host[0])                    snprintf(state_txt, state_size, "%s", host);
+
+        // Thumbnail = the map, when an asset for it was actually uploaded. Asset keys
+        // are lowercase on Discord's side.
+        if (map_has_asset(mapraw)) {
+            size_t k = 0;
+            for (; mapraw[k] && k + 1 < image_size; ++k)
+                image[k] = (mapraw[k] >= 'A' && mapraw[k] <= 'Z')
+                           ? (char)(mapraw[k] - 'A' + 'a') : mapraw[k];
+            image[k] = '\0';
+            if (mapname[0]) snprintf(image_text, image_text_size, "%s", mapname);
+        }
     }
 
     if (!details[0]) {
@@ -227,22 +259,25 @@ bool update_presence(bool in_match) {
 
     // The map and the server can change without the menu/match state changing, so the
     // resend test is on the TEXT, not just on that state.
-    char details[192], state_txt[192];
-    compose(in_match, details, sizeof(details), state_txt, sizeof(state_txt));
+    char details[192], state_txt[192], image[96], image_text[160];
+    compose(in_match, details, sizeof(details), state_txt, sizeof(state_txt),
+            image, sizeof(image), image_text, sizeof(image_text));
 
+    // The thumbnail changes with the map, so it belongs in the resend test too.
     if (state == g_sent_state &&
-        strcmp(details,   g_sent_details)  == 0 &&
-        strcmp(state_txt, g_sent_state_txt) == 0) return true;
+        strcmp(details,   g_sent_details)   == 0 &&
+        strcmp(state_txt, g_sent_state_txt) == 0 &&
+        strcmp(image,     g_sent_image)     == 0) return true;
 
     const DWORD now = GetTickCount();
     if (g_last_send_tick != 0 && (now - g_last_send_tick) < MIN_SEND_GAP_MS)
         return true;  // throttle, resend next tick
 
     char det[160], st_esc[160], limg[96], ltxt[160];
-    json_escape(details,   det,    sizeof(det));
-    json_escape(state_txt, st_esc, sizeof(st_esc));
-    json_escape(g_discord_rpc_config.large_image,  limg,   sizeof(limg));
-    json_escape(g_discord_rpc_config.large_text,   ltxt,   sizeof(ltxt));
+    json_escape(details,    det,    sizeof(det));
+    json_escape(state_txt,  st_esc, sizeof(st_esc));
+    json_escape(image,      limg,   sizeof(limg));
+    json_escape(image_text, ltxt,   sizeof(ltxt));
 
     char ts[64] = "";
     if (g_discord_rpc_config.show_elapsed)
@@ -276,6 +311,7 @@ bool update_presence(bool in_match) {
     g_last_send_tick = now;
     snprintf(g_sent_details,  sizeof(g_sent_details),  "%s", details);
     snprintf(g_sent_state_txt, sizeof(g_sent_state_txt), "%s", state_txt);
+    snprintf(g_sent_image, sizeof(g_sent_image), "%s", image);
     return true;
 }
 

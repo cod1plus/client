@@ -14,6 +14,13 @@ struct DiscordRpcConfig {
     char details_match[128] = "En partie";
     char state_text[128]    = "";
     bool show_elapsed = true;
+
+    // Map keys uploaded under Rich Presence > Art Assets, space or comma separated,
+    // e.g. "mp_carentan mp_brecourt mp_coastal". When the current map is listed it
+    // becomes large_image, so the thumbnail is the map you are on. "*" = try every
+    // map, empty = never. A key with no asset behind it shows NO image at all, not
+    // even the application icon, which is why this is a declared list and not a guess.
+    char map_images[512]    = "";
 };
 
 extern DiscordRpcConfig g_discord_rpc_config;
