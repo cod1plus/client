@@ -40,11 +40,14 @@ int           g_shown    = 0;      // exactly what the engine will print
 int           g_total    = 0;      // the sum handed to it to make that happen
 
 double g_held = 0.0;               // how long the average has been outside the band
+int    g_rejected = 0;             // hitches dropped since the last diagnostic line
+int    g_frames   = 0;
 
 constexpr double kWindow   = 1.0;   // seconds of memory in the average
 constexpr double kDwell    = 0.6;   // the average must stay out of band this long
 constexpr double kDeadZone = 0.02;  // 2% band, so noise never moves the figure
 constexpr double kSnap     = 0.02;  // how close to the cap counts as "at the cap"
+constexpr double kDwellLeaveCap = 2.0;  // a dip must last this long to leave the cap
 
 // The rate is not an unknown to be estimated: the mod's own frame limiter imposes it.
 // Reading com_maxfps turns the hard half of the problem into a lookup.
@@ -101,7 +104,8 @@ extern "C" void cg_drawfps_pre_run() {
     // A hitch is not the cruising rate. Left in the average, the occasional 10 ms
     // frame drags the MEAN FRAME TIME up and so the figure down - which is why the
     // counter sat on 248 at a locked 250 rather than on the value it was holding.
-    if (g_avg_dt > 0.0 && dt > 2.0 * g_avg_dt) return;
+    ++g_frames;
+    if (g_avg_dt > 0.0 && dt > 2.0 * g_avg_dt) { ++g_rejected; return; }
 
     // Memory expressed per-frame, so the smoothing does not itself depend on the
     // frame rate.
@@ -119,20 +123,43 @@ extern "C" void cg_drawfps_pre_run() {
     if (cap > 0 && fps > cap * (1.0 - kSnap) && fps < cap * (1.0 + kSnap))
         target = cap;
 
+    // Leaving the cap is held to a much longer confirmation than any other move. A
+    // burst of merely-slow frames - not big enough to be rejected as hitches, but
+    // enough to pull the average under the snap band for a moment - was the last
+    // source of flicker. A real drop lasts; a stutter does not, and only the first
+    // deserves to change the number.
+    const bool at_cap = (cap > 0 && g_shown == cap);
+    const double dwell = at_cap ? kDwellLeaveCap : kDwell;
+
     const double h = target * kDeadZone < 1.0 ? 1.0 : target * kDeadZone;
     if (g_shown == 0) {
-        g_held = kDwell;
+        g_held = dwell;
     } else if (target > g_shown + h || target < g_shown - h) {
         g_held += dt;
     } else {
         g_held = 0.0;
     }
-    if (g_held >= kDwell) {
+    if (g_held >= dwell) {
         g_held  = 0.0;
         g_total = best_total(target);
         g_shown = 32000 / g_total;   // compare against what is really printed
     }
     if (g_total <= 0) return;
+
+    // Promised after two rounds of tuning against a made-up jitter model: measure
+    // before changing anything again. One line every 2 s of play, with the real
+    // average and how much of it is being thrown away as hitches.
+    {
+        static DWORD last = 0;
+        const DWORD tick = GetTickCount();
+        if (last == 0) last = tick;
+        if (tick - last >= 2000) {
+            logger::logf("fps_display: avg=%.2f cible=%.1f affiche=%d cap=%d "
+                         "(%d/%d frames rejetees)", fps, target, g_shown, cap,
+                         g_rejected, g_frames);
+            last = tick; g_rejected = 0; g_frames = 0;
+        }
+    }
 
     int* samples = (int*)((uintptr_t)g_cgame + CGAME_FPS_SAMPLES_RVA);
     const int base = g_total / FPS_SAMPLES;
