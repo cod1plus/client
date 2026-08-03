@@ -21,6 +21,13 @@ struct DiscordRpcConfig {
     // map, empty = never. A key with no asset behind it shows NO image at all, not
     // even the application icon, which is why this is a declared list and not a guess.
     char map_images[512]    = "";
+
+    // Let Discord START the game when someone clicks Join and it is not running.
+    // Requires a URI handler under HKCU\Software\Classes\discord-<client_id> - user
+    // scope, no admin, exactly what Discord's own SDK registers. Turning this off does
+    // not merely stop writing it: it deletes the key, so the switch actually undoes
+    // what it did.
+    bool register_launch = true;
 };
 
 extern DiscordRpcConfig g_discord_rpc_config;

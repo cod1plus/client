@@ -90,6 +90,78 @@ const char* cvar_str(const char* name) {
     return s ? s : "";
 }
 
+// ---- letting Discord launch a closed game -------------------------------------------
+// Clicking Join reaches a RUNNING game over the IPC pipe we already hold. For a closed
+// one, Discord has to start it, and the only way it knows how is a URI handler:
+//     HKCU\Software\Classes\discord-<client_id>
+//         (default)              "URL:Run game <client_id>"
+//         URL Protocol           ""
+//         shell\open\command     "<CoDMP.exe>" "%1"
+// Per-user, no admin, and the same shape Discord's own SDK writes. The engine ignores
+// the URI it gets handed: idTech3 only parses arguments from the first '+' onwards,
+// and the URI has none.
+
+bool reg_set(HKEY root, const char* subkey, const char* name, const char* value) {
+    HKEY k;
+    if (RegCreateKeyExA(root, subkey, 0, nullptr, 0, KEY_WRITE, nullptr, &k, nullptr)
+        != ERROR_SUCCESS) return false;
+    const LONG r = RegSetValueExA(k, name, 0, REG_SZ, (const BYTE*)value,
+                                  (DWORD)strlen(value) + 1);
+    RegCloseKey(k);
+    return r == ERROR_SUCCESS;
+}
+
+bool reg_get(HKEY root, const char* subkey, const char* name, char* out, DWORD out_size) {
+    HKEY k;
+    if (RegOpenKeyExA(root, subkey, 0, KEY_READ, &k) != ERROR_SUCCESS) return false;
+    DWORD type = 0, sz = out_size;
+    const LONG r = RegQueryValueExA(k, name, nullptr, &type, (BYTE*)out, &sz);
+    RegCloseKey(k);
+    if (r != ERROR_SUCCESS || type != REG_SZ) return false;
+    out[out_size - 1] = '\0';
+    return true;
+}
+
+void register_launch_handler() {
+    if (g_discord_rpc_config.client_id[0] == '\0') return;
+
+    char base[128];
+    snprintf(base, sizeof(base), "Software\\Classes\\discord-%s",
+             g_discord_rpc_config.client_id);
+
+    if (!g_discord_rpc_config.register_launch) {
+        // The off switch removes the key instead of just skipping the write, so a
+        // player who turns it off is not left with a handler he cannot see.
+        char probe[8];
+        if (reg_get(HKEY_CURRENT_USER, base, nullptr, probe, sizeof(probe)) ||
+            RegOpenKeyExA(HKEY_CURRENT_USER, base, 0, KEY_READ, nullptr) == ERROR_SUCCESS) {
+            if (RegDeleteTreeA(HKEY_CURRENT_USER, base) == ERROR_SUCCESS)
+                logger::logf("discord_rpc: handler de lancement retire (%s)", base);
+        }
+        return;
+    }
+
+    char exe[MAX_PATH];
+    if (GetModuleFileNameA(NULL, exe, MAX_PATH) == 0) return;
+
+    char cmd_key[192], cmd[MAX_PATH + 16], desc[160];
+    snprintf(cmd_key, sizeof(cmd_key), "%s\\shell\\open\\command", base);
+    snprintf(cmd, sizeof(cmd), "\"%s\" \"%%1\"", exe);
+    snprintf(desc, sizeof(desc), "URL:Run game %s", g_discord_rpc_config.client_id);
+
+    // Rewriting identical values on every launch would be pointless registry churn,
+    // and would hide a real change in the logs.
+    char current[MAX_PATH + 16] = {0};
+    if (reg_get(HKEY_CURRENT_USER, cmd_key, nullptr, current, sizeof(current)) &&
+        strcmp(current, cmd) == 0) return;
+
+    const bool ok = reg_set(HKEY_CURRENT_USER, base, nullptr, desc) &&
+                    reg_set(HKEY_CURRENT_USER, base, "URL Protocol", "") &&
+                    reg_set(HKEY_CURRENT_USER, cmd_key, nullptr, cmd);
+    logger::logf("discord_rpc: handler de lancement %s -> %s",
+                 ok ? "enregistre" : "ECHEC", cmd);
+}
+
 // ---- join secret --------------------------------------------------------------------
 // The secret is an opaque string Discord only carries: it leaves one player's client
 // and is handed to whoever clicks Join. We put the server address in it, and the
@@ -531,6 +603,7 @@ void discord_rpc_start() {
                      "(voir discord_rpc_client_id dans cod1reloaded.ini)");
         return;
     }
+    register_launch_handler();   // also removes the key when the option is off
     InterlockedExchange(&g_stop, 0);
     g_thread = CreateThread(nullptr, 0, thread_main, nullptr, 0, nullptr);
     logger::logf("discord_rpc: thread demarre (client_id=%s, image=%s)",
