@@ -46,7 +46,13 @@ desktop.ini
 .DS_Store
 
 # --- Dev / non distribué ---
-/tools/
+# On ignore le CONTENU de tools/ (toolchains mingw/cmake, binaires) mais on garde les
+# scripts, comme annoncé en tête de fichier. Il faut `/tools/*` et non `/tools/` :
+# une négation ne peut pas ré-inclure un fichier si le répertoire lui-même est exclu.
+/tools/*
+!/tools/*.py
+!/tools/*.ps1
+!/tools/*.md
 /scoreboard-clean*.png
 /TODO.md
 
