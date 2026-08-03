@@ -66,6 +66,24 @@ void cgs_string(HMODULE cg, uintptr_t rva, size_t field_size, char* out, size_t 
     out[n] = '\0';
 }
 
+// Joueurs reellement connectes. La boucle du tableau des scores @cgame 0x3002856f
+// parcourt cgs.clientinfo par pas de 0x4b0 depuis 0x3018dc8c et teste le champ a
+// l'offset 0 : non nul = client valide. On refait exactement ce parcours.
+constexpr uintptr_t CGS_CLIENTINFO_RVA    = 0x0018dc8c;
+constexpr size_t    CGS_CLIENTINFO_STRIDE = 0x4b0;
+
+int cgs_maxclients(HMODULE cg);
+
+int cgs_players(HMODULE cg) {
+    const int max = cgs_maxclients(cg);
+    if (!cg || max <= 0) return 0;
+    int n = 0;
+    const char* p = (const char*)((uintptr_t)cg + CGS_CLIENTINFO_RVA);
+    for (int i = 0; i < max; ++i, p += CGS_CLIENTINFO_STRIDE)
+        if (*(const int*)p) ++n;
+    return (n >= 0 && n <= max) ? n : 0;
+}
+
 int cgs_maxclients(HMODULE cg) {
     if (!cg) return 0;
     const int n = *(const int*)((uintptr_t)cg + CGS_MAXCLIENTS_RVA);
@@ -456,8 +474,8 @@ void compose(bool in_match, char* details, size_t details_size,
         if (!probed || strcmp(mapraw, last_probe_map) != 0) {
             probed = true;
             snprintf(last_probe_map, sizeof(last_probe_map), "%s", mapraw);
-            logger::logf("discord_rpc: cgs map='%s' gametype='%s' host='%s' maxclients=%d",
-                         mapraw, gt, host, cgs_maxclients(cg));
+            logger::logf("discord_rpc: cgs map='%s' gametype='%s' host='%s' joueurs=%d/%d",
+                         mapraw, gt, host, cgs_players(cg), cgs_maxclients(cg));
         }
     }
 
@@ -594,9 +612,20 @@ bool update_presence(bool in_match) {
             // party id is prefixed: it still groups everyone on one server, while the
             // secret stays the bare address the receiving side connects to and
             // validates.
+            // party.size est ce qui transforme "Demander a rejoindre" en "Rejoindre".
+            // Sans lui Discord ignore s'il reste de la place et bascule sur la demande
+            // d'autorisation : l'evenement ACTIVITY_JOIN n'arrive alors JAMAIS, ce que
+            // le log a confirme - abonnement en place, zero evenement.
+            HMODULE cg = cgame_module();
+            int cur = cgs_players(cg);
+            int max = cgs_maxclients(cg);
+            if (max <= 0) max = 32;
+            if (cur <= 0) cur = 1;
+            if (cur > max) cur = max;
             snprintf(party, sizeof(party),
-                     ",\"party\":{\"id\":\"srv-%s\"},\"secrets\":{\"join\":\"%s\"}",
-                     a, secret);
+                     ",\"party\":{\"id\":\"srv-%s\",\"size\":[%d,%d]}"
+                     ",\"secrets\":{\"join\":\"%s\"}",
+                     a, cur, max, secret);
         }
     }
 
