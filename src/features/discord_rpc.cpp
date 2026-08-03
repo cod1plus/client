@@ -4,6 +4,8 @@
 
 #include "features/discord_rpc.h"
 #include "features/engine_2d.h"
+#include "features/settings_menu.h"   // CODMP_CVAR_FINDVAR_VA, CODMP_CBUF_EXECTEXT_VA
+#include "netcode/protocol_patch.h"   // CODMP_CVAR_COUNT_VA
 #include "core/logger.h"
 
 #include <cstdint>
@@ -77,6 +79,39 @@ void bsp_to_mapname(char* s) {
     if (dot && _stricmp(dot, ".bsp") == 0) *dot = '\0';
 }
 
+const char* cvar_str(const char* name) {
+    if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000) return "";
+    if (*(volatile int*)CODMP_CVAR_COUNT_VA <= 0) return "";
+    typedef void* (__cdecl *Cvar_FindVar_t)(const char*);
+    void* cv = ((Cvar_FindVar_t)CODMP_CVAR_FINDVAR_VA)(name);
+    if (!cv) return "";
+    const char* s = *(const char**)((char*)cv + 0x04);   // cvar_t.string
+    return s ? s : "";
+}
+
+// ---- join secret --------------------------------------------------------------------
+// The secret is an opaque string Discord only carries: it leaves one player's client
+// and is handed to whoever clicks Join. We put the server address in it, and the
+// receiving mod runs `connect <secret>`.
+//
+// Which means the secret is ATTACKER-CONTROLLED TEXT arriving from another Discord
+// user, and it ends up in the console command buffer. A secret containing ';' or a
+// newline would run arbitrary console commands on the machine that clicks Join. So
+// nothing goes to Cbuf unless it looks exactly like an address and nothing else.
+bool is_safe_address(const char* s) {
+    if (!s || !*s) return false;
+    size_t n = 0, colons = 0;
+    for (; s[n]; ++n) {
+        if (n >= 64) return false;                     // no address is this long
+        const char c = s[n];
+        const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                        (c >= 'A' && c <= 'Z') || c == '.' || c == '-' || c == ':';
+        if (!ok) return false;                         // kills ; \n " and every separator
+        if (c == ':') ++colons;
+    }
+    return n >= 7 && colons <= 1;                      // "1.2.3.4" at the very least
+}
+
 // CoD1 colour codes are '^' + one digit; they would show up literally on a profile.
 void strip_colors(const char* in, char* out, size_t out_size) {
     size_t o = 0;
@@ -122,15 +157,73 @@ bool pipe_write_frame(uint32_t opcode, const char* payload) {
     return written == len + 8;
 }
 
-// drain + discard replies (READY/PONG/errors), non-blocking
+// Pull one flat JSON string value out of a frame. Enough for the two fields we care
+// about; the payloads Discord sends here have no nesting in the way and no escapes.
+bool json_str(const char* json, const char* key, char* out, size_t out_size) {
+    char needle[48];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    const char* p = strstr(json, needle);
+    if (!p) return false;
+    p += strlen(needle);
+    while (*p == ' ' || *p == ':') ++p;
+    if (*p != '"') return false;
+    ++p;
+    size_t i = 0;
+    while (*p && *p != '"' && i + 1 < out_size) out[i++] = *p++;
+    out[i] = '\0';
+    return i > 0;
+}
+
+// Read whatever Discord sent and act on ACTIVITY_JOIN. Everything else (READY, PONG,
+// command acks, errors) is still discarded - we only ever needed one event.
+// Frames are [opcode u32][len u32][json], and a frame can straddle two reads, so the
+// leftover is kept rather than parsed from a single buffer.
+char  g_rx[8192];
+size_t g_rx_len = 0;
+
+void on_join(const char* secret) {
+    if (!is_safe_address(secret)) {
+        logger::logf("discord_rpc: join secret rejected (not an address): refusing to "
+                     "run it as a console command");
+        return;
+    }
+    if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000) return;
+    char cmd[96];
+    snprintf(cmd, sizeof(cmd), "connect %s\n", secret);
+    typedef void (__cdecl *Cbuf_ExecuteText_t)(int, const char*);
+    ((Cbuf_ExecuteText_t)CODMP_CBUF_EXECTEXT_VA)(2 /* EXEC_APPEND */, cmd);
+    logger::logf("discord_rpc: ACTIVITY_JOIN -> connect %s", secret);
+}
+
 void pipe_drain() {
     if (g_pipe == INVALID_HANDLE_VALUE) return;
-    char scratch[2048];
     DWORD avail = 0;
     while (PeekNamedPipe(g_pipe, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+        if (g_rx_len >= sizeof(g_rx) - 1) { g_rx_len = 0; }   // desync: start clean
+        DWORD want = (DWORD)(sizeof(g_rx) - 1 - g_rx_len);
+        if (avail < want) want = avail;
         DWORD got = 0;
-        DWORD want = avail < sizeof(scratch) ? avail : (DWORD)sizeof(scratch);
-        if (!ReadFile(g_pipe, scratch, want, &got, nullptr) || got == 0) break;
+        if (!ReadFile(g_pipe, g_rx + g_rx_len, want, &got, nullptr) || got == 0) break;
+        g_rx_len += got;
+
+        // consume every complete frame currently buffered
+        for (;;) {
+            if (g_rx_len < 8) break;
+            uint32_t len;
+            memcpy(&len, g_rx + 4, 4);
+            if (len > sizeof(g_rx) - 8) { g_rx_len = 0; break; }   // absurd: resync
+            if (g_rx_len < 8 + len) break;                          // wait for the rest
+            char body[4096];
+            const size_t n = len < sizeof(body) - 1 ? len : sizeof(body) - 1;
+            memcpy(body, g_rx + 8, n);
+            body[n] = '\0';
+            if (strstr(body, "ACTIVITY_JOIN")) {
+                char secret[96];
+                if (json_str(body, "secret", secret, sizeof(secret))) on_join(secret);
+            }
+            memmove(g_rx, g_rx + 8 + len, g_rx_len - (8 + len));
+            g_rx_len -= 8 + len;
+        }
     }
 }
 
@@ -147,7 +240,11 @@ bool pipe_connect() {
         snprintf(hs, sizeof(hs), "{\"v\":1,\"client_id\":\"%s\"}",
                  g_discord_rpc_config.client_id);
         if (!pipe_write_frame(0, hs)) { pipe_close(); continue; }
-        logger::logf("discord_rpc: connecte (%s)", name);
+        // Without this subscription Discord never tells us that someone clicked Join.
+        pipe_write_frame(1, "{\"cmd\":\"SUBSCRIBE\",\"evt\":\"ACTIVITY_JOIN\","
+                            "\"args\":{},\"nonce\":\"sub-join\"}");
+        g_rx_len = 0;
+        logger::logf("discord_rpc: connecte (%s), abonne a ACTIVITY_JOIN", name);
         return true;
     }
     return false;
@@ -298,13 +395,36 @@ bool update_presence(bool in_match) {
                  ",\"assets\":{\"large_image\":\"%s\",\"large_text\":\"%s\"}", limg, ltxt);
     }
 
+    // Join button. Discord only offers one when party.id AND secrets.join are both
+    // present. The server address serves as both: as a party id it puts everyone on
+    // the same server in the same party, and as a secret it is exactly what the other
+    // client needs to connect. Sent only while in a match and only when the address
+    // passes the same validation the receiving side applies - no point advertising a
+    // secret our own join handler would refuse.
+    char party[224] = "";
+    if (in_match) {
+        const char* addr = cvar_str("cl_currentServerAddress");
+        static char last_logged[80] = {0};
+        if (strcmp(addr, last_logged) != 0) {
+            snprintf(last_logged, sizeof(last_logged), "%s", addr);
+            logger::logf("discord_rpc: cl_currentServerAddress='%s' -> join %s",
+                         addr, is_safe_address(addr) ? "offert" : "indisponible");
+        }
+        if (is_safe_address(addr)) {
+            char a[96];
+            json_escape(addr, a, sizeof(a));
+            snprintf(party, sizeof(party),
+                     ",\"party\":{\"id\":\"%s\"},\"secrets\":{\"join\":\"%s\"}", a, a);
+        }
+    }
+
     char payload[1024];
     snprintf(payload, sizeof(payload),
         "{\"cmd\":\"SET_ACTIVITY\",\"args\":{\"pid\":%lu,\"activity\":{"
-        "\"details\":\"%s\"%s%s%s"
+        "\"details\":\"%s\"%s%s%s%s"
         "}},\"nonce\":\"%u\"}",
         (unsigned long)GetCurrentProcessId(),
-        det, stf, ts, assets, ++g_nonce);
+        det, stf, ts, assets, party, ++g_nonce);
 
     if (!pipe_write_frame(1, payload)) return false;
     g_sent_state     = state;
