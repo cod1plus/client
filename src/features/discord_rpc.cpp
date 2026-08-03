@@ -4,6 +4,8 @@
 
 #include "features/discord_rpc.h"
 #include "features/engine_2d.h"
+#include "features/settings_menu.h"   // CODMP_CVAR_FINDVAR_VA
+#include "netcode/protocol_patch.h"   // CODMP_CVAR_COUNT_VA
 #include "core/logger.h"
 
 #include <cstdint>
@@ -26,6 +28,45 @@ int           g_sent_state     = -1;
 long long     g_state_epoch    = 0;   // time() at state start
 DWORD         g_last_send_tick = 0;
 unsigned      g_nonce          = 0;
+
+char g_sent_details[192] = {0};   // resend when the text changes, not just the state
+char g_sent_state_txt[192] = {0};
+
+// ---- what the client knows about the server it is on --------------------------------
+// mapname / g_gametype / sv_hostname are serverinfo keys. Whether the engine also
+// exposes them as client cvars is not something the strings in the binaries can prove,
+// so read them defensively and log what actually came back the first time: an empty
+// answer simply degrades to the old fixed text instead of showing a blank presence.
+
+const char* cvar_str(const char* name) {
+    if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000) return "";
+    if (*(volatile int*)CODMP_CVAR_COUNT_VA <= 0) return "";
+    typedef void* (__cdecl *Cvar_FindVar_t)(const char*);
+    void* cv = ((Cvar_FindVar_t)CODMP_CVAR_FINDVAR_VA)(name);
+    if (!cv) return "";
+    const char* s = *(const char**)((char*)cv + 0x04);   // cvar_t.string
+    return s ? s : "";
+}
+
+// CoD1 colour codes are '^' + one digit; they would show up literally on a profile.
+void strip_colors(const char* in, char* out, size_t out_size) {
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 1 < out_size; ++i) {
+        if (in[i] == '^' && in[i + 1] >= '0' && in[i + 1] <= '9') { ++i; continue; }
+        out[o++] = in[i];
+    }
+    while (o > 0 && out[o - 1] == ' ') --o;    // trailing padding is common in host names
+    out[o] = '\0';
+}
+
+// "mp_carentan" -> "Carentan"; leaves anything unexpected alone, so custom maps like
+// mp_coastal read correctly too.
+void pretty_map(const char* in, char* out, size_t out_size) {
+    if (!in[0]) { out[0] = '\0'; return; }
+    if (strncmp(in, "mp_", 3) == 0) in += 3;
+    snprintf(out, out_size, "%s", in);
+    if (out[0] >= 'a' && out[0] <= 'z') out[0] = (char)(out[0] - 'a' + 'A');
+}
 
 constexpr DWORD IN_MATCH_TIMEOUT_MS = 1500;
 constexpr DWORD MIN_SEND_GAP_MS     = 4000;  // discord limits ~5 updates/20s
@@ -93,6 +134,51 @@ void json_escape(const char* in, char* out, size_t out_size) {
 }
 
 // false only on write failure (= discord closed)
+// details = what you are playing, state = where. Falls back to the .ini strings when
+// the engine gives us nothing, so the presence is never blank.
+void compose(bool in_match, char* details, size_t details_size,
+                            char* state_txt, size_t state_size) {
+    details[0] = '\0';
+    state_txt[0] = '\0';
+
+    if (in_match) {
+        char mapraw[64], gt[32], host[128];
+        snprintf(mapraw, sizeof(mapraw), "%s", cvar_str("mapname"));
+        snprintf(gt,     sizeof(gt),     "%s", cvar_str("g_gametype"));
+        strip_colors(cvar_str("sv_hostname"), host, sizeof(host));
+
+        static bool probed = false;
+        if (!probed) {
+            probed = true;
+            logger::logf("discord_rpc: server info mapname='%s' g_gametype='%s' sv_hostname='%s'",
+                         mapraw, gt, host);
+        }
+
+        char mapname[64];
+        pretty_map(mapraw, mapname, sizeof(mapname));
+
+        // Raw gametype code, uppercased: players say "sd" and "tdm", and a table of
+        // pretty names would just go stale on the first custom gametype.
+        char gtup[32];
+        size_t i = 0;
+        for (; gt[i] && i + 1 < sizeof(gtup); ++i)
+            gtup[i] = (gt[i] >= 'a' && gt[i] <= 'z') ? (char)(gt[i] - 'a' + 'A') : gt[i];
+        gtup[i] = '\0';
+
+        if (mapname[0] && gtup[0])      snprintf(details, details_size, "%s on %s", gtup, mapname);
+        else if (mapname[0])            snprintf(details, details_size, "%s", mapname);
+        if (host[0])                    snprintf(state_txt, state_size, "%s", host);
+    }
+
+    if (!details[0]) {
+        snprintf(details, details_size, "%s",
+                 in_match ? g_discord_rpc_config.details_match
+                          : g_discord_rpc_config.details_menu);
+    }
+    if (!state_txt[0] && g_discord_rpc_config.state_text[0])
+        snprintf(state_txt, state_size, "%s", g_discord_rpc_config.state_text);
+}
+
 bool update_presence(bool in_match) {
     const int state = in_match ? 1 : 0;
     if (state != g_last_state) {
@@ -100,17 +186,22 @@ bool update_presence(bool in_match) {
         g_state_epoch = (long long)time(nullptr);
     }
 
-    if (state == g_sent_state) return true;
+    // The map and the server can change without the menu/match state changing, so the
+    // resend test is on the TEXT, not just on that state.
+    char details[192], state_txt[192];
+    compose(in_match, details, sizeof(details), state_txt, sizeof(state_txt));
+
+    if (state == g_sent_state &&
+        strcmp(details,   g_sent_details)  == 0 &&
+        strcmp(state_txt, g_sent_state_txt) == 0) return true;
 
     const DWORD now = GetTickCount();
     if (g_last_send_tick != 0 && (now - g_last_send_tick) < MIN_SEND_GAP_MS)
         return true;  // throttle, resend next tick
 
     char det[160], st_esc[160], limg[96], ltxt[160];
-    json_escape(in_match ? g_discord_rpc_config.details_match
-                         : g_discord_rpc_config.details_menu,
-                det, sizeof(det));
-    json_escape(g_discord_rpc_config.state_text,   st_esc, sizeof(st_esc));
+    json_escape(details,   det,    sizeof(det));
+    json_escape(state_txt, st_esc, sizeof(st_esc));
     json_escape(g_discord_rpc_config.large_image,  limg,   sizeof(limg));
     json_escape(g_discord_rpc_config.large_text,   ltxt,   sizeof(ltxt));
 
@@ -144,6 +235,8 @@ bool update_presence(bool in_match) {
     if (!pipe_write_frame(1, payload)) return false;
     g_sent_state     = state;
     g_last_send_tick = now;
+    snprintf(g_sent_details,  sizeof(g_sent_details),  "%s", details);
+    snprintf(g_sent_state_txt, sizeof(g_sent_state_txt), "%s", state_txt);
     return true;
 }
 
