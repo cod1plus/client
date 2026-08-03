@@ -140,6 +140,45 @@ bool reg_get(HKEY root, const char* subkey, const char* name, char* out, DWORD o
     return true;
 }
 
+// Quand Discord LANCE le jeu, il ne redemande pas ACTIVITY_JOIN par le pipe une fois
+// le client connecte : il passe le secret dans l'URI de la ligne de commande, et c'est
+// tout. Le log l'a montre - jeu demarre par Discord a la seconde du clic, abonnement
+// en place, zero evenement.
+char  g_pending_join[160] = {0};
+DWORD g_start_tick = 0;
+
+void capture_launch_uri() {
+    const char* cmd = GetCommandLineA();
+    if (!cmd) return;
+    logger::logf("discord_rpc: ligne de commande = %.400s", cmd);
+
+    char needle[96];
+    snprintf(needle, sizeof(needle), "discord-%s://", g_discord_rpc_config.client_id);
+    const char* p = strstr(cmd, needle);
+    if (!p) return;
+    p += strlen(needle);
+
+    // On ignore un eventuel segment de chemin ("join/", "spectate/"...) avant le
+    // secret : le format exact n'est pas documente et la ligne journalisee ci-dessus
+    // permettra de le figer si celui-ci ne suffit pas.
+    static const char* kSkip[] = { "join/", "spectate/", "_join/" };
+    for (const char* s : kSkip) {
+        const size_t n = strlen(s);
+        if (_strnicmp(p, s, n) == 0) { p += n; break; }
+    }
+
+    size_t i = 0;
+    while (p[i] && p[i] != '"' && p[i] != ' ' && i + 1 < sizeof(g_pending_join)) {
+        g_pending_join[i] = p[i];
+        ++i;
+    }
+    g_pending_join[i] = '\0';
+    while (i > 0 && (g_pending_join[i-1] == '/' || g_pending_join[i-1] == '\r' ||
+                     g_pending_join[i-1] == '\n')) g_pending_join[--i] = '\0';
+
+    logger::logf("discord_rpc: lancement via Discord, secret='%s'", g_pending_join);
+}
+
 void register_launch_handler() {
     if (g_discord_rpc_config.client_id[0] == '\0') return;
 
@@ -688,6 +727,19 @@ DWORD WINAPI thread_main(LPVOID) {
             }
         } else {
             pipe_drain();
+
+            // Le connect ne peut pas partir depuis DllMain : le moteur n'existe pas
+            // encore. On attend que le systeme de cvars soit debout, plus une marge
+            // pour que le client finisse son initialisation.
+            if (g_pending_join[0] && GetTickCount() - g_start_tick > 8000 &&
+                (uintptr_t)GetModuleHandleA(NULL) == 0x400000 &&
+                *(volatile int*)CODMP_CVAR_COUNT_VA > 0) {
+                char s[160];
+                snprintf(s, sizeof(s), "%s", g_pending_join);
+                g_pending_join[0] = 0;
+                on_join(s);
+            }
+
             if (!update_presence(in_match_now())) {
                 logger::logf("discord_rpc: ecriture echouee -> deconnecte");
                 pipe_close();
@@ -714,6 +766,8 @@ void discord_rpc_start() {
         return;
     }
     register_launch_handler();   // also removes the key when the option is off
+    capture_launch_uri();        // secret passe par Discord au lancement
+    g_start_tick = GetTickCount();
     InterlockedExchange(&g_stop, 0);
     g_thread = CreateThread(nullptr, 0, thread_main, nullptr, 0, nullptr);
     logger::logf("discord_rpc: thread demarre (client_id=%s, image=%s)",
