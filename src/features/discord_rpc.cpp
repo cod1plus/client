@@ -4,8 +4,6 @@
 
 #include "features/discord_rpc.h"
 #include "features/engine_2d.h"
-#include "features/settings_menu.h"   // CODMP_CVAR_FINDVAR_VA
-#include "netcode/protocol_patch.h"   // CODMP_CVAR_COUNT_VA
 #include "core/logger.h"
 
 #include <cstdint>
@@ -33,19 +31,49 @@ char g_sent_details[192] = {0};   // resend when the text changes, not just the 
 char g_sent_state_txt[192] = {0};
 
 // ---- what the client knows about the server it is on --------------------------------
-// mapname / g_gametype / sv_hostname are serverinfo keys. Whether the engine also
-// exposes them as client cvars is not something the strings in the binaries can prove,
-// so read them defensively and log what actually came back the first time: an empty
-// answer simply degrades to the old fixed text instead of showing a blank presence.
+// The cvars named mapname / sv_hostname / g_gametype are NOT the answer: the binary
+// carries the server code too, so every client registers them (defaults "nomap" and
+// "CoDHost") and on a pure client they keep those defaults forever. Proven twice -
+// live, and statically: those two defaults are pushed right before their cvar names in
+// the server's own Cvar_Get block.
+//
+// The real values live in cgame, which parses them out of the CS_SERVERINFO
+// configstring. CG_ParseServerinfo @cgame 0x3002d040 (RE'd 2026-08-03) calls
+// Info_ValueForKey(ecx = info, ebx = key) @0x300404b0 and stores:
+//     gametype   [32]  RVA 0x1d5a5c   "sd"
+//     hostname   [256] RVA 0x1d5a7c   the real server name
+//     maxclients int   RVA 0x1d5b7c   the "of N" a party size would need
+//     mapname    [64]  RVA 0x1d5b80   as "maps/mp/<name>.bsp" (fmt "maps/mp/%s.bsp")
+// Each field ends exactly where the next begins, which is what confirms the layout.
+constexpr uintptr_t CGS_GAMETYPE_RVA   = 0x001d5a5c;
+constexpr uintptr_t CGS_HOSTNAME_RVA   = 0x001d5a7c;
+constexpr uintptr_t CGS_MAXCLIENTS_RVA = 0x001d5b7c;
+constexpr uintptr_t CGS_MAPNAME_RVA    = 0x001d5b80;
 
-const char* cvar_str(const char* name) {
-    if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000) return "";
-    if (*(volatile int*)CODMP_CVAR_COUNT_VA <= 0) return "";
-    typedef void* (__cdecl *Cvar_FindVar_t)(const char*);
-    void* cv = ((Cvar_FindVar_t)CODMP_CVAR_FINDVAR_VA)(name);
-    if (!cv) return "";
-    const char* s = *(const char**)((char*)cv + 0x04);   // cvar_t.string
-    return s ? s : "";
+// cgame is loaded per map and gone in the menus, so its presence doubles as "connected".
+HMODULE cgame_module() { return GetModuleHandleA("cgame_mp_x86.dll"); }
+
+void cgs_string(HMODULE cg, uintptr_t rva, size_t field_size, char* out, size_t out_size) {
+    out[0] = '\0';
+    if (!cg) return;
+    const char* p = (const char*)((uintptr_t)cg + rva);
+    size_t n = 0;
+    while (n < field_size && n + 1 < out_size && p[n]) { out[n] = p[n]; ++n; }
+    out[n] = '\0';
+}
+
+int cgs_maxclients(HMODULE cg) {
+    if (!cg) return 0;
+    const int n = *(const int*)((uintptr_t)cg + CGS_MAXCLIENTS_RVA);
+    return (n > 0 && n <= 64) ? n : 0;
+}
+
+// "maps/mp/mp_carentan.bsp" -> "mp_carentan"
+void bsp_to_mapname(char* s) {
+    const char* slash = strrchr(s, '/');
+    if (slash) memmove(s, slash + 1, strlen(slash + 1) + 1);
+    char* dot = strrchr(s, '.');
+    if (dot && _stricmp(dot, ".bsp") == 0) *dot = '\0';
 }
 
 // CoD1 colour codes are '^' + one digit; they would show up literally on a profile.
@@ -63,7 +91,9 @@ void strip_colors(const char* in, char* out, size_t out_size) {
 // mp_coastal read correctly too.
 void pretty_map(const char* in, char* out, size_t out_size) {
     if (!in[0]) { out[0] = '\0'; return; }
-    if (strncmp(in, "mp_", 3) == 0) in += 3;
+    // case-insensitive: the prefix comes from whatever the server put in serverinfo,
+    // and "MP_Harbor" is as valid a spelling as "mp_harbor"
+    if (_strnicmp(in, "mp_", 3) == 0) in += 3;
     snprintf(out, out_size, "%s", in);
     if (out[0] >= 'a' && out[0] <= 'z') out[0] = (char)(out[0] - 'a' + 'A');
 }
@@ -133,57 +163,37 @@ void json_escape(const char* in, char* out, size_t out_size) {
     out[o] = '\0';
 }
 
-// false only on write failure (= discord closed)
 // details = what you are playing, state = where. Falls back to the .ini strings when
-// the engine gives us nothing, so the presence is never blank.
-// Survey of everything the richer presence features would need (party "3 of 6" wants a
-// player count and sv_maxclients; a Join button wants the server address to hand back
-// as the join secret). Runs in the menus AND in a match, and again whenever the map
-// changes, so the line is easy to catch instead of firing once at the one moment
-// nobody is reading the log.
-void probe_server_cvars(const char* tag) {
-    static const char* kProbe[] = {
-        "mapname", "g_gametype", "sv_hostname", "sv_maxclients",
-        "sv_privateClients", "cl_currentServerAddress", "cl_currentServerIP",
-        "com_errorMessage", "ui_serverStatusTimeOut", "cg_scoreboardPlayers",
-    };
-    for (size_t k = 0; k < sizeof(kProbe) / sizeof(kProbe[0]); ++k)
-        logger::logf("discord_rpc: probe [%s] %-24s = '%s'", tag, kProbe[k], cvar_str(kProbe[k]));
-}
-
+// cgame is not loaded (i.e. in the menus), so the presence is never blank.
 void compose(bool in_match, char* details, size_t details_size,
                             char* state_txt, size_t state_size) {
     details[0] = '\0';
     state_txt[0] = '\0';
 
-    char mapraw[64], gt[32], host[128];
-    snprintf(mapraw, sizeof(mapraw), "%s", cvar_str("mapname"));
-    snprintf(gt,     sizeof(gt),     "%s", cvar_str("g_gametype"));
-    strip_colors(cvar_str("sv_hostname"), host, sizeof(host));
+    HMODULE cg = cgame_module();
+    char mapraw[80] = {0}, gt[32] = {0}, hostraw[256] = {0}, host[160] = {0};
+    if (cg) {
+        cgs_string(cg, CGS_MAPNAME_RVA,  64,  mapraw,  sizeof(mapraw));
+        cgs_string(cg, CGS_GAMETYPE_RVA, 32,  gt,      sizeof(gt));
+        cgs_string(cg, CGS_HOSTNAME_RVA, 256, hostraw, sizeof(hostraw));
+        bsp_to_mapname(mapraw);
+        strip_colors(hostraw, host, sizeof(host));
+    }
 
-    // Probe from the menus as well as in a match, and again on every map change: firing
-    // once, in-match only, made the line easy to miss entirely.
+    // Log what cgame really held, once and again on every map change.
     {
-        static char last_probe_map[64] = {0};
+        static char last_probe_map[80] = {0};
         static bool probed = false;
         if (!probed || strcmp(mapraw, last_probe_map) != 0) {
             probed = true;
             snprintf(last_probe_map, sizeof(last_probe_map), "%s", mapraw);
-            probe_server_cvars(in_match ? "match" : "menu");
+            logger::logf("discord_rpc: cgs map='%s' gametype='%s' host='%s' maxclients=%d",
+                         mapraw, gt, host, cgs_maxclients(cg));
         }
     }
 
     if (in_match) {
-        // These cvars exist on every client because the binary carries the server code
-        // too, and on a pure client they hold the LOCAL defaults - not the values of
-        // the server we are connected to. Confirmed live: connected to a real server,
-        // mapname read "nomap" and sv_hostname read "CoDHost", which is exactly what a
-        // fresh install has. Showing that is worse than showing nothing, so anything
-        // that looks like a default is treated as unknown.
-        if (strcmp(mapraw, "nomap") == 0) mapraw[0] = '\0';
-        if (strcmp(host, "CoDHost") == 0) host[0] = '\0';
-
-        char mapname[64];
+        char mapname[80];
         pretty_map(mapraw, mapname, sizeof(mapname));
 
         // Raw gametype code, uppercased: players say "sd" and "tdm", and a table of
@@ -194,8 +204,6 @@ void compose(bool in_match, char* details, size_t details_size,
             gtup[i] = (gt[i] >= 'a' && gt[i] <= 'z') ? (char)(gt[i] - 'a' + 'A') : gt[i];
         gtup[i] = '\0';
 
-        // The gametype cvar has a local default too, so it is only trustworthy in the
-        // company of a real map name - on its own it would just be another guess.
         if (mapname[0] && gtup[0])      snprintf(details, details_size, "%s on %s", gtup, mapname);
         else if (mapname[0])            snprintf(details, details_size, "%s", mapname);
         if (host[0])                    snprintf(state_txt, state_size, "%s", host);
