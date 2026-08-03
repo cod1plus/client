@@ -32,6 +32,7 @@ unsigned      g_nonce          = 0;
 char g_sent_details[192] = {0};   // resend when the text changes, not just the state
 char g_sent_state_txt[192] = {0};
 char g_sent_image[96] = {0};
+bool g_party_rejected = false;   // discord refused the join block: stop sending it
 
 // ---- what the client knows about the server it is on --------------------------------
 // The cvars named mapname / sv_hostname / g_gametype are NOT the answer: the binary
@@ -221,6 +222,28 @@ void pipe_drain() {
                 char secret[96];
                 if (json_str(body, "secret", secret, sizeof(secret))) on_join(secret);
             }
+            // Discord answers every command. A rejected SET_ACTIVITY leaves the
+            // PREVIOUS presence in place, which looks exactly like the mod never
+            // updating - so the refusal has to be visible, with its reason.
+            if (strstr(body, "\"evt\":\"ERROR\"") || strstr(body, "\"code\":")) {
+                char msg[192];
+                if (!json_str(body, "message", msg, sizeof(msg)))
+                    snprintf(msg, sizeof(msg), "%.180s", body);
+                if (!g_party_rejected) {
+                    // Fall back to a presence without the join block rather than let a
+                    // rejected activity sit there. A refusal keeps the PREVIOUS
+                    // presence alive, so the map and server would stay stuck on
+                    // whatever was showing before - which reads as the mod being
+                    // broken, when only the newest field is at fault.
+                    g_party_rejected = true;
+                    g_sent_state = -1;          // force a resend without party/secrets
+                    logger::logf("discord_rpc: REFUS de discord -> %s "
+                                 "| join desactive pour la session, presence renvoyee "
+                                 "sans party/secrets", msg);
+                } else {
+                    logger::logf("discord_rpc: REFUS de discord -> %s", msg);
+                }
+            }
             memmove(g_rx, g_rx + 8 + len, g_rx_len - (8 + len));
             g_rx_len -= 8 + len;
         }
@@ -402,7 +425,7 @@ bool update_presence(bool in_match) {
     // passes the same validation the receiving side applies - no point advertising a
     // secret our own join handler would refuse.
     char party[224] = "";
-    if (in_match) {
+    if (in_match && !g_party_rejected) {
         const char* addr = cvar_str("cl_currentServerAddress");
         static char last_logged[80] = {0};
         if (strcmp(addr, last_logged) != 0) {
