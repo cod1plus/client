@@ -136,33 +136,44 @@ void json_escape(const char* in, char* out, size_t out_size) {
 // false only on write failure (= discord closed)
 // details = what you are playing, state = where. Falls back to the .ini strings when
 // the engine gives us nothing, so the presence is never blank.
+// Survey of everything the richer presence features would need (party "3 of 6" wants a
+// player count and sv_maxclients; a Join button wants the server address to hand back
+// as the join secret). Runs in the menus AND in a match, and again whenever the map
+// changes, so the line is easy to catch instead of firing once at the one moment
+// nobody is reading the log.
+void probe_server_cvars(const char* tag) {
+    static const char* kProbe[] = {
+        "mapname", "g_gametype", "sv_hostname", "sv_maxclients",
+        "sv_privateClients", "cl_currentServerAddress", "cl_currentServerIP",
+        "com_errorMessage", "ui_serverStatusTimeOut", "cg_scoreboardPlayers",
+    };
+    for (size_t k = 0; k < sizeof(kProbe) / sizeof(kProbe[0]); ++k)
+        logger::logf("discord_rpc: probe [%s] %-24s = '%s'", tag, kProbe[k], cvar_str(kProbe[k]));
+}
+
 void compose(bool in_match, char* details, size_t details_size,
                             char* state_txt, size_t state_size) {
     details[0] = '\0';
     state_txt[0] = '\0';
 
-    if (in_match) {
-        char mapraw[64], gt[32], host[128];
-        snprintf(mapraw, sizeof(mapraw), "%s", cvar_str("mapname"));
-        snprintf(gt,     sizeof(gt),     "%s", cvar_str("g_gametype"));
-        strip_colors(cvar_str("sv_hostname"), host, sizeof(host));
+    char mapraw[64], gt[32], host[128];
+    snprintf(mapraw, sizeof(mapraw), "%s", cvar_str("mapname"));
+    snprintf(gt,     sizeof(gt),     "%s", cvar_str("g_gametype"));
+    strip_colors(cvar_str("sv_hostname"), host, sizeof(host));
 
-        // One-shot survey of everything the richer presence features would need, so a
-        // single log line from a real server settles what is reachable:
-        //   party "3 of 6"  needs a player count and sv_maxclients
-        //   Join button     needs the server's address, to hand back as the join secret
+    // Probe from the menus as well as in a match, and again on every map change: firing
+    // once, in-match only, made the line easy to miss entirely.
+    {
+        static char last_probe_map[64] = {0};
         static bool probed = false;
-        if (!probed) {
+        if (!probed || strcmp(mapraw, last_probe_map) != 0) {
             probed = true;
-            static const char* kProbe[] = {
-                "mapname", "g_gametype", "sv_hostname", "sv_maxclients",
-                "sv_privateClients", "cl_currentServerAddress", "cl_currentServerIP",
-                "com_errorMessage", "ui_serverStatusTimeOut", "cg_scoreboardPlayers",
-            };
-            for (size_t k = 0; k < sizeof(kProbe) / sizeof(kProbe[0]); ++k)
-                logger::logf("discord_rpc: probe %-24s = '%s'", kProbe[k], cvar_str(kProbe[k]));
+            snprintf(last_probe_map, sizeof(last_probe_map), "%s", mapraw);
+            probe_server_cvars(in_match ? "match" : "menu");
         }
+    }
 
+    if (in_match) {
         // These cvars exist on every client because the binary carries the server code
         // too, and on a pure client they hold the LOCAL defaults - not the values of
         // the server we are connected to. Confirmed live: connected to a real server,
