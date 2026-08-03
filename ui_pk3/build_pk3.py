@@ -12,13 +12,16 @@ import zipfile
 SRC = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(SRC, "..", "dist")
 PK3 = os.path.join(OUT_DIR, "zz_cod1x_ui.pk3")
-GAME_MAIN = r"C:\Users\bitpo\OneDrive\Bureau\Call of Duty - R 1.5\Main"
+GAME_MAIN = r"C:\Users\bitpo\OneDrive\Bureau\Call of Duty - R 1.6 - dev\Main"
 
 FILES = [
     "ui_mp/main.menu",
     "ui_mp/menus.txt",
     "ui_mp/cod1x_settings.menu",
     "ui_mp/cod1x_files.menu",
+    # server browser + the 1.6/1.5 master list selector. Regenerate from the game's
+    # paka.pk3 with gen_joinserver_menu.py rather than editing it by hand.
+    "ui_mp/joinserver.menu",
 ]
 # NOTE: the textured skin (ui/assets/1.6x, assets_gen2.py) and the font override
 # (fonts/, fonts_gen.py) are NOT shipped — enzo prefers the flat engine-drawn look

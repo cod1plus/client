@@ -105,6 +105,7 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::settings_menu_tick();       // register/poll cod1x_* cvars + cg_fov unlock + hotkey
             patches::cheat_scan_tick();          // cvar-name cheat detection -> userinfo cod1x_ac
             patches::rinput_tick();              // follow m_rinput, publish m_rinput_hz
+            patches::netmode_tick();             // follow cod1x_masterlist (1.6 <-> legacy 1.5)
         }
         patches::widescreen_update_stretch();    // drive the stretched-mode vfov ratio (live)
         patches::gamma_fix_tick();               // per-monitor gamma: focus/monitor transitions
