@@ -468,6 +468,11 @@ void pipe_drain() {
             const size_t n = len < sizeof(body) - 1 ? len : sizeof(body) - 1;
             memcpy(body, g_rx + 8, n);
             body[n] = '\0';
+            // Tout ce que Discord envoie, journalise. L'URI de lancement s'est revelee
+            // vide et l'evenement attendu n'arrive pas : sans voir les reponses reelles
+            // on ne fait que deviner une troisieme fois.
+            logger::logf("discord_rpc: <- %.220s", body);
+
             if (strstr(body, "ACTIVITY_JOIN")) {
                 char secret[96];
                 if (json_str(body, "secret", secret, sizeof(secret))) on_join(secret);
@@ -514,8 +519,11 @@ bool pipe_connect() {
                  g_discord_rpc_config.client_id);
         if (!pipe_write_frame(0, hs)) { pipe_close(); continue; }
         // Without this subscription Discord never tells us that someone clicked Join.
-        pipe_write_frame(1, "{\"cmd\":\"SUBSCRIBE\",\"evt\":\"ACTIVITY_JOIN\","
-                            "\"args\":{},\"nonce\":\"sub-join\"}");
+        static const char* kSub =
+            "{\"cmd\":\"SUBSCRIBE\",\"evt\":\"ACTIVITY_JOIN\","
+            "\"args\":{},\"nonce\":\"sub-join\"}";
+        pipe_write_frame(1, kSub);
+        logger::logf("discord_rpc: -> %s", kSub);
         g_rx_len = 0;
         logger::logf("discord_rpc: connecte (%s), abonne a ACTIVITY_JOIN", name);
         return true;
