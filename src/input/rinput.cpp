@@ -292,7 +292,14 @@ void publish_hz() {
     // faisait croire au joueur que son reglage avait ete efface - "je mets
     // m_rinput_hz 1000 et au bout d'un moment c'est 0" - d'autant que le nom ressemble
     // a un reglage alors que ce n'est qu'une mesure. On garde le dernier chiffre reel.
-    if (fresh <= 0) return;
+    // Une souris n'emet QUE lorsqu'elle bouge : immobile ou en micro-mouvement elle
+    // envoie une poignee de rapports, et publier ca donnait 16, puis 38, puis 962 -
+    // le joueur y lit une valeur qui "change toute seule", alors que c'est la mesure
+    // d'un geste qu'il ne fait pas. En dessous de ce seuil il n'y a pas de mouvement
+    // a mesurer : on garde le dernier chiffre reel plutot que d'afficher du bruit.
+    // 0.5 s de fenetre, donc 100 rapports = 200 Hz, tres en dessous de toute souris
+    // qui bouge vraiment.
+    if (fresh < 100) return;
 
     const long hz = (long)((double)fresh / dt + 0.5);
 
