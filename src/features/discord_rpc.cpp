@@ -7,6 +7,7 @@
 #include "features/settings_menu.h"   // CODMP_CVAR_FINDVAR_VA, CODMP_CBUF_EXECTEXT_VA
 #include "netcode/protocol_patch.h"   // CODMP_CVAR_COUNT_VA
 #include "core/logger.h"
+#include "core/iat.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -147,6 +148,39 @@ bool reg_get(HKEY root, const char* subkey, const char* name, char* out, DWORD o
 char  g_pending_join[160] = {0};
 DWORD g_start_tick = 0;
 
+// Le moteur sait se connecter tout seul au demarrage : `+connect <ip>` est son propre
+// mecanisme, execute au bon moment de son initialisation. Le CRT construit lpCmdLine
+// en appelant GetCommandLineA, importe par l'executable - on detourne donc cet appel
+// et on lui rend une ligne augmentee. Plus fiable que d'envoyer un connect differe en
+// pariant sur le moment ou le client est pret.
+typedef LPSTR (WINAPI *GetCommandLineA_t)(void);
+GetCommandLineA_t g_real_GetCommandLineA = nullptr;
+char g_cmdline[1024] = {0};
+
+// Definis plus bas avec le reste de la reception : l'URI n'est pas plus digne de
+// confiance que le pipe, elle passe par exactement les memes controles.
+bool is_safe_address(const char* s);
+bool is_safe_password(const char* s);
+
+bool build_launch_cmdline(const char* orig, const char* addr, const char* pw) {
+    if (!is_safe_address(addr)) return false;
+    // `+set password` avant `+connect` : le mot de passe part dans le userinfo du
+    // paquet de connexion, donc il doit exister avant que celui-ci soit construit.
+    int n;
+    if (pw && pw[0] && is_safe_password(pw))
+        n = snprintf(g_cmdline, sizeof(g_cmdline),
+                     "%s +set password \"%s\" +connect %s", orig, pw, addr);
+    else
+        n = snprintf(g_cmdline, sizeof(g_cmdline), "%s +connect %s", orig, addr);
+    if (n <= 0 || (size_t)n >= sizeof(g_cmdline)) { g_cmdline[0] = 0; return false; }
+    return true;
+}
+
+LPSTR WINAPI hk_GetCommandLineA(void) {
+    LPSTR orig = g_real_GetCommandLineA ? g_real_GetCommandLineA() : nullptr;
+    return g_cmdline[0] ? g_cmdline : orig;
+}
+
 void capture_launch_uri() {
     const char* cmd = GetCommandLineA();
     if (!cmd) return;
@@ -177,6 +211,37 @@ void capture_launch_uri() {
                      g_pending_join[i-1] == '\n')) g_pending_join[--i] = '\0';
 
     logger::logf("discord_rpc: lancement via Discord, secret='%s'", g_pending_join);
+
+    // Decoupe "<adresse>/<motdepasse>" comme le fait la reception par le pipe.
+    char addr[96] = {0}, pw[48] = {0};
+    const char* slash = strchr(g_pending_join, '/');
+    if (slash) {
+        const size_t n = (size_t)(slash - g_pending_join);
+        if (n < sizeof(addr)) {
+            memcpy(addr, g_pending_join, n);
+            addr[n] = '\0';
+            snprintf(pw, sizeof(pw), "%s", slash + 1);
+        }
+    } else {
+        snprintf(addr, sizeof(addr), "%s", g_pending_join);
+    }
+
+    // On passe par la ligne de commande du moteur plutot que par un connect differe.
+    // Les deux s'excluent : g_pending_join est vide si le detour a pris, sinon il
+    // reste la comme filet.
+    if (build_launch_cmdline(cmd, addr, pw)) {
+        void* real = iat_hook("kernel32.dll", "GetCommandLineA", (void*)hk_GetCommandLineA);
+        if (real) {
+            g_real_GetCommandLineA = (GetCommandLineA_t)real;
+            g_pending_join[0] = 0;
+            logger::logf("discord_rpc: +connect injecte dans la ligne de commande "
+                         "(%s, mot de passe %s)", addr, pw[0] ? "fourni" : "absent");
+        } else {
+            g_cmdline[0] = 0;
+            logger::logf("discord_rpc: hook GetCommandLineA impossible -> connect "
+                         "differe a la place");
+        }
+    }
 }
 
 void register_launch_handler() {
