@@ -436,8 +436,14 @@ bool update_presence(bool in_match) {
         if (is_safe_address(addr)) {
             char a[96];
             json_escape(addr, a, sizeof(a));
+            // Discord rejects the whole activity with "secrets cannot match the party
+            // id" when the two are equal - and a rejected activity leaves the previous
+            // presence frozen, so this took the map and the server down with it. The
+            // party id is prefixed: it still groups everyone on one server, while the
+            // secret stays the bare address the receiving side connects to and
+            // validates.
             snprintf(party, sizeof(party),
-                     ",\"party\":{\"id\":\"%s\"},\"secrets\":{\"join\":\"%s\"}", a, a);
+                     ",\"party\":{\"id\":\"srv-%s\"},\"secrets\":{\"join\":\"%s\"}", a, a);
         }
     }
 
