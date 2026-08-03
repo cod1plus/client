@@ -163,6 +163,15 @@ void compose(bool in_match, char* details, size_t details_size,
                 logger::logf("discord_rpc: probe %-24s = '%s'", kProbe[k], cvar_str(kProbe[k]));
         }
 
+        // These cvars exist on every client because the binary carries the server code
+        // too, and on a pure client they hold the LOCAL defaults - not the values of
+        // the server we are connected to. Confirmed live: connected to a real server,
+        // mapname read "nomap" and sv_hostname read "CoDHost", which is exactly what a
+        // fresh install has. Showing that is worse than showing nothing, so anything
+        // that looks like a default is treated as unknown.
+        if (strcmp(mapraw, "nomap") == 0) mapraw[0] = '\0';
+        if (strcmp(host, "CoDHost") == 0) host[0] = '\0';
+
         char mapname[64];
         pretty_map(mapraw, mapname, sizeof(mapname));
 
@@ -174,6 +183,8 @@ void compose(bool in_match, char* details, size_t details_size,
             gtup[i] = (gt[i] >= 'a' && gt[i] <= 'z') ? (char)(gt[i] - 'a' + 'A') : gt[i];
         gtup[i] = '\0';
 
+        // The gametype cvar has a local default too, so it is only trustworthy in the
+        // company of a real map name - on its own it would just be another guess.
         if (mapname[0] && gtup[0])      snprintf(details, details_size, "%s on %s", gtup, mapname);
         else if (mapname[0])            snprintf(details, details_size, "%s", mapname);
         if (host[0])                    snprintf(state_txt, state_size, "%s", host);
