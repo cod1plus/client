@@ -76,8 +76,23 @@ int cvar_int(const char* name, int fallback) {
 
 // --- accumulator -------------------------------------------------------------------
 
+// Counts pile up in the accumulator whether or not the engine is reading it. It only
+// reads while the mouse is captured, so anything that stops that for a moment - the
+// ESC menu, the scoreboard, a map load, a stall - leaves the movement made in the
+// meantime sitting there, and the first read afterwards applies the whole lot at once
+// as a single violent snap. Reported in game as "my mouse is not working well".
+//
+// Movement older than this is not aim any more, it is history, and is dropped.
+constexpr DWORD MAX_ACCUM_AGE_MS = 100;
+DWORD g_last_take = 0;
+
 void take_delta(long* x, long* y) {
+    const DWORD now = GetTickCount();
+    const bool stale = (g_last_take != 0) && (now - g_last_take > MAX_ACCUM_AGE_MS);
+    g_last_take = now;
+
     EnterCriticalSection(&g_lock);
+    if (stale) { g_dx = 0; g_dy = 0; }
     *x = g_dx; *y = g_dy;
     g_dx = 0;  g_dy = 0;
     LeaveCriticalSection(&g_lock);
@@ -245,44 +260,55 @@ long  g_hz_shown           = -1;   // last value pushed to the cvars
 long  g_hz_shown_max       = -1;
 
 void publish_hz() {
-    static DWORD last = 0;
-    const DWORD now = GetTickCount();
-    if (now - last < 100) return;
-    last = now;
+    // Le taux est un nombre de messages divise par un TEMPS, donc il faut mesurer ce
+    // temps. L'ancienne version sommait dix tranches en supposant qu'elles faisaient
+    // une seconde, alors qu'elle les caden�ait avec GetTickCount dont la resolution
+    // est d'environ 15 ms : la fenetre reelle durait jusqu'a 1,15 s et le taux affiche
+    // etait systematiquement sous-estime.
+    static LARGE_INTEGER freq = {};
+    static LONGLONG last_qpc = 0;
+    static long last_total = 0;
+
+    if (freq.QuadPart == 0) {
+        QueryPerformanceFrequency(&freq);
+        if (freq.QuadPart == 0) return;
+    }
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if (last_qpc == 0) { last_qpc = now.QuadPart; return; }
+
+    const double dt = (double)(now.QuadPart - last_qpc) / (double)freq.QuadPart;
+    if (dt < 0.5) return;                       // fenetre d'une demi-seconde minimum
 
     EnterCriticalSection(&g_lock);
     const long total = g_msg_total;
     LeaveCriticalSection(&g_lock);
 
-    const long fresh = total - g_hz_last_total;
-    g_hz_last_total = total;
+    const long fresh = total - last_total;
+    last_total = total;
+    last_qpc   = now.QuadPart;
 
-    g_hz_sum -= g_hz_slot[g_hz_index];
-    g_hz_slot[g_hz_index] = fresh;
-    g_hz_sum += fresh;
-    g_hz_index = (g_hz_index + 1) % HZ_SLOTS;
+    // Souris immobile : elle n'emet rien, donc le taux est INCONNU, pas nul. Publier 0
+    // faisait croire au joueur que son reglage avait ete efface - "je mets
+    // m_rinput_hz 1000 et au bout d'un moment c'est 0" - d'autant que le nom ressemble
+    // a un reglage alors que ce n'est qu'une mesure. On garde le dernier chiffre reel.
+    if (fresh <= 0) return;
 
-    if (fresh == 0) {   // mouse at rest: drop the window instead of showing a stale rate
-        g_hz_sum = 0;
-        memset(g_hz_slot, 0, sizeof(g_hz_slot));
-    }
+    const long hz = (long)((double)fresh / dt + 0.5);
 
-    // Publish through the command buffer, not Cvar_Set: this runs on the watcher
-    // thread and the engine's cvar strings are not thread-safe. Ten writes a second
-    // straight into the cvar system would race the main thread over the same heap.
-    // Only push what actually changed, so a still mouse costs nothing.
     char cmd[96];
-    if (g_hz_sum != g_hz_shown) {
-        g_hz_shown = g_hz_sum;
-        snprintf(cmd, sizeof(cmd), "set m_rinput_hz %ld\n", g_hz_sum);
+    if (hz != g_hz_shown) {
+        g_hz_shown = hz;
+        snprintf(cmd, sizeof(cmd), "set m_rinput_hz %ld\n", hz);
         Cbuf_ExecuteText(EXEC_APPEND, cmd);
     }
-    if (g_hz_sum > g_hz_shown_max) {
-        g_hz_shown_max = g_hz_sum;
-        snprintf(cmd, sizeof(cmd), "set m_rinput_hz_max %ld\n", g_hz_sum);
+    if (hz > g_hz_shown_max) {
+        g_hz_shown_max = hz;
+        snprintf(cmd, sizeof(cmd), "set m_rinput_hz_max %ld\n", hz);
         Cbuf_ExecuteText(EXEC_APPEND, cmd);
     }
 }
+
 
 void reset_hz() {
     g_hz_sum = 0;
