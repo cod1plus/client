@@ -446,13 +446,22 @@ bool update_presence(bool in_match) {
 // the case where cgame is loaded but its layout differs from what we expect.
 bool in_match_now() {
     HMODULE cg = cgame_module();
-    if (cg) {
-        char m[80];
-        cgs_string(cg, CGS_MAPNAME_RVA, 64, m, sizeof(m));
-        if (m[0]) return true;
-    }
+    char m[80] = {0};
+    if (cg) cgs_string(cg, CGS_MAPNAME_RVA, 64, m, sizeof(m));
     const DWORD t = engine_2d_last_hud_tick();
-    return t != 0 && (GetTickCount() - t) < IN_MATCH_TIMEOUT_MS;
+    const bool hud = (t != 0) && (GetTickCount() - t) < IN_MATCH_TIMEOUT_MS;
+    const bool res = (cg && m[0]) || hud;
+
+    // Say out loud what the decision was made on: this test has now been wrong twice,
+    // and its inputs are the only thing that can settle which one is lying.
+    static int last = -1;
+    if ((int)res != last) {
+        last = (int)res;
+        logger::logf("discord_rpc: in_match=%d (cgame=%p mapname='%s' hud_tick=%lu ago=%lu)",
+                     (int)res, (void*)cg, m, (unsigned long)t,
+                     (unsigned long)(t ? GetTickCount() - t : 0));
+    }
+    return res;
 }
 
 DWORD WINAPI thread_main(LPVOID) {
