@@ -330,6 +330,13 @@ void reset_hz() {
 }  // namespace
 
 void rinput_start() {
+#ifdef COD1RELOADED_NO_RINPUT
+    // Bisect build: leave the engine's mouse path completely alone. Not even the IAT
+    // hook is installed, so GetCursorPos goes straight from CoDMP.exe to user32 and an
+    // external RInput, if present, is the only thing in the chain.
+    logger::logf("rinput: compiled out (COD1RELOADED_NO_RINPUT) - no GetCursorPos hook");
+    return;
+#else
     if (!g_lock_ready) {
         InitializeCriticalSection(&g_lock);
         g_lock_ready = true;
@@ -345,9 +352,13 @@ void rinput_start() {
     }
     g_real_GetCursorPos = (GetCursorPos_t)real;
     logger::logf("rinput: GetCursorPos IAT hook installed (idle until m_rinput 1)");
+#endif
 }
 
 void rinput_tick() {
+#ifdef COD1RELOADED_NO_RINPUT
+    return;   // no hook, no cvar, nothing to follow
+#else
     if (!g_real_GetCursorPos || !engine_ready()) return;
 
     static bool registered = false;
@@ -385,10 +396,13 @@ void rinput_tick() {
     }
 
     if (applied) publish_hz();
+#endif
 }
 
 void rinput_shutdown() {
+#ifndef COD1RELOADED_NO_RINPUT
     rinput_disable();
+#endif
 }
 
 }  // namespace patches

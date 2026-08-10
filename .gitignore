@@ -62,3 +62,4 @@ desktop.ini
 #     Seuls ui_pk3/ui_mp/*.menu + les generateurs sont versionnes. 19 Mo evites. ---
 /ui_pk3/fonts/
 /ui_pk3/ui/
+/build-norinput/

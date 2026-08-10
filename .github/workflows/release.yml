@@ -53,6 +53,26 @@ jobs:
           cmake --build build --target mss32 -j
           test -f build/mss32.dll
 
+      - name: Build mss32.dll (no-rinput variant)
+        run: |
+          # Second variant, shipped since 1.6.5: the raw-input GetCursorPos hook is
+          # compiled out entirely, so the engine's mouse path is exactly vanilla and an
+          # external RInput is the only thing in the chain. The DLL cannot be renamed (it
+          # is a proxy), so the variants are separated by output DIRECTORY - see the
+          # COD1RELOADED_OUTPUT_DIR block in CMakeLists.txt.
+          cmake -S . -B build-norinput \
+            -DCOD1RELOADED_NO_RINPUT=ON \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=i686-w64-mingw32-gcc \
+            -DCMAKE_CXX_COMPILER=i686-w64-mingw32-g++ \
+            -DCMAKE_RC_COMPILER=i686-w64-mingw32-windres
+          cmake --build build-norinput --target mss32 -j
+          test -f build/norinput/mss32.dll
+          # Prove the two are really different before they are packaged: the standard one
+          # must carry the hook string, the other must not.
+          grep -q "GetCursorPos IAT hook installed" build/mss32.dll
+          ! grep -q "GetCursorPos IAT hook installed" build/norinput/mss32.dll
+
       - name: Build the 1.6X menu pk3
         run: |
           # zz_cod1x_ui.pk3 is generated from ui_pk3/ui_mp/*.menu. *.pk3 is gitignored, so
@@ -70,6 +90,14 @@ jobs:
           # mirror the game folder layout so the zip extracts straight over it
           ( cd dist && mkdir -p Main && cp zz_cod1x_ui.pk3 Main/ \
             && zip -q "cod1reloaded-$TAG.zip" mss32.dll cod1reloaded.ini Main/zz_cod1x_ui.pk3 )
+          # No-rinput variant. Release assets must have unique names, so the loose DLL is
+          # published as mss32-norinput.dll - but INSIDE its zip it is mss32.dll, because
+          # that is the name the game must load. Extract the zip over the game folder.
+          cp build/norinput/mss32.dll dist/mss32-norinput.dll
+          ( cd dist && mkdir -p norinput/Main && cp ../build/norinput/mss32.dll norinput/mss32.dll \
+            && cp cod1reloaded.ini norinput/ && cp zz_cod1x_ui.pk3 norinput/Main/ \
+            && cd norinput && zip -q "../cod1reloaded-$TAG-norinput.zip" \
+                 mss32.dll cod1reloaded.ini Main/zz_cod1x_ui.pk3 )
           ls -l dist
 
       - name: Upload assets to the release
@@ -82,4 +110,6 @@ jobs:
             dist/manifest.json \
             dist/zz_cod1x_ui.pk3 \
             "dist/cod1reloaded-$TAG.zip" \
+            dist/mss32-norinput.dll \
+            "dist/cod1reloaded-$TAG-norinput.zip" \
             --clobber

@@ -8,8 +8,10 @@
 #include "gameplay/stance_fix.h"
 #include "gameplay/anim_clamp.h"
 #include "features/settings_menu.h"
+#include "shared/lean_controllers.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 
@@ -22,6 +24,10 @@ LeanFixConfig g_lean_fix_config = {
     /* enable                */ true,
     /* apply_in_stand        */ true,
     /* diag_log_count        */ 0,      // release: no diag logging
+    // MOVED, no longer read: the back-bone reprojection is now LC_DIAG_BONES / LC_DIAG_K
+    // in src/shared/lean_controllers.c so the server runs the same numbers from the same
+    // source. The values below are the ones that shipped, kept only as a record of what
+    // the shared constants were set from. Editing them here does nothing.
     /* move_diag_fix         */ 2,
     /* move_diag_lean_only   */ false,
     /* move_diag_parent      */ 0,
@@ -50,14 +56,28 @@ LeanFixConfig g_lean_fix_config = {
     // mirroring the exact same offset onto the server hitbox: lean_hitbox.c recomputes
     // it from leanf + stance, which are values both sides already have, so no network
     // sync is involved. See LEAN_BODY_SHIFT_* there - THE TWO MUST STAY IN STEP.
+    // ALSO MOVED, no longer read: the lateral shift is LC_LATERAL_TOTAL (7.5, the total
+    // both sides must reach) in src/shared/lean_controllers.c. This client contributes
+    // 7.5 - 2.5 = 5.0 on top of cgame's own constant, exactly as it did, but the number
+    // that governs it is now the same object the server reads.
     /* body_shift_lean_scale */ 1.0f,
     // 2.0 = the value the players actually validated (last .ini before the hardcode
     // migration). It was bumped to 3.0 mid-firefight on 2026-07-30 without validation;
     // audit 2026-07-31 reverts it. MUST equal PB_BODY_SHIFT_RIGHT_SCALE server-side.
     /* body_shift_right_scale*/ 2.0f,
     /* body_yaw_lock         */ 1.0f,
-    /* ctrl_smooth_enable    */ true,
+    // OFF since 1.6.5, and hardcoded. This filter had a discrete state (crouch + a 45-deg
+    // movement-yaw bucket + the lean roll thresholded at 3 deg); on every flip it FROZE
+    // the pose and restarted a 250 ms interpolation from the frozen one. A lean crosses
+    // that 3-deg threshold going out and coming back, so a peek got two freezes - on a
+    // motion that is continuous. Measured 2026-08-10 on a live dump: the model held
+    // completely still for ~45 ms while the real lean moved from -0.20 to -0.05, and on a
+    // turning lean the smoothed back_low sat 7.9 deg of pitch and 17 deg of root yaw away
+    // from the pose the server was testing. It was not smoothing the model, it was
+    // chopping it - and it was the last client-only stage after src/shared landed.
+    /* ctrl_smooth_enable    */ false,
     /* ctrl_smooth_time      */ 250,
+    /* ctrl_dump             */ 0,      // ini key `ctrl_dump`, 0 = off
 };
 
 namespace {
@@ -66,21 +86,11 @@ uintptr_t g_cgame_base = 0;
 
 
 
-static void adjust_rotation_yd(float yawDiffDeg, float* child) {
-    const float rad = yawDiffDeg * 0.01745329252f;
-    const float cp = cosf(rad), sp = sinf(rad);
-    const float p = child[0], r = child[2];
-    child[0] = p * cp - r * sp;
-    child[2] = p * sp + r * cp;
-}
-static float diag_yawdiff(int mode, float childYaw, float originYaw) {
-    switch (mode) {
-        case 1:  return originYaw - childYaw;
-        case 2:  return childYaw;
-        case 3:  return -childYaw;
-        default: return childYaw - originYaw;   // exact cod2x
-    }
-}
+// adjust_rotation_yd() and diag_yawdiff() used to live here. They moved to
+// src/shared/lean_controllers.c, which the server compiles too - having one copy of them
+// per side, each with its own tuning knobs, is the thing this session removed.
+// move_diag_parent had four modes; only mode 0 (cod2x's childYaw - originYaw) was ever
+// shipped, so the shared file implements that one and no selector.
 
 // Reproduce cod2x's movementYaw INVARIANT on our yawDiff.
 //
@@ -109,9 +119,58 @@ __attribute__((unused)) static float diag_fold(float yd) {
 }
 }  // namespace
 
+// --- bridge to src/shared/lean_controllers.c ------------------------------------
+// That file is compiled into BOTH mss32.dll and cod1plus.so and holds the adjustments
+// themselves; everything below is just the client's half of the plumbing.
+
+// Sink for the shared dump. extern "C" so its type matches the C function pointer in
+// lc_ctx_t exactly, rather than relying on the compiler being relaxed about it.
+extern "C" void lean_ctrl_log_sink(const char* line) {
+    logger::logf("%s", line);
+}
+
+// Measurement knob, read once. Dumping is a diagnostic and gives no gameplay advantage,
+// so unlike the pose values it is configurable at runtime:
+//     cod1reloaded.ini  ->  ctrl_dump = 400        (primary; logged at every launch)
+//     COD1RELOADED_CTRL_DUMP=400                   (fallback, matches the server's name)
+// The ini comes first on purpose. The environment route silently produced nothing twice,
+// because a shortcut or an Explorer double-click does not inherit a variable exported in
+// some other shell - and from inside the game an unset variable is indistinguishable from
+// one deliberately left off. Output lands in cod1reloaded.log next to the DLL.
+static int ctrl_dump_budget() {
+    static int budget = -1;
+    if (budget < 0) {
+        budget = g_lean_fix_config.ctrl_dump;
+        if (budget <= 0) {
+            const char* e = getenv("COD1RELOADED_CTRL_DUMP");
+            budget = (e && *e) ? atoi(e) : 0;
+        }
+        if (budget < 0) budget = 0;
+        if (budget)
+            logger::logf("  ctrl dump ON: %d samples/client | %s", budget, lc_banner());
+    }
+    return budget;
+}
+
+// The lateral shift cgame's OWN copy of the shared bg code already applied before we got
+// the buffer (out[22] += -fLeanFrac * this). MSVC pooled its float literals: there is
+// exactly one 2.5f in cgame_mp_x86.dll (VA 0x3006b6bc) and FIVE readers, so unlike the
+// server's copy this constant cannot be patched in place - the client's contribution has
+// to stay a hook. lean_controllers.c tops us up from here to the shared total.
+static const float CLIENT_ENGINE_LATERAL = 2.5f;
+
+// Did lc_apply() sample this frame? apply_ctrl_smooth() runs immediately afterwards on
+// the same buffer from the same trampoline, so a plain static carries the answer across
+// and the "smooth" line lands in the same sample as "pre"/"post" instead of on its own
+// schedule.
+static bool  g_lc_sampled = false;
+static lc_ctx_t g_lc_ctx  = {};
+
 extern "C" void apply_lean_adjust(float* controllers,
                                   const void* client_info,
                                   const void* entity) {
+    g_lc_sampled = false;   // before every return path, so the "smooth" stage below can
+                            // never fire on a stale sample from an earlier entity
     if (!g_lean_fix_config.enable) return;
     if (!controllers || !client_info || !entity) return;
 
@@ -127,6 +186,10 @@ extern "C" void apply_lean_adjust(float* controllers,
     const uint32_t eflags = *(const uint32_t*)((const char*)entity + ENT_EFLAGS_OFFSET);
     const bool is_crouch = (eflags & ENT_FLAG_CROUCH) != 0;
     const bool is_prone  = (eflags & ENT_FLAG_PRONE)  != 0;
+    // Prone applies nothing and returns here, so lc_apply's own prone branch is only ever
+    // reached from the server. That is deliberate: the two used to disagree (the server
+    // still ran the back-bone reprojection on a prone player while the client did not),
+    // and the shared file resolves it in favour of what production draws today.
     if (is_prone) return;
     if (!is_crouch && !g_lean_fix_config.apply_in_stand) return;
 
@@ -141,22 +204,13 @@ extern "C" void apply_lean_adjust(float* controllers,
         bb[7]  *= k;   // back_up yaw
     }
 
-    // cod2x diagonal lean-left pose (#2) + body sideways shift (#3).
-    // animation.cpp:332-357 + 184-201. runs before the diag fix.
-    // WARNING: lean sign convention unverified in-game (flip if wrong side).
+    // Client-only pose knobs, BOTH ZERO in the competitive build (see the config at the
+    // top of this file for why they must stay that way). They are the last edits in this
+    // file that the server has no copy of; if either is ever revived it belongs in
+    // lean_controllers.c, not here, or the desync comes straight back.
     {
         float* cbuf = (float*)controllers;
         const float lf = cbuf[20] / 3.75f;   // ~fLeanFrac, sign=side
-
-        // #3 lateral body shift; ADD to CoD1's existing strafe term. cbuf[22]=tag_origin_offset[1]
-        if (g_lean_fix_config.body_shift_lean_scale != 0.0f && fabsf(lf) > 0.02f) {
-            const bool ll = lf < 0.0f;   // lean-left (fLeanFrac<0)
-            float K = is_crouch ? (ll ? 12.5f : 2.5f) : (ll ? 5.0f : 2.5f);
-            // cod2x under-shifts the RIGHT lean (weapon side): body barely leaves the
-            // wall so the peeker shows only an arm. Boost the right side to expose it.
-            if (!ll) K *= g_lean_fix_config.body_shift_right_scale;
-            cbuf[22] += -lf * K * g_lean_fix_config.body_shift_lean_scale;
-        }
 
         // #2 diagonal lean-left pose
         if (g_lean_fix_config.lean_diag_scale != 0.0f && lf < -0.02f) {
@@ -189,48 +243,32 @@ extern "C" void apply_lean_adjust(float* controllers,
         }
     }
 
-    // cod2x animation_adjustRotation: THE fix for the fwd+strafe+lean nose-dive.
-    // reprojects back-bone pitch/roll by yaw delta vs tag_origin so lean roll
-    // stays lateral instead of diving. identity when yawDiff~0.
+    // THE SHARED HALF. Everything that has to agree with the server - the lateral top-up
+    // and the back-bone reprojection - now lives in src/shared/lean_controllers.c, which
+    // is compiled into this DLL and into cod1plus.so from byte-identical copies. Both
+    // call sites hand it the same struct; the only per-side inputs are the stance (each
+    // side detects it differently - see the header) and what each side's own engine copy
+    // already applied laterally.
     //
-    // move_diag_lean_only: cod2x's tag angles come from a VELOCITY-based movementDir,
-    // so with no lean the yawDiff is ~0 and the reprojection is identity. CoD1's
-    // movementDir is KEYS-based -> moving straight BACK (S) gives a ~180deg yawDiff,
-    // and cos(180)=-1 FLIPS the back-bone pitch => "crouch + S makes the head dip".
-    // Since this fix only matters while leaning, gate it on lean so plain crouch+back
-    // (no lean) never gets reprojected. Hot-reload knob (0 = old always-on behaviour).
-    const float lf_diag = ((const float*)controllers)[20] / 3.75f;   // side, ~fLeanFrac
-    if (g_lean_fix_config.move_diag_fix > 0 &&
-        (!g_lean_fix_config.move_diag_lean_only || fabsf(lf_diag) > 0.02f)) {
-        float* bl   = (float*)((char*)controllers + CTRL_BACK_LOW_ANGLES);
-        float* bm   = (float*)((char*)controllers + CTRL_BACK_MID_ANGLES);
-        float* bu   = (float*)((char*)controllers + CTRL_BACK_UP_ANGLES);
-        float* to_a = (float*)((char*)controllers + CTRL_TAG_ORIGIN_ANGLES);
-        const int   mode = g_lean_fix_config.move_diag_parent;
-        const float toy  = to_a[1];
-        const float o_bl0 = bl[0], o_bl1 = bl[1], o_bl2 = bl[2];
+    // What used to be here: our own copy of the two adjustments, tuned against the
+    // server's own copy by hand. That is the arrangement that would not converge -
+    // aligning one of them always left the other off, because nothing forced them to be
+    // the same code. This call is the fix for that, not another coefficient.
+    memset(&g_lc_ctx, 0, sizeof(g_lc_ctx));
+    g_lc_ctx.side           = LC_SIDE_CLIENT;
+    g_lc_ctx.client_num     = *(const int*)((const char*)entity + ENT_CLIENTNUM_OFFSET);
+    g_lc_ctx.stance         = is_crouch ? LC_STANCE_CROUCH : LC_STANCE_STAND;
+    g_lc_ctx.engine_lateral = CLIENT_ENGINE_LATERAL;
+    g_lc_ctx.now_ms         = (unsigned int)GetTickCount();
+    g_lc_ctx.es             = entity;        // cgame passes the entityState here: this is
+                                             // the pointer we read eFlags(+0x08) and
+                                             // clientNum(+0x90) from, the same offsets the
+                                             // server's es has.
+    g_lc_ctx.ci             = client_info;
+    g_lc_ctx.dump           = ctrl_dump_budget();
+    g_lc_ctx.log            = lean_ctrl_log_sink;
 
-        // per-side strength (rig not mirrored)
-        const float kside = (o_bl2 < 0.0f) ? g_lean_fix_config.diag_k_neg
-                                           : g_lean_fix_config.diag_k_pos;
-        adjust_rotation_yd(diag_yawdiff(mode, bl[1], toy) * kside, bl);
-        if (g_lean_fix_config.move_diag_fix >= 2)
-            adjust_rotation_yd(diag_yawdiff(mode, bm[1], toy) * kside, bm);
-        if (g_lean_fix_config.move_diag_fix >= 3)
-            adjust_rotation_yd(diag_yawdiff(mode, bu[1], toy) * kside, bu);
-
-        static DWORD s_dl = 0; static int s_dn = 0;
-        const DWORD now_d = GetTickCount();
-        if (s_dn < g_lean_fix_config.diag_log_count && (now_d - s_dl) > 200 &&
-            (fabsf(o_bl1 - toy) > 1.5f || fabsf(o_bl2) > 1.5f)) {
-            s_dl = now_d; ++s_dn;
-            logger::logf("diagfix m=%d toY=%.1f blY=%.1f yd=%.1f | "
-                         "blPitch %.1f->%.1f  blRoll %.1f->%.1f",
-                         mode, toy, o_bl1, diag_yawdiff(mode, o_bl1, toy),
-                         o_bl0, bl[0], o_bl2, bl[2]);
-        }
-    }
-
+    g_lc_sampled = lc_apply(controllers, &g_lc_ctx) != 0;
 }
 
 // shortest angle delta [-180,180]
@@ -338,6 +376,14 @@ extern "C" void apply_ctrl_smooth(float* controllers,
         st.cur[i] = out;
         buf[i] = out;
     }
+
+    // Third stage, CLIENT ONLY - dumped so the comparison can see it.
+    // This filter has per-client history and a per-frame velocity clamp, so it is not a
+    // pure function of anything the server holds and it cannot be moved into the shared
+    // file as it stands. In a held, stationary lean it should converge and "smooth" should
+    // equal "post"; if the measurement shows it does not, then this - not the lateral
+    // constant and not the reprojection - is what is left of the desync.
+    if (g_lc_sampled) lc_dump(buf, &g_lc_ctx, "smooth");
 }
 
 extern "C" {
@@ -416,6 +462,10 @@ bool install_lean_fix(HMODULE cgame_module) {
                  (unsigned)hook_addr);
     logger::logf("  leanf source: cgame+0x%lx (direct read, no camera hook)",
                  (unsigned long)CG_LOCAL_LEANF_RVA);
+    // Identity of the shared module. The server prints the same line at its own install.
+    // If the two strings differ, one repo's copy of src/shared/lean_controllers.* was
+    // updated and the other was not, and every alignment claim below it is void.
+    logger::logf("  shared: %s", lc_banner());
     return true;
 }
 

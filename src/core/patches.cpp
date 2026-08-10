@@ -336,9 +336,11 @@ void load_config(HMODULE self_module) {
     g_settings_menu_config.enable = read_ini_bool(
         ini_path, "menu_enable",
         read_ini_bool(ini_path, "settings_menu_enable", g_settings_menu_config.enable));
-    g_settings_menu_config.fov_unlock = read_ini_bool(
-        ini_path, "fov_unlock",
-        read_ini_bool(ini_path, "settings_menu_fov_unlock", g_settings_menu_config.fov_unlock));
+    // fov_unlock / settings_menu_fov_unlock: NO LONGER READ FROM THE INI (1.6.5).
+    // A wider field of view is a direct competitive advantage, so it cannot be a value a
+    // player edits in a text file. The hardcoded default stays false; if it is ever to be
+    // allowed, it belongs in the server's sv_competitive broadcast (which already governs
+    // cg_fov and friends) so the SERVER decides, uniformly, per match.
     read_ini_string(ini_path, "refresh_rate",
                     g_settings_menu_config.refresh_rate,
                     sizeof(g_settings_menu_config.refresh_rate),
@@ -377,20 +379,27 @@ void load_config(HMODULE self_module) {
                     sizeof(g_discord_rpc_config.state_text),
                     g_discord_rpc_config.state_text);
 
+    // Diagnostic only: dumps the controller buffer so the client pose can be diffed
+    // against the server's. Changes nothing about the pose itself, hence not hardcoded
+    // like the rest of the lean settings.
+    g_lean_fix_config.ctrl_dump = read_ini_int(
+        ini_path, "ctrl_dump", g_lean_fix_config.ctrl_dump);
+
+    // ctrl_smooth: the call has been made, so it is back in the hardcoded config and no
+    // longer read here (1.6.5). It is OFF - see lean_fix.cpp for the measurement. It
+    // decided how far the DRAWN enemy sat from the skeleton the server tests, which is
+    // the definition of a setting a player must not own.
+
     g_antilag_config.diag_enable = read_ini_bool(
         ini_path, "antilag_diag_enable", g_antilag_config.diag_enable);
     g_antilag_config.diag_log_count = read_ini_int(
         ini_path, "antilag_diag_log_count", g_antilag_config.diag_log_count);
-    g_antilag_config.fire_hook_enable = read_ini_bool(
-        ini_path, "antilag_fire_hook_enable", g_antilag_config.fire_hook_enable);
-    g_antilag_config.capture_enable = read_ini_bool(
-        ini_path, "antilag_capture_enable", g_antilag_config.capture_enable);
-    g_antilag_config.rewind_enable = read_ini_bool(
-        ini_path, "antilag_rewind_enable", g_antilag_config.rewind_enable);
-    g_antilag_config.rewind_test_z = read_ini_int(
-        ini_path, "antilag_rewind_test_z", g_antilag_config.rewind_test_z);
-    g_antilag_config.rewind_test_self = read_ini_bool(
-        ini_path, "antilag_rewind_test_self", g_antilag_config.rewind_test_self);
+    // antilag_fire_hook_enable / _capture_enable / _rewind_enable / _rewind_test_z /
+    // _rewind_test_self: NO LONGER READ FROM THE INI (1.6.5). These five change how shots
+    // are captured and rewound - i.e. whether a hit registers - and that is not something
+    // a player may set for himself in a text file. Their hardcoded defaults (all off)
+    // stand. The two diag_* keys above are kept: they only write to cod1reloaded.log and
+    // change nothing the game does.
 
     logger::logf("config loaded from %s", ini_path);
     logger::logf("  viewheight_lerp_speed = %.2f", g_viewheight_config.viewheight_lerp_speed);
@@ -423,6 +432,10 @@ void load_config(HMODULE self_module) {
                      g_lean_fix_config.body_yaw_lock,
                      g_lean_fix_config.ctrl_smooth_enable,
                      g_lean_fix_config.ctrl_smooth_time);
+        logger::logf("  lean: ctrl_dump=%d %s", g_lean_fix_config.ctrl_dump,
+                     g_lean_fix_config.ctrl_dump > 0
+                         ? "(controller buffer WILL be dumped to this log)"
+                         : "(off)");
     }
     logger::logf("  swing_fix: enable=%d legs_tolerance=%.2f torso_pitch_speed=%.2f",
                  g_swing_fix_config.enable,

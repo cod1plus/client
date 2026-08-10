@@ -40,8 +40,19 @@ constexpr uintptr_t SNAP_LOCAL_CLIENTNUM_OFF = 0xb8;
 // WARNING: bit 0x40 (test al,0x40 @0x300049ba) is NOT a reliable is_leaning
 // signal: always 0 in-game even during a visible lean. kept for reference.
 constexpr uint32_t ENT_FLAG_LEANING_QUESTIONABLE = 0x40;
-constexpr uint32_t ENT_FLAG_CROUCH = 0x4000;
-constexpr uint32_t ENT_FLAG_PRONE  = 0x8000;
+// MEASURED, not assumed. 0x4000/0x8000 are the CoD2 values and were imported by mistake;
+// a live server probe on 2026-08-10 logged es->eFlags against the gentity bounding-box
+// height for two clients over ~30 stance changes: bit 0x20 was clear on every boxh=70
+// sample and set on every boxh=50 sample, with no exception. Bits 0x08, 0x200 and 0x40000
+// varied independently of stance. 0x4000 was NEVER set in any sample.
+//
+// CONSEQUENCE OF THE OLD VALUE: is_crouch was permanently false, so every crouch branch in
+// lean_fix.cpp was dead. That is why the crouch K of 12.5 never actually applied - the
+// client drew 2.5+5.0 in crouch just like standing.
+constexpr uint32_t ENT_FLAG_CROUCH = 0x20;
+// PRONE is NOT measured - no prone sample was captured (no boxh below 40). Left at the
+// CoD2 value, which the evidence above suggests is wrong. Probe before trusting it.
+constexpr uint32_t ENT_FLAG_PRONE  = 0x8000;   // UNVERIFIED
 
 // controllers buffer offsets (vec3 = 12 bytes). order from bone-name table at
 // cgame+0x79670: back_low first, pelvis last. reversing = body upside-down.
@@ -69,12 +80,23 @@ struct LeanFixConfig {
     float lean_diag_scale;    // 0=off, 1.0=cod2x
     float lean_diag_right_scale;  // right-side mirror (no cod2x equivalent), 0=off
     float body_shift_lean_scale;
-    float body_shift_right_scale;  // x on the right-lean body shift (weapon side)
+    float body_shift_right_scale;  // DEPRECATED, no longer read. The body shift is now a
+                                   // single unconditional constant that must stay equal to
+                                   // the server's - see lean_fix.cpp #3. A per-side scale
+                                   // is exactly what the server cannot mirror.
 
     float body_yaw_lock;      // 0=straight (rifle), 1.0=vanilla
 
     bool  ctrl_smooth_enable;
     int   ctrl_smooth_time;   // ms
+
+    // Controller-buffer dump: max samples per client, 0 = off. Diagnostic only, it
+    // changes nothing about the pose. Read from cod1reloaded.ini (key ctrl_dump) because
+    // the environment-variable route failed twice in a row: a shortcut or a double-click
+    // on CoDMP.exe does not inherit a variable set in some other shell, and there is no
+    // way to tell from inside the game that it was meant to be set. The ini is read and
+    // logged at every launch, so it cannot silently not-arrive.
+    int   ctrl_dump;
 };
 
 extern LeanFixConfig g_lean_fix_config;

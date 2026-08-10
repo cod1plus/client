@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
-project(cod1reloaded LANGUAGES CXX)
+# C is here for src/shared/, which is plain C so that cod1plus.so (gcc, no C++) can
+# compile the very same file. See src/shared/lean_controllers.h.
+project(cod1reloaded LANGUAGES C CXX)
 
 # CoD1 is a 32-bit game. Force 32-bit build.
 if (NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
@@ -17,8 +19,14 @@ endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 
 set(COD1RELOADED_SOURCES
+    # Compiled into cod1plus.so as well, from a byte-identical copy in that repo.
+    # If you change it here, copy it there (and vice versa) - both sides print
+    # lc_banner() at install so a drift shows up in the two logs.
+    src/shared/lean_controllers.c
     src/core/main.cpp
     src/core/patches.cpp
     src/gameplay/viewheight_fix.cpp
@@ -67,6 +75,28 @@ add_library(mss32 SHARED
 target_include_directories(cod1reloaded PRIVATE src)
 target_include_directories(mss32 PRIVATE src)
 
+# Build a DLL that never touches the mouse at all, for bisecting input problems.
+# `raw_mouse_input = off` in the ini is NOT the same thing: it only sets the default of
+# the m_rinput cvar, while rinput_start() still installs the GetCursorPos IAT hook at
+# DllMain. With this option the hook is never installed and the engine's mouse path is
+# exactly vanilla.
+#     cmake -S . -B build-norinput -DCOD1RELOADED_NO_RINPUT=ON ...
+option(COD1RELOADED_NO_RINPUT "Do not install the raw-input GetCursorPos hook" OFF)
+
+# The two variants MUST NOT share an output directory. Both build trees resolve their
+# output against CMAKE_SOURCE_DIR, so before this they both wrote <source>/build/mss32.dll
+# and whichever was built last silently replaced the other - a release could ship the
+# wrong one with nothing to show for it. The DLL cannot be renamed (it is a proxy and has
+# to be called mss32.dll), so the variants are separated by DIRECTORY instead.
+set(COD1RELOADED_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/build")
+if (COD1RELOADED_NO_RINPUT)
+    target_compile_definitions(cod1reloaded PRIVATE COD1RELOADED_NO_RINPUT=1)
+    target_compile_definitions(mss32 PRIVATE COD1RELOADED_NO_RINPUT=1)
+    set(COD1RELOADED_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/build/norinput")
+    message(STATUS "cod1reloaded: raw input DISABLED at compile time (no GetCursorPos hook)")
+    message(STATUS "cod1reloaded: output -> ${COD1RELOADED_OUTPUT_DIR}")
+endif()
+
 target_compile_options(cod1reloaded PRIVATE
     -Wall -Wextra -Wno-unused-parameter
     -O2
@@ -95,11 +125,11 @@ target_link_libraries(mss32 PRIVATE
 set_target_properties(cod1reloaded PROPERTIES
     PREFIX ""
     OUTPUT_NAME "cod1reloaded"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build"
+    RUNTIME_OUTPUT_DIRECTORY "${COD1RELOADED_OUTPUT_DIR}"
 )
 
 set_target_properties(mss32 PROPERTIES
     PREFIX ""
     OUTPUT_NAME "mss32"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build"
+    RUNTIME_OUTPUT_DIRECTORY "${COD1RELOADED_OUTPUT_DIR}"
 )
