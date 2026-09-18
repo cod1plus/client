@@ -5,7 +5,7 @@
 ; https://github.com/cod1plus/rulesets and downloaded by the client at start-up; bump the
 ; version below whenever you change a rule (the server publishes "<id>@<version>" and a client
 ; behind that version re-downloads while in game).
-; version 1
+; version 2
 pb_sv_cvar cg_bobAmplitudeDucked IN 0.0075
 pb_sv_cvar cg_bobAmplitudeProne IN 0.03
 pb_sv_cvar cg_bobamplitudestanding IN 0.007
@@ -32,7 +32,7 @@ pb_sv_cvar cg_draw2D IN 1
 pb_sv_cvar cg_drawGun IN 1
 pb_sv_cvar cg_drawSoundOverlay IN 0
 pb_sv_cvar cg_errordecay IN 100
-pb_sv_cvar cg_fov IN 80
+pb_sv_cvar cg_fov IN 80 95
 pb_sv_cvar cg_gibs IN 0
 pb_sv_cvar cg_goreDetail IN 0
 pb_sv_cvar cg_gun IN 0
