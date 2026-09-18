@@ -334,6 +334,11 @@ bool poke_byte(uintptr_t va, uint8_t expect, uint8_t val) {
 
 }  // namespace
 
+// Exposed for the modern GL menu (ui/modern_menu.cpp): same ini, same rules.
+void menu_ini_writeback(const char* key, const char* value) {
+    ini_writeback(key, value);
+}
+
 void settings_menu_start() {
     if (!g_settings_menu_config.enable) {
         logger::logf("settings_menu: disabled");
@@ -342,6 +347,18 @@ void settings_menu_start() {
     logger::logf("settings_menu: enabled (no hotkey, fov_unlock=%d, menu=%s)",
                  g_settings_menu_config.fov_unlock,
                  g_settings_menu_config.menu_name);
+}
+
+// r_displayRefresh is clamped to 200 by the ENGINE: R_Register does
+//   push 200.0f ; push 0.0f ; mov eax,1 ; call Cvar_CheckRange   (CoDMP.exe 0x4be6d0)
+// so `seta r_displayRefresh 320` becomes "200.000000", the driver has no 200 Hz mode at
+// most resolutions -> BADMODE -> the fallback path. A 2003 limit on 2026 panels (enzo,
+// 320 Hz, 2026-09-17). The imm32 of that push is the whole cap: lift it to 1000.
+void settings_menu_patch_refresh_cap() {
+    if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000) return;
+    const bool ok = poke_dword(CODMP_REFRESH_CAP_IMM_VA, 0x43480000u /* 200.0f */, 0x447a0000u /* 1000.0f */);
+    logger::logf("settings_menu: r_displayRefresh engine cap 200 -> 1000 @0x%08x %s",
+                 (unsigned)CODMP_REFRESH_CAP_IMM_VA, ok ? "patched" : "SKIPPED (bytes differ)");
 }
 
 // Called from apply_to_cgame() on every cgame (re)load, before CG_Init proceeds.
@@ -404,6 +421,20 @@ void settings_menu_tick() {
                 *flags &= ~CVAR_FLAG_CHEAT;
                 static bool once = false;
                 if (!once) { once = true; logger::logf("settings_menu: cleared cg_fov CHEAT flag (live)"); }
+            }
+            // (2b) the mod's own range, whatever the source of the value (slider, console,
+            // config_mp.cfg, a server spec wider than ours): COD1X_FOV_MIN..COD1X_FOV_MAX.
+            const float fv = *(float*)((char*)cv + CVAR_OFF_VALUE);
+            if (fv > (float)COD1X_FOV_MAX || fv < (float)COD1X_FOV_MIN) {
+                char cmd[48];
+                snprintf(cmd, sizeof(cmd), "seta cg_fov %d\n", fv > (float)COD1X_FOV_MAX ? COD1X_FOV_MAX : COD1X_FOV_MIN);
+                Cbuf_ExecuteText(EXEC_APPEND, cmd);
+                static DWORD last_log = 0;
+                const DWORD now = GetTickCount();
+                if (now - last_log > 5000) {
+                    last_log = now;
+                    logger::logf("settings_menu: cg_fov %g outside %d..%d -> clamped", fv, COD1X_FOV_MIN, COD1X_FOV_MAX);
+                }
             }
         }
     }

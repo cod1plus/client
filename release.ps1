@@ -1,7 +1,7 @@
 # Build + packaging d'une release cod1reloaded prete a uploader sur GitHub.
 #
 # Usage :
-#   .\release.ps1                 (version lue depuis src/updater.h)
+#   .\release.ps1                 (version lue depuis src/features/updater.h)
 #   .\release.ps1 -Version 1.0.1  (override)
 #
 # Produit dans dist/ :
@@ -12,11 +12,11 @@ param([string]$Version = "")
 
 $root = $PSScriptRoot
 
-# --- Version : source de verite = src/updater.h ---
+# --- Version : source de verite = src/features/updater.h ---
 if (-not $Version) {
-    $h = Get-Content (Join-Path $root "src\updater.h") -Raw
+    $h = Get-Content (Join-Path $root "src\features\updater.h") -Raw
     if ($h -match 'COD1RELOADED_VERSION\s*=\s*"([0-9.]+)"') { $Version = $Matches[1] }
-    else { Write-Error "Version introuvable dans src/updater.h"; exit 1 }
+    else { Write-Error "Version introuvable dans src/features/updater.h"; exit 1 }
 }
 Write-Host "=== Release cod1reloaded v$Version ===" -ForegroundColor Cyan
 

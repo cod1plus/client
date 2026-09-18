@@ -53,6 +53,8 @@ volatile int* g_center_y = (volatile int*)CODMP_MOUSE_CENTER_Y_VA;
 CRITICAL_SECTION g_lock;
 bool             g_lock_ready = false;
 long             g_dx = 0, g_dy = 0;      // unread device counts
+long             g_ui_dx = 0, g_ui_dy = 0; // unread counts for the menu overlay
+volatile LONG    g_ui_capture = 0;         // overlay open: route deltas to the UI
 long             g_msg_total = 0;         // WM_INPUT messages ever seen (rate readout)
 
 volatile LONG    g_active  = 0;           // hook answers raw only while this is 1
@@ -116,8 +118,13 @@ void on_wm_input(LPARAM lParam) {
     if (raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) return;
 
     EnterCriticalSection(&g_lock);
-    g_dx += raw.data.mouse.lLastX;
-    g_dy += raw.data.mouse.lLastY;
+    if (g_ui_capture) {
+        g_ui_dx += raw.data.mouse.lLastX;   // menu open: the OVERLAY owns the mouse
+        g_ui_dy += raw.data.mouse.lLastY;   // (and the engine sees zero movement)
+    } else {
+        g_dx += raw.data.mouse.lLastX;
+        g_dy += raw.data.mouse.lLastY;
+    }
     g_msg_total++;
     LeaveCriticalSection(&g_lock);
 }
@@ -397,6 +404,24 @@ void rinput_tick() {
 
     if (applied) publish_hz();
 #endif
+}
+
+void rinput_ui_capture(bool on) {
+    InterlockedExchange(&g_ui_capture, on ? 1 : 0);
+    if (g_lock_ready) {
+        EnterCriticalSection(&g_lock);
+        g_ui_dx = 0; g_ui_dy = 0;           // no stale motion on open/close
+        LeaveCriticalSection(&g_lock);
+    }
+}
+
+void rinput_ui_take_delta(long* dx, long* dy) {
+    *dx = 0; *dy = 0;
+    if (!g_lock_ready) return;
+    EnterCriticalSection(&g_lock);
+    *dx = g_ui_dx; *dy = g_ui_dy;
+    g_ui_dx = 0; g_ui_dy = 0;
+    LeaveCriticalSection(&g_lock);
 }
 
 void rinput_shutdown() {

@@ -1,4 +1,5 @@
 #include "video/window_patch.h"
+#include "video/mode_guard.h"
 #include "core/logger.h"
 #include "features/demo_upload.h"
 
@@ -16,8 +17,38 @@ WindowConfig g_window_config = {
 
 namespace {
 
-volatile bool g_applied  = false;
-volatile bool g_applying = false;   // suppresses anti-minimize during make_borderless
+volatile bool g_applied   = false;
+volatile bool g_applying  = false;  // suppresses anti-minimize during make_borderless
+// Exclusive fullscreen (r_fullscreen 1 beats our windowed default): the engine owns
+// window style/size/mode and fighting it IS the two-windows/dead-keyboard bug (meta
+// 2026-08-25). But the engine does NOT minimize itself on focus loss, so without our
+// subclass the game stays glued over the desktop (enzo, Win key, same day). In this
+// mode the watcher only maintains the minimize-on-focus-loss subclass: no restyle,
+// no resize, no SetForegroundWindow. (The minimize also makes Windows restore the
+// desktop display mode automatically - proven by WM_DISPLAYCHANGE in meta's log.)
+// NOT sticky: the overlay's Display tab switches r_fullscreen live (vid_restart),
+// and the watcher must come back when the player goes fullscreen -> borderless.
+volatile bool g_exclusive = false;
+
+// Read an engine cvar integer (same RE'd VAs/offsets settings_menu ships on).
+// This is how the watcher decides borderless-vs-exclusive BEFORE touching any
+// window: r_fullscreen is registered (with its config value) just before the
+// engine creates its window, so waiting for it closes the startup race where
+// we borderless-restyled a window the engine was about to take exclusive
+// (meta's 16:21 log: restyle at 53.396, CDS_FULLSCREEN at 53.702).
+typedef void* (__cdecl* WpCvarFindVar_t)(const char*);
+constexpr uintptr_t WP_CVAR_FINDVAR_VA = 0x0043b790;  // Cvar_FindVar
+constexpr uintptr_t WP_CVAR_COUNT_VA   = 0x01912aec;  // cvar count (system up)
+constexpr int       WP_CVAR_OFF_INTEGER = 0x20;
+
+bool engine_cvar_int(const char* name, int* out) {
+    if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000) return false;
+    if (*(volatile int*)WP_CVAR_COUNT_VA <= 0) return false;
+    void* cv = ((WpCvarFindVar_t)WP_CVAR_FINDVAR_VA)(name);
+    if (!cv) return false;
+    *out = *(int*)((char*)cv + WP_CVAR_OFF_INTEGER);
+    return true;
+}
 WNDPROC       g_original_wnd_proc = nullptr;
 HWND          g_subclassed_hwnd   = nullptr;
 
@@ -101,8 +132,27 @@ void restore_subclass() {
 LRESULT CALLBACK cod1reloaded_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_ACTIVATEAPP) {
         const BOOL activated = (BOOL)wParam;
+        // Exclusive fullscreen, coming back from minimize: Windows restored the
+        // desktop mode when we minimized but does not reliably re-apply the
+        // game's mode on return - leaving a small backbuffer letterboxed on a
+        // native desktop (meta). Re-set the engine's own last mode, and re-fit
+        // the window if some earlier accident resized it.
+        if (activated && g_exclusive && !g_applying) {
+            if (mode_guard_reapply_fullscreen()) {
+                int mw = 0, mh = 0;
+                RECT rc;
+                if (mode_guard_fullscreen_size(&mw, &mh) && GetWindowRect(hwnd, &rc) &&
+                    (rc.left != 0 || rc.top != 0 ||
+                     rc.right - rc.left != mw || rc.bottom - rc.top != mh)) {
+                    SetWindowPos(hwnd, HWND_TOP, 0, 0, mw, mh,
+                                 SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+                    logger::logf("window_patch: fullscreen window re-fitted to %dx%d",
+                                 mw, mh);
+                }
+            }
+        }
         if (!activated && g_window_config.minimize_on_focus_loss &&
-            g_applied && !g_applying) {
+            (g_applied || g_exclusive) && !g_applying) {
             ReleaseCapture();
             while (ShowCursor(TRUE) < 0) {}
             ShowWindow(hwnd, SW_MINIMIZE);
@@ -219,6 +269,48 @@ bool make_borderless(HWND hwnd) {
 
 DWORD WINAPI window_watcher_thread(LPVOID) {
     for (;;) {
+        // See g_exclusive above. Ground truth first (the engine holds a fullscreen
+        // mode right now - survives the OS parking it on minimize), r_fullscreen
+        // second (decides BEFORE the window exists, and after a vid_restart to
+        // windowed). While neither is readable the video mode is undecided:
+        // touch NOTHING (this closed the startup race that mangled meta's window).
+        {
+            bool excl = mode_guard_exclusive_active();
+            int  rf   = 0;
+            if (!excl) {
+                if (!engine_cvar_int("r_fullscreen", &rf)) { Sleep(100); continue; }
+                excl = (rf != 0);
+            }
+            if (excl != g_exclusive) {
+                g_exclusive = excl;
+                g_applied   = false;
+                logger::logf(excl
+                    ? "window_patch: exclusive fullscreen -> borderless off, keeping "
+                      "only the minimize-on-focus-loss subclass"
+                    : "window_patch: windowed mode -> borderless watcher resuming");
+            }
+        }
+
+        if (g_exclusive) {
+            // subclass-only: maintain minimize-on-focus-loss, touch nothing else
+            HWND t = find_main_window();
+            if (g_subclassed_hwnd && !IsWindow(g_subclassed_hwnd)) {
+                // engine recreated its window (normal per mode change): just move on
+                g_subclassed_hwnd   = nullptr;
+                g_original_wnd_proc = nullptr;
+            }
+            if (t && t != g_subclassed_hwnd) {
+                restore_subclass();
+                subclass_window(t);
+            }
+            Sleep(500);
+            continue;
+        }
+
+        // Windowed with borders and borderless turned off: the player asked for
+        // vanilla - no restyle, and no minimize (a bordered window alt-tabs fine).
+        if (!g_window_config.borderless_enable) { Sleep(500); continue; }
+
         HWND target = find_main_window();
         bool need = false;
 
@@ -261,10 +353,15 @@ HWND get_game_window() {
 }
 
 void start_window_watcher() {
-    if (!g_window_config.borderless_enable) {
-        logger::logf("window_patch: borderless disabled in INI");
-        return;
-    }
+    // The thread runs UNCONDITIONALLY. borderless_enable only governs the restyle
+    // branch inside the loop: the minimize-on-focus-loss subclass must exist for
+    // EXCLUSIVE fullscreen players too - and the menu's Apply writes
+    // window_borderless=off for them, which used to kill this whole thread and
+    // with it the only thing that makes the Windows key leave the game (enzo
+    // 2026-08-26: WM_ACTIVATE inactive->active pairs in the log, no minimize).
+    if (!g_window_config.borderless_enable)
+        logger::logf("window_patch: borderless disabled in INI - watcher in "
+                     "minimize-on-focus-loss-only mode");
     HANDLE h = CreateThread(NULL, 0, window_watcher_thread, NULL, 0, NULL);
     if (h) CloseHandle(h);
 }

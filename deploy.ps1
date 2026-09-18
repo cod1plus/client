@@ -1,8 +1,13 @@
 # Deploie le build frais dans le dossier de jeu.
 # Usage : .\deploy.ps1   (ferme le jeu avant)
 param(
-    [string]$Game = "C:\Users\bitpo\OneDrive\Bureau\Call of Duty - R 1.5"
+    [string]$Game = "C:\Users\bitpo\OneDrive\Bureau\Call of Duty - R 1.6 - dev"
 )
+
+if (-not (Test-Path (Join-Path $Game "CoDMP.exe"))) {
+    Write-Host "Dossier jeu invalide (pas de CoDMP.exe) : $Game"
+    exit 1
+}
 
 $build = Join-Path $PSScriptRoot "build\mss32.dll"
 if (-not (Test-Path $build)) { Write-Host "build\mss32.dll introuvable - build d'abord."; exit 1 }

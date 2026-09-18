@@ -409,35 +409,7 @@
 				close mods_menu;
 				close options_multi;
 				play "mouse_click";
-				open cod1x_settings;
-			}
-		}
-
-		itemDef
-		{
-			name cod1x_demos_btn
-			text "1.6X DEMOS"
-			type ITEM_TYPE_BUTTON
-			style WINDOW_STYLE_EMPTY
-			textstyle ITEM_TEXTSTYLE_SHADOWED
-			rect 385 430 250 15
-			textalign 0
-			textscale .4
-			textalignx 0
-			textaligny 14
-			textfont UI_FONT_NORMAL
-			forecolor .98 .82 .28 .9
-			visible 1
-			mouseEnter
-			{
-				play "mouse_over";
-			}
-			action
-			{
-				close mods_menu;
-				close options_multi;
-				play "mouse_click";
-				open cod1x_files;
+				set cod1x_open_modern 1;
 			}
 		}
 

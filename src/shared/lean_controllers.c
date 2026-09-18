@@ -77,13 +77,14 @@
 
 #define LC_CI_LEGS_YAW         0x380  /* read by the engine at 0x1a438 */
 #define LC_CI_TORSO_YAW        0x3b0  /* read by the engine at 0x1a444 */
-#define LC_CI_UNK_3B8          0x3b8  /* read ONCE at 0x1a477, semantics unknown.
-                                       * lean_fix.h labels this "lerpLean" - that label is
-                                       * stale (the value the engine feeds GetLeanFraction
-                                       * is at 0x3e4, read at 0x1a543) and nothing reads
-                                       * the constant, but it is dumped here so the
-                                       * measurement settles it instead of a third file
-                                       * inheriting the wrong name. */
+#define LC_CI_UNK_3B8          0x3b8  /* read ONCE at 0x1a477. SETTLED 2026-09-09: it is
+                                       * the SWUNG lean angle - BG_PlayerAngles' last
+                                       * swing call (game 0x19f73..0x19fa9) writes it,
+                                       * speed 0.15 (client: 1.0), clamp 45, flag at
+                                       * +0x3bc. The value fed to GetLeanFraction is
+                                       * still the instant one at 0x3e4 (0x1a543). Kept
+                                       * under its old name so the dump format and the
+                                       * banner stay comparable with older logs. */
 #define LC_CI_MOVEMENT_YAW     0x3e0
 #define LC_CI_LERP_LEAN        0x3e4  /* -> GetLeanFraction, 0x1a543 */
 #define LC_CI_PLAYER_ANGLES    0x3e8  /* vec3; ClientEndFrame 0x3b00c copies ps.viewangles */

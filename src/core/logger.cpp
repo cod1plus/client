@@ -34,6 +34,18 @@ void init(HMODULE self_module) {
     }
     resolve_log_path(self_module);
 
+    // Keep the dying session's evidence: the engine's self-relaunch (monkey) used
+    // to truncate the log RIGHT AFTER the crash it should explain (AMD alt-tab,
+    // 2026-08-25). Rename is atomic and cheap; if the old process is mid-write,
+    // fall back to a copy so we never lose the trail.
+    if (g_log_path[0]) {
+        char prev_path[MAX_PATH];
+        snprintf(prev_path, sizeof(prev_path), "%.*sprev.log",
+                 (int)(strlen(g_log_path) - 3), g_log_path);
+        if (!MoveFileExA(g_log_path, prev_path, MOVEFILE_REPLACE_EXISTING))
+            CopyFileA(g_log_path, prev_path, FALSE);
+    }
+
     FILE* f = fopen(g_log_path, "w");  // truncate
     if (f) {
         SYSTEMTIME st;

@@ -64,6 +64,12 @@ const char* const kCheatCvars[] = {
     // renamed engine debug cvars used by cheat builds
     "bs_showCullXModels", "bs_showsurfcounts",
     "z_showCullXModels",  "z_showsurfcounts",
+    // CoDBase 2023 additions (compound names only, same curation rule)
+    "w_alliebarcolor", "w_allieringcolor", "w_conlinecolor", "w_contextcolor",
+    "w_contitlecolor", "w_crosshaircolor", "w_fire", "w_germanbarcolor",
+    "w_germanringcolor", "enemy_model", "forcefps", "esp_all", "vec_prone",
+    "vec_crouch", "vec_stand", "thirdpcfg", "radarconf", "pINgpredict",
+    "cheats", "ignorewalls", "autofire", "aimvec", "aimkey", "anrecoil",
 };
 constexpr int kCheatCvarCount = (int)(sizeof(kCheatCvars) / sizeof(kCheatCvars[0]));
 

@@ -1,5 +1,51 @@
 # cod1reloaded — Changelog
 
+## v1.6.6 (2026-09-18)
+
+### 📦 Bouton « INSTALL / UPDATE PAM » (menu 1.6X, onglet Files)
+- Télécharge les pk3 du mod compétitif (maps comprises) sans rejoindre de serveur, depuis le manifeste
+  publié par https://github.com/cod1plus/cod1pluspam : vérification SHA-256, fichiers déjà bons sautés
+  (le même bouton met à jour), pk3 en cours d'utilisation posé en `.new` et échangé au lancement suivant.
+  Clés ini `pam_download_enable`, `pam_manifest_url`.
+
+### 🖥️ Mode Stretched 4:3 (la façon cod2x)
+- Display → View mode → **Stretched 4:3** : le look 1440×1080 étiré, rendu par le mod en résolution native
+  (FOV vertical 4:3 sur le buffer 16:9, HUD étiré comme avant). Le menu 1.6X écrivait une cvar morte
+  (`cod1x_widescreen`) et n'offrait pas ce mode ; un changement de mode s'applique désormais en direct.
+- Le plafond moteur de `r_displayRefresh` (200 Hz, `Cvar_CheckRange` dans R_Register) est levé : 320 Hz
+  et plus passent, et un mode refusé retombe sur le plus haut listé, plus sur « le plus haut en dessous ».
+
+### 🖥️ Hz maximum quelle que soit la résolution
+- Une résolution custom n'existe qu'avec les fréquences que le pilote lui a données (1440×1080 listée
+  à 180 Hz max sur un écran 320 Hz) : avec `refresh_rate = max`, le mod passe le jeu à la résolution
+  qui a le maximum et fait lui-même l'étirement 4:3 (`view_mode = stretched`). `max_hz_native_res = off`
+  pour garder sa résolution custom.
+
+### ⌨️ Menu 1.6X : Ctrl+M uniquement
+- INSERT n'ouvre plus le menu (touche que les joueurs bindent, et qui partait en pleine visée) ;
+  Ctrl+M ou le bouton « 1.6X SETTINGS » du menu principal. INSERT redevient bindable.
+
+### 👁️ FOV plafonné à 95
+- Le slider du menu 1.6X va de 80 à 95, et `cg_fov` est ramené dans cette plage en direct quelle que
+  soit la source (console, config_mp.cfg). Les serveurs (`competitive.cfg`) appliquent la même plage.
+
+### 🛡️ Ruleset PunkBuster (remplaçant de PB)
+- Le client applique lui-même la liste CoDBase complète (~430 cvars) demandée par le serveur
+  (`sv_competitive_ruleset`) : exact → forcé + verrouillé, plage → ramené dans la plage, `wait` neutralisé.
+- La liste est téléchargée depuis https://github.com/cod1plus/rulesets au lancement puis toutes les
+  10 min, et immédiatement quand un serveur demande une version plus récente (`<id>@<version>`) ;
+  cache dans `rulesets\`, copie compilée en secours hors-ligne (`ruleset_fetch_enable`, `ruleset_url`).
+- Aucune mise à jour serveur requise : un serveur qui pousse un `competitive.cfg` (tous les `.so`
+  1.6.x) déclenche la liste par défaut `codbase-2023-05`. Le `.so` 1.6.6 ajoute le choix de l'id par
+  serveur, la poussée immédiate d'une version et le kick des clients qui combattent l'enforcement.
+- Le `competitive.cfg` du serveur garde la priorité pour les cvars qu'il nomme, y compris à chaud.
+- La commande `wait` reste **autorisée** : les nade binds de CoD1 sont construits dessus (switch grenade,
+  cook, throw, switch back). Le ruleset encadre les valeurs de cvars, pas la console.
+- Corrigé : en 1.6.5 aucune règle à 0, négative ou flottante du `competitive.cfg` n'était appliquée
+  (`r_fullbright 0`, `m_yaw 0.022`, `cl_timenudge -20 0`…).
+- Corrigé : les cvars systeminfo gardaient la valeur du serveur précédent (spec et ruleset lus dans
+  la configstring courante, plus dans la cvar).
+
 ## v1.6.4 (2026-08-02)
 
 ### 🧍 Up / down

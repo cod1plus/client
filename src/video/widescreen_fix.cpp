@@ -455,12 +455,27 @@ bool widescreen_apply_to_cgame(HMODULE cgame_module) {
 // widescreen buffer gets a 4:3 vertical FOV -> horizontal stretch. Otherwise feed the real
 // framebuffer dims so vfov is unchanged (identical to vanilla). Live, no vid_restart.
 void widescreen_update_stretch() {
+    HMODULE cgame = GetModuleHandleA("cgame_mp_x86.dll");
+    // A mode switched on LIVE (menu) after a classic cgame load has no hooks yet: install
+    // them now. The stretch operand tells whether THIS cgame instance carries them (a
+    // reloaded module has vanilla bytes again); the installers are idempotent.
+    if (cgame && (g_widescreen_config.stretch_enable || g_widescreen_config.horplus_fov_enable)) {
+        const uint32_t* op = (const uint32_t*)((uintptr_t)cgame + CGAME_VFOV_WIDTH_OP_RVA);
+        if (*op != (uint32_t)(uintptr_t)&g_stretch_w) {
+            static DWORD last_try = 0;
+            const DWORD now = GetTickCount();
+            if (now - last_try > 2000) {          // a failed install must not spam the log
+                last_try = now;
+                logger::logf("widescreen: view mode switched live -> installing the FOV hooks now");
+                widescreen_apply_to_cgame(cgame);
+            }
+        }
+    }
     if (g_widescreen_config.stretch_enable) {
         g_stretch_w = 4;
         g_stretch_h = 3;
         return;
     }
-    HMODULE cgame = GetModuleHandleA("cgame_mp_x86.dll");
     if (!cgame) return;
     const uintptr_t base = (uintptr_t)cgame;
     const int vw = *(const int*)(base + CGAME_VIDWIDTH_RVA);

@@ -7,6 +7,8 @@
 #include "netcode/version_patch.h"
 #include "netcode/protocol_patch.h"
 #include "netcode/competitive.h"
+#include "netcode/ruleset_fetch.h"
+#include "features/pam_install.h"
 #include "netcode/version_gate.h"
 #include "video/window_patch.h"
 #include "video/fullscreen_patch.h"
@@ -206,6 +208,22 @@ void load_config(HMODULE self_module) {
         "cod1reloaded", "updater_manifest_url", "",
         g_updater_config.manifest_url, sizeof(g_updater_config.manifest_url),
         ini_path);
+    g_ruleset_fetch_config.enable = read_ini_bool(
+        ini_path, "ruleset_fetch_enable", g_ruleset_fetch_config.enable);
+    {
+        char buf[256];
+        DWORD n = GetPrivateProfileStringA(
+            "cod1reloaded", "ruleset_url", "", buf, sizeof(buf), ini_path);
+        if (n > 0) snprintf(g_ruleset_fetch_config.base_url, sizeof(g_ruleset_fetch_config.base_url), "%s", buf);
+    }
+    g_pam_install_config.enable = read_ini_bool(
+        ini_path, "pam_download_enable", g_pam_install_config.enable);
+    {
+        char buf[256];
+        DWORD n = GetPrivateProfileStringA(
+            "cod1reloaded", "pam_manifest_url", "", buf, sizeof(buf), ini_path);
+        if (n > 0) snprintf(g_pam_install_config.manifest_url, sizeof(g_pam_install_config.manifest_url), "%s", buf);
+    }
     g_frame_limiter_config.enable = read_ini_bool(
         ini_path, "frame_limiter_enable", g_frame_limiter_config.enable);
     {
@@ -220,9 +238,12 @@ void load_config(HMODULE self_module) {
         bool windowed = read_ini_bool(ini_path, "force_windowed_default",
                                       g_fullscreen_config.force_windowed_default);
         char probe[16];
+        g_fullscreen_config.ini_key_present = false;
         if (GetPrivateProfileStringA("cod1reloaded", "fullscreen", "",
-                                     probe, sizeof(probe), ini_path) > 0)
+                                     probe, sizeof(probe), ini_path) > 0) {
             windowed = !read_ini_bool(ini_path, "fullscreen", !windowed);
+            g_fullscreen_config.ini_key_present = true;
+        }
         g_fullscreen_config.force_windowed_default = windowed;
     }
     g_window_config.borderless_enable = read_ini_bool(
@@ -345,6 +366,8 @@ void load_config(HMODULE self_module) {
                     g_settings_menu_config.refresh_rate,
                     sizeof(g_settings_menu_config.refresh_rate),
                     g_settings_menu_config.refresh_rate);
+    g_settings_menu_config.max_hz_native_res = read_ini_bool(
+        ini_path, "max_hz_native_res", g_settings_menu_config.max_hz_native_res);
 
     // per-monitor hardware gamma (dual-screen light bug fix, cod2x port)
     g_gamma_fix_config.enable = read_ini_bool(

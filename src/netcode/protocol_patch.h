@@ -31,6 +31,16 @@ extern int  g_protocol_version;                 // ini: protocol_version (defaul
 extern char g_master_host[CODMP_MASTER_HOST_MAX + 1]; // ini: master_server
 extern int  g_net_version;                      // ini: net_version (16 = "1.6"); client cvar + server min
 
+// Legacy 1.5 browsing. Every piece of the protocol patch is a memory poke, so the
+// client can be moved between the two ecosystems at runtime without a restart:
+//   mode 0 = 1.6  -> protocol 10, our master
+//   mode 1 = 1.5  -> protocol  6, codmaster.activision.com
+// Probed 2026-08-02: the Activision master is NOT dead - it answers `getservers 6`
+// with ~81 servers. Our own master answers with the same handful whatever protocol
+// is asked for, so it cannot serve the 1.5 list and the host has to switch too.
+constexpr const char* CODMP_MASTER_HOST_LEGACY = "codmaster.activision.com";  // 24 chars, fits exactly
+constexpr int         PROTOCOL_LEGACY_15       = 6;
+
 // CoD1 Cvar API (CoDMP.exe @0x400000), RE'd:
 constexpr uintptr_t CODMP_CVAR_GET_VA   = 0x0043b880; // cvar_t* Cvar_Get(name, def, flags) cdecl
 constexpr uintptr_t CODMP_CVAR_COUNT_VA = 0x01912aec; // cvar count (>0 once cvar system is up)
@@ -47,6 +57,8 @@ constexpr int       CVAR_ROM            = 0x40;
 
 bool apply_protocol_patch();        // protocol bump + master repoint in CoDMP.exe
 void register_client_version_cvar(); // register USERINFO "cod1reloaded" cvar (once, after Com_Init)
+void netmode_tick();                // watcher: follow cod1x_masterlist, re-poke on change
+int  netmode_current();             // 0 = 1.6, 1 = legacy 1.5
 
 }  // namespace patches
 

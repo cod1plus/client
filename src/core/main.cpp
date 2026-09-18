@@ -5,7 +5,10 @@
 #include <cstring>
 
 #include "core/patches.h"
+#include "core/single_instance.h"
+#include "features/pam_install.h"
 #include "netcode/cheat_scan.h"
+#include "netcode/ruleset.h"
 #include "gameplay/viewheight_fix.h"
 #include "gameplay/lean_fix.h"
 #include "core/logger.h"
@@ -16,6 +19,7 @@
 #include "video/window_patch.h"
 #include "video/fullscreen_patch.h"
 #include "video/display_probe.h"
+#include "video/mode_guard.h"
 #include "input/rinput.h"
 #include "performance/fps_cap.h"
 #include "performance/frame_limiter.h"
@@ -28,6 +32,7 @@
 #include "performance/fso_disable.h"
 #include "video/widescreen_fix.h"
 #include "features/avatar_overlay.h"
+#include "ui/gl_overlay.h"
 #include "features/engine_2d.h"
 #include "features/discord_rpc.h"
 #include "features/settings_menu.h"
@@ -104,7 +109,9 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::competitive_force_cvars();  // force/lock snaps+cl_maxpackets+rate for 40-tick
             patches::settings_menu_tick();       // register/poll cod1x_* cvars + cg_fov unlock + hotkey
             patches::cheat_scan_tick();          // cvar-name cheat detection -> userinfo cod1x_ac
+            patches::ruleset_tick();             // embedded PB ruleset (sv_competitive_ruleset) -> userinfo cod1x_rs
             patches::rinput_tick();              // follow m_rinput, publish m_rinput_hz
+            patches::netmode_tick();             // follow cod1x_masterlist (1.6 <-> legacy 1.5)
         }
         patches::widescreen_update_stretch();    // drive the stretched-mode vfov ratio (live)
         patches::gamma_fix_tick();               // per-monitor gamma: focus/monitor transitions
@@ -120,6 +127,12 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
     switch (reason) {
         case DLL_PROCESS_ATTACH:
             DisableThreadLibraryCalls(hModule);
+            // FIRST, before we touch any file: a duplicate CoDMP.exe must not
+            // get as far as sharing this install's config/logs (AMD alt-tab).
+            patches::single_instance_guard();   // may ExitProcess
+            // pk3s a previous PAM download could not replace (mod in use) -> swap now,
+            // before the engine opens any pak
+            patches::pam_install_swap_pending();
             // apply pending update (rename .new -> .dll) before file gets locked
             patches::updater_apply_pending();
             logger::init(hModule);
@@ -150,6 +163,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
 
             patches::widescreen_fix_apply();
             patches::settings_menu_start();  // in-game 1.6X settings menu (FOV + screen ratio)
+            patches::overlay_start();        // modern GL settings menu (Ctrl+M)
 
             // per-monitor hardware gamma (dual-screen light bugs; must precede vid init)
             patches::gamma_fix_start();
@@ -162,11 +176,22 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
 
             // competitive: lift snaps (server-side) + cl_maxpackets (client-side) caps for real 40-tick
             patches::apply_competitive_caps();
+            patches::settings_menu_patch_refresh_cap();   // r_displayRefresh: 200 -> 1000
 
             // A resolution the desktop is not already in can ONLY be presented by an
             // exclusive-fullscreen mode switch. Must run before the two patches below,
             // which it can turn off for this launch.
             patches::display_mode_guard();
+            // `fullscreen = on/off` in the .ini beats a stale `seta r_fullscreen` left in
+            // config_mp.cfg by an older build (players windowed without knowing why)
+            patches::enforce_ini_fullscreen();
+            // refresh_rate = max: a custom res the driver lists below the panel's max Hz
+            // is swapped for the res that has it (4:3 stretch emulated by the mod)
+            patches::enforce_max_hz_native();
+
+            // log every ChangeDisplaySettingsA + auto-retry a refused mode without
+            // the forced refresh/bpp (AMD alt-tab restore failure -> white console)
+            patches::mode_guard_start();
 
             // r_fullscreen default "0"; window_patch then makes it borderless (alt-tab works)
             patches::apply_fullscreen_patch();

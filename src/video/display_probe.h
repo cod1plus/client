@@ -22,6 +22,19 @@ bool probe_desktop_resolution(int* w, int* h);
 // start_window_watcher().
 void display_mode_guard();
 
+// The .ini says `fullscreen = on` (or off) but Main/config_mp.cfg carries a
+// `seta r_fullscreen` that disagrees: the config wins in the engine (archived cvar
+// beats the default we redirect), so the value is rewritten IN PLACE before the engine
+// reads the file. Only when the key is spelled out in the .ini; a config without the
+// cvar is left alone (the redirected default already covers it).
+void enforce_ini_fullscreen();
+
+// refresh_rate = max but the configured resolution is not listed at the display's
+// maximum Hz (custom resolutions carry only the rates the driver created them with):
+// rewrite config_mp.cfg to the resolution that has the maximum, and emulate a 4:3
+// stretch with view_mode = stretched. DllMain, after enforce_ini_fullscreen().
+void enforce_max_hz_native();
+
 }  // namespace patches
 
 #endif

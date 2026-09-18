@@ -2,8 +2,6 @@
 // 
 {	
 	loadMenu { "ui_mp/main.menu" }
-	loadMenu { "ui_mp/cod1x_settings.menu" }	// COD1.6X in-game settings
-	loadMenu { "ui_mp/cod1x_files.menu" }		// COD1.6X configs/demos loader
 
 	loadMenu { "ui_mp/options.menu" }
 	loadMenu { "ui/options_look.menu" }

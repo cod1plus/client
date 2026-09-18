@@ -33,7 +33,14 @@ constexpr uintptr_t CODMP_MOUSE_CENTER_Y_VA = 0x0093b228;
 
 void rinput_start();      // DllMain: hook GetCursorPos (inert until m_rinput is on)
 void rinput_tick();       // watcher thread: follow m_rinput, publish m_rinput_hz
-void rinput_shutdown();   // DLL_PROCESS_DETACH: stop the thread, unregister the device
+void rinput_shutdown();
+
+// UI tap for the modern menu overlay (ui/gl_overlay.cpp). While captured, raw deltas
+// feed the OVERLAY's virtual cursor instead of the engine accumulator - so the menu
+// cursor moves and the in-game view does NOT turn behind the panel. Works whatever
+// m_rinput is set to: the raw-input thread listens from DllMain either way.
+void rinput_ui_capture(bool on);
+void rinput_ui_take_delta(long* dx, long* dy);   // DLL_PROCESS_DETACH: stop the thread, unregister the device
 
 }  // namespace patches
 

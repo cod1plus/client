@@ -39,10 +39,16 @@ set(COD1RELOADED_SOURCES
     src/netcode/protocol_patch.cpp
     src/netcode/competitive.cpp
     src/netcode/cheat_scan.cpp
+    src/netcode/ruleset_eval.cpp
+    src/netcode/ruleset_parse.cpp
+    src/netcode/ruleset_fetch.cpp
+    src/features/pam_install.cpp
+    src/netcode/ruleset.cpp
     src/netcode/version_gate.cpp
     src/video/window_patch.cpp
     src/video/fullscreen_patch.cpp
     src/video/display_probe.cpp
+    src/video/mode_guard.cpp
     src/performance/fps_cap.cpp
     src/performance/frame_limiter.cpp
     src/features/updater.cpp
@@ -61,6 +67,11 @@ set(COD1RELOADED_SOURCES
     src/gameplay/stance_fix.cpp
     src/gameplay/anim_clamp.cpp
     src/netcode/antilag.cpp
+    src/core/single_instance.cpp
+    src/ui/gl_overlay.cpp
+    src/ui/modern_menu.cpp
+    src/ui/home_menu.cpp
+    src/ui/player_preview.cpp
 )
 
 add_library(cod1reloaded SHARED
@@ -116,10 +127,10 @@ target_link_options(mss32 PRIVATE
 )
 
 target_link_libraries(cod1reloaded PRIVATE
-    kernel32 user32 winmm wininet shell32 advapi32 gdiplus
+    kernel32 user32 winmm wininet shell32 advapi32 gdiplus gdi32 opengl32
 )
 target_link_libraries(mss32 PRIVATE
-    kernel32 user32 winmm wininet shell32 advapi32 gdiplus
+    kernel32 user32 winmm wininet shell32 advapi32 gdiplus gdi32 opengl32
 )
 
 set_target_properties(cod1reloaded PROPERTIES
