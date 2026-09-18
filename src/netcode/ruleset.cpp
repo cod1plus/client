@@ -96,6 +96,20 @@ void unlock_one(void* cv, const char* name) {
     }
 }
 
+// Cvars the MOD governs itself, with its own published policy - the downloaded list must
+// not fight it. cg_fov: the CoDBase list says "IN 80" (exactly 80), while 1.6X allows
+// 80..95 and clamps it live in settings_menu_tick. Without this the ruleset pushed cg_fov
+// back to 80 four times a second on any server publishing a competitive.cfg, while /devmap
+// (ruleset inactive) let 95 through - enzo, 2026-09-18.
+// Precedence stays: the server's competitive.cfg > this list > the downloaded ruleset. A
+// server that really wants 80 only has to name cg_fov in its competitive.cfg.
+bool mod_owns(const char* name) {
+    static const char* const kOwned[] = { "cg_fov" };
+    for (size_t i = 0; i < sizeof(kOwned) / sizeof(kOwned[0]); ++i)
+        if (!_stricmp(name, kOwned[i])) return true;
+    return false;
+}
+
 void publish(const char* report) {
     if (!strcmp(report, g_report)) return;
     snprintf(g_report, sizeof(g_report), "%s", report);
@@ -214,6 +228,11 @@ void ruleset_tick() {
         if (!cv) continue;                       // not on this client build: nothing to hold
         if (competitive_spec_has(r.cvar)) {      // the server's competitive.cfg wins, always:
             unlock_one(cv, r.cvar);              // drop our lock so its range stays usable
+            g_fixed[i] = 0;
+            continue;
+        }
+        if (mod_owns(r.cvar)) {                  // 1.6X policy beats the list (see mod_owns)
+            unlock_one(cv, r.cvar);
             g_fixed[i] = 0;
             continue;
         }
