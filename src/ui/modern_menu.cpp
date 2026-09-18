@@ -389,6 +389,7 @@ void collect_modes() {
         if (g_modes[i].w == cw && g_modes[i].h == ch) { g_sel = (int)i; break; }
     if (g_sel < 0) { g_modes.push_back({ cw, ch }); g_sel = (int)g_modes.size() - 1; }
     collect_hz();
+    g_display_mode = cv_int("r_fullscreen", 1) ? 0 : 1;   // what the engine runs NOW, not a default
     g_view_mode = cv_int("cod1x_viewmode", 0);        // what the bridge currently applies
     if (g_view_mode < 0 || g_view_mode > 2) g_view_mode = 0;
     g_fov = cv_int("cg_fov", COD1X_FOV_MIN);

@@ -226,6 +226,23 @@ void enforce_ini_fullscreen() {
     const long pos = find_fullscreen_value(buf, &have, &vlen);
     if (pos < 0 || have == want) { free(buf); return; }
 
+    // ONE direction only. The mod's r_fullscreen default is "0", and the engine writes
+    // every archived cvar back on exit, so a "0" in the config is ambiguous: it is what
+    // an older build left there for a player who never chose it (the reported case,
+    // 2026-09-11 - ini on, config 0 -> repaired below). A "1" can ONLY come from the
+    // player (vanilla Options menu, or the file): 1.6.6 rewrote it to 0 because the
+    // shipped .ini says `fullscreen = off`, which threw every exclusive-fullscreen
+    // player into a borderless window - a 1440x1080 backbuffer pinned in the corner
+    // of a 1920x1080 window ("the window is broken on startup"). Their choice stands;
+    // window_patch follows r_fullscreen live, and the 1.6X menu writes both files.
+    if (have == 1 && want == 0) {
+        logger::logf("display_probe: config_mp.cfg asks r_fullscreen 1 (exclusive) while "
+                     "cod1reloaded.ini says fullscreen = off - the config is the player's "
+                     "choice, keeping exclusive fullscreen");
+        free(buf);
+        return;
+    }
+
     // rewrite just the digit(s), everything else byte-identical
     char exe_path[MAX_PATH];
     DWORD len = GetModuleFileNameA(NULL, exe_path, MAX_PATH);

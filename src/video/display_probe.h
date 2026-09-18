@@ -22,11 +22,12 @@ bool probe_desktop_resolution(int* w, int* h);
 // start_window_watcher().
 void display_mode_guard();
 
-// The .ini says `fullscreen = on` (or off) but Main/config_mp.cfg carries a
-// `seta r_fullscreen` that disagrees: the config wins in the engine (archived cvar
-// beats the default we redirect), so the value is rewritten IN PLACE before the engine
-// reads the file. Only when the key is spelled out in the .ini; a config without the
-// cvar is left alone (the redirected default already covers it).
+// The .ini says `fullscreen = on` but Main/config_mp.cfg carries a `seta r_fullscreen 0`
+// left by an older build: the config wins in the engine (archived cvar beats the
+// default we redirect), so the value is rewritten IN PLACE before the engine reads the
+// file. Only when the key is spelled out in the .ini; a config without the cvar is left
+// alone (the redirected default already covers it). Never the other way round: a
+// `r_fullscreen 1` in the config is the player's own choice and stands (1.6.6 regression).
 void enforce_ini_fullscreen();
 
 // refresh_rate = max but the configured resolution is not listed at the display's
