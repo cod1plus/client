@@ -7,6 +7,7 @@
 #include "netcode/version_patch.h"
 #include "netcode/protocol_patch.h"
 #include "netcode/competitive.h"
+#include "netcode/ruleset_fetch.h"
 #include "netcode/version_gate.h"
 #include "video/window_patch.h"
 #include "video/fullscreen_patch.h"
@@ -206,6 +207,14 @@ void load_config(HMODULE self_module) {
         "cod1reloaded", "updater_manifest_url", "",
         g_updater_config.manifest_url, sizeof(g_updater_config.manifest_url),
         ini_path);
+    g_ruleset_fetch_config.enable = read_ini_bool(
+        ini_path, "ruleset_fetch_enable", g_ruleset_fetch_config.enable);
+    {
+        char buf[256];
+        DWORD n = GetPrivateProfileStringA(
+            "cod1reloaded", "ruleset_url", "", buf, sizeof(buf), ini_path);
+        if (n > 0) snprintf(g_ruleset_fetch_config.base_url, sizeof(g_ruleset_fetch_config.base_url), "%s", buf);
+    }
     g_frame_limiter_config.enable = read_ini_bool(
         ini_path, "frame_limiter_enable", g_frame_limiter_config.enable);
     {

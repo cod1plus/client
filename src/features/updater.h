@@ -7,7 +7,7 @@ namespace patches {
 
 // build_number_from() in protocol_patch.cpp derives cod1x_build from this string
 // (1.6.5 -> 10605), so this is the ONLY place a release version is written.
-constexpr const char* COD1RELOADED_VERSION = "1.6.5";
+constexpr const char* COD1RELOADED_VERSION = "1.6.8";
 
 struct UpdaterConfig {
     bool        enable;

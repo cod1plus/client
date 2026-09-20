@@ -1,5 +1,36 @@
 # cod1reloaded — Changelog
 
+## v1.6.8 (2026-09-20)
+
+Base : la 1.6.7 (= code 1.6.5, la 1.6.6 est retirée) + le ruleset cvar de la 1.6.6, rien d'autre.
+
+### 🛡️ Ruleset PunkBuster (remplaçant de PB)
+- Le client applique lui-même la liste CoDBase complète (~430 cvars) demandée par le serveur
+  (`sv_competitive_ruleset`) : exact → forcé + verrouillé, plage → ramené dans la plage.
+- La liste est téléchargée depuis https://github.com/cod1plus/rulesets au lancement puis toutes les
+  10 min, et immédiatement quand un serveur demande une version plus récente (`<id>@<version>`) ;
+  cache dans `rulesets\`, copie compilée en secours hors-ligne (`ruleset_fetch_enable`, `ruleset_url`).
+- Aucune mise à jour serveur requise : un serveur qui pousse un `competitive.cfg` (tous les `.so`
+  1.6.x) déclenche la liste par défaut `codbase-2023-05` v2 (`cg_fov IN 80 95`, tenu en match
+  uniquement). Le `.so` 1.6.6 ajoute le choix de l'id par serveur, la poussée immédiate d'une
+  version et le kick des clients qui combattent l'enforcement.
+- Le `competitive.cfg` du serveur garde la priorité pour les cvars qu'il nomme, y compris à chaud.
+- La commande `wait` reste **autorisée** : les nade binds de CoD1 sont construits dessus.
+- Verdict remonté au serveur en userinfo `cod1x_rs` (`ok` / violations persistantes / probes).
+- Corrigé : en 1.6.5 aucune règle à 0, négative ou flottante du `competitive.cfg` n'était appliquée
+  (`r_fullbright 0`, `m_yaw 0.022`, `cl_timenudge -20 0`…).
+- Corrigé : les cvars systeminfo gardaient la valeur du serveur précédent (spec et ruleset lus dans
+  la configstring courante, plus dans la cvar).
+- `cheat_scan` : +24 noms de cvars cheat CoDBase 2023.
+
+### 🔄 Updater
+- L'URL du manifest est un défaut compilé : un `cod1reloaded.ini` sans `updater_manifest_url`
+  ne désactive plus silencieusement les mises à jour.
+
+### Volontairement absent (par rapport à la 1.6.6)
+- Overlay Ctrl+M, installeur PAM, modes d'affichage (stretched, Hz max), cap FOV 95 hors match,
+  bascule liste 1.5, garde instance unique.
+
 ## v1.6.4 (2026-08-02)
 
 ### 🧍 Up / down

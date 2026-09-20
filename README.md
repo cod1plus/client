@@ -108,6 +108,19 @@ it downloads in the background and **applies it on the next launch**.
 
 > To disable: set `updater_enable = false` in `cod1reloaded.ini`.
 
+## 🛡️ Fair-play rules (PunkBuster replacement)
+
+On a 1.6X server the client enforces the server's cvar rules itself: the short
+`competitive.cfg` the server pushes (40-tick netcode, FOV, picmip ...) plus the full
+CoDBase PunkBuster list (~430 cvars) - the one the server names, or `codbase-2023-05`
+on any server that pushes a `competitive.cfg`. That list lives in
+https://github.com/cod1plus/rulesets, is downloaded at launch and refreshed every 10
+minutes (immediately when a server asks a newer version), cached in `rulesets\`, with
+a built-in copy as the offline fallback. Locked cvars come back the moment you leave
+the server.
+
+> To disable the download (built-in copy only): `ruleset_fetch_enable = off`.
+
 ---
 
 ## ⚙️ Configuration (optional)

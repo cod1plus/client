@@ -19,9 +19,15 @@
 
 namespace patches {
 
+/* THE URL IS A DEFAULT, NOT A REQUIREMENT (since 1.6.8).
+ * It used to be "", and the gate returns immediately on an empty URL - so any install
+ * whose cod1reloaded.ini lacked `updater_manifest_url` had a dead auto-updater, silently.
+ * Updating a client keeps the existing .ini (it holds the settings), so a key added to
+ * the shipped .ini never reaches anyone already installed. The .ini key still overrides
+ * this, for a fork or a private mirror. */
 UpdaterConfig g_updater_config = {
     /* enable        */ true,
-    /* manifest_url  */ "",
+    /* manifest_url  */ "https://github.com/cod1plus/client/releases/latest/download/manifest.json",
     /* auto_download */ true,
     /* show_dialog   */ true,
 };
