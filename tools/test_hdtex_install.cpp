@@ -42,7 +42,17 @@ int main() {
     PamStatus s = run_job(PKG_HDTEX, 2000);
     CHECK(s.state == PAM_ERROR && strstr(s.text, "no download link") != nullptr);
 
-    // 2. fresh install into the manifest's folder ("main_test" here), cvar line handed out once
+    // 2. fresh install into the manifest's folder ("main_test" here), cvar line handed out once.
+    //    zz_hd_a.pk3 starts as a truncated .part (an interrupted earlier run): the server
+    //    honours Range, so it must be RESUMED, not restarted (log: "resuming ... at 0.1 MB")
+    CreateDirectoryA("build\\main_test", NULL);
+    {
+        FILE* src = fopen("build\\hdtex_test\\srv\\zz_hd_a.pk3", "rb");
+        FILE* dst = fopen("build\\main_test\\zz_hd_a.pk3.part", "wb");
+        CHECK(src && dst);
+        static char b[100000]; size_t k = fread(b, 1, sizeof(b), src); fwrite(b, 1, k, dst);
+        fclose(src); fclose(dst);
+    }
     snprintf(g_hdtex_install_config.manifest_url, sizeof(g_hdtex_install_config.manifest_url),
              "http://127.0.0.1:8767/hdtex.manifest");
     s = run_job(PKG_HDTEX, 60000);
@@ -65,7 +75,23 @@ int main() {
     s = run_job(PKG_HDTEX, 60000);
     CHECK(s.state == PAM_DONE && s.files_total == 0 && strstr(s.text, "up to date") != nullptr);
 
-    // 5. a manifest whose cvar line carries junk (quotes / semicolons) is ignored, files still fine
+    // 5. same interrupted .part against a server WITHOUT Range support (port 8768: 200 for
+    //    everything): started over, still correct
+    {
+        DeleteFileA("build\\main_test\\zz_hd_b.pk3");
+        FILE* src = fopen("build\\hdtex_test\\srv\\zz_hd_b.pk3", "rb");
+        FILE* dst = fopen("build\\main_test\\zz_hd_b.pk3.part", "wb");
+        CHECK(src && dst);
+        static char b[50000]; size_t k = fread(b, 1, sizeof(b), src); fwrite(b, 1, k, dst);
+        fclose(src); fclose(dst);
+        snprintf(g_hdtex_install_config.manifest_url, sizeof(g_hdtex_install_config.manifest_url),
+                 "http://127.0.0.1:8768/hdtex_norange.manifest");
+        s = run_job(PKG_HDTEX, 60000);
+        CHECK(s.state == PAM_DONE && s.files_total == 1 && s.files_done == 1);
+        CHECK(fsize("build\\main_test\\zz_hd_b.pk3") == fsize("build\\hdtex_test\\srv\\zz_hd_b.pk3"));
+    }
+
+    // 6. a manifest whose cvar line carries junk (quotes / semicolons) is ignored, files still fine
     snprintf(g_hdtex_install_config.manifest_url, sizeof(g_hdtex_install_config.manifest_url),
              "http://127.0.0.1:8767/hdtex_badcvar.manifest");
     s = run_job(PKG_HDTEX, 60000);

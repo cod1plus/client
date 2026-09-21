@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace patches {
@@ -218,8 +219,14 @@ HINTERNET open_inet() {
     return hi;
 }
 
-HINTERNET open_url(HINTERNET hi, const char* url, std::string& err) {
-    HINTERNET hu = InternetOpenUrlA(hi, url, NULL, 0,
+// resume_from > 0 asks for the tail of the file (Range); *status_out tells whether the
+// server honoured it (206) or sent the whole file again (200). Redirects (GitHub
+// release assets bounce to their CDN) are followed by WinINet itself.
+HINTERNET open_url(HINTERNET hi, const char* url, std::string& err,
+                   unsigned long long resume_from = 0, DWORD* status_out = nullptr) {
+    char hdr[64] = "";
+    if (resume_from) snprintf(hdr, sizeof(hdr), "Range: bytes=%llu-\r\n", resume_from);
+    HINTERNET hu = InternetOpenUrlA(hi, url, hdr[0] ? hdr : NULL, hdr[0] ? (DWORD)-1 : 0,
                                     INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_UI, 0);
     if (!hu) {
         char b[96]; snprintf(b, sizeof(b), "connection failed (err %lu)", GetLastError());
@@ -228,12 +235,14 @@ HINTERNET open_url(HINTERNET hi, const char* url, std::string& err) {
     DWORD rtmo = 30000;
     InternetSetOptionA(hu, INTERNET_OPTION_RECEIVE_TIMEOUT, &rtmo, sizeof(rtmo));
     DWORD status = 0, ssz = sizeof(status);
-    if (HttpQueryInfoA(hu, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &status, &ssz, NULL) && status != 200) {
+    if (HttpQueryInfoA(hu, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &status, &ssz, NULL) &&
+        status != 200 && !(resume_from && status == 206)) {
         char b[64]; snprintf(b, sizeof(b), "HTTP %lu", status);
         err = b;
         InternetCloseHandle(hu);
         return NULL;
     }
+    if (status_out) *status_out = status;
     return hu;
 }
 
@@ -255,21 +264,48 @@ bool http_get_text(const char* url, std::string& out, std::string& err) {
 }
 
 // stream `url` into `path`, hashing on the fly; progress via `done_base + bytes` over `total`
+// Resumable: a <name>.part left by an interrupted run is continued from its size
+// (a multi-GB texture pack over a flaky link must not start over), its bytes are
+// hashed first so the SHA-256 still covers the whole file. A server that ignores
+// the Range request (200) makes us start over.
 bool http_get_file(const char* url, const char* path, unsigned long long expect_size,
                    unsigned long long done_base, unsigned long long total,
                    const char* label, std::string& sha_out, std::string& err) {
     HINTERNET hi = open_inet();
     if (!hi) { err = "wininet unavailable"; return false; }
-    HINTERNET hu = open_url(hi, url, err);
-    if (!hu) { InternetCloseHandle(hi); return false; }
-    FILE* f = fopen(path, "wb");
-    if (!f) { err = "cannot write to the mod folder"; InternetCloseHandle(hu); InternetCloseHandle(hi); return false; }
     Sha256 h;
+    unsigned long long have = 0;
+    {
+        WIN32_FILE_ATTRIBUTE_DATA d;
+        if (GetFileAttributesExA(path, GetFileExInfoStandard, &d))
+            have = ((unsigned long long)d.nFileSizeHigh << 32) | d.nFileSizeLow;
+        if (have >= expect_size) have = 0;        // complete or oversized leftover: redo it
+    }
+    DWORD status = 0;
+    HINTERNET hu = open_url(hi, url, err, have, &status);
+    if (!hu) { InternetCloseHandle(hi); return false; }
+    if (have && status != 206) have = 0;          // no partial content: from scratch
+    if (have) {
+        // hash what we already have; a part we cannot read is a part we do not trust
+        FILE* pf = fopen(path, "rb");
+        unsigned long long hashed = 0;
+        if (pf) {
+            static char hb[1 << 16]; size_t k;
+            while ((k = fread(hb, 1, sizeof(hb), pf)) > 0) { h.update(hb, (DWORD)k); hashed += k; }
+            fclose(pf);
+        }
+        if (hashed != have) { have = 0; InternetCloseHandle(hu); hu = open_url(hi, url, err, 0, &status); if (!hu) { InternetCloseHandle(hi); return false; } }
+    }
+    FILE* f = fopen(path, have ? "ab" : "wb");
+    if (!f) { err = "cannot write to the mod folder"; InternetCloseHandle(hu); InternetCloseHandle(hi); return false; }
+    if (!have) { Sha256 fresh; std::swap(h.prov, fresh.prov); std::swap(h.hash, fresh.hash); std::swap(h.ok, fresh.ok); }
+    if (have) logger::logf("%s: resuming %s at %.1f MB", t_job->tag, label, have / 1048576.0);
     static char buf[1 << 16];
     DWORD n = 0;
-    unsigned long long got = 0;
+    unsigned long long got = have;
     bool ok = true;
     DWORD last_ui = 0, t0 = GetTickCount();
+    const unsigned long long got0 = got;
     while (InternetReadFile(hu, buf, sizeof(buf), &n) && n > 0) {
         if (fwrite(buf, 1, n, f) != n) { ok = false; err = "disk write failed"; break; }
         h.update(buf, n);
@@ -281,15 +317,18 @@ bool http_get_file(const char* url, const char* path, unsigned long long expect_
             const double secs = (now - t0) / 1000.0;
             char txt[160];
             snprintf(txt, sizeof(txt), "%s  %.1f / %.1f MB  %.1f MB/s", label,
-                     got / 1048576.0, expect_size / 1048576.0, secs > 0.2 ? got / 1048576.0 / secs : 0.0);
+                     got / 1048576.0, expect_size / 1048576.0, secs > 0.2 ? (got - got0) / 1048576.0 / secs : 0.0);
             set_status(PAM_DOWNLOADING, txt, total ? (float)((double)(done_base + got) / (double)total) : 0.f);
         }
     }
     fclose(f);
     InternetCloseHandle(hu);
     InternetCloseHandle(hi);
-    if (ok && got != expect_size) { ok = false; err = "transfer ended early"; }
-    if (!ok) { DeleteFileA(path); return false; }
+    if (ok && got != expect_size) { ok = false; err = "transfer ended early (resumes next time)"; }
+    if (!ok) {
+        if (got > expect_size) DeleteFileA(path);      // only a wrong file is thrown away
+        return false;
+    }
     sha_out = h.hex();
     return true;
 }
