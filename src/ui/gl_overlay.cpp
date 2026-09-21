@@ -32,6 +32,7 @@
 
 #include <GL/gl.h>
 #include <gdiplus.h>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -586,17 +587,38 @@ void end_2d() {
 }
 
 // ------------------------------------------------------------------- news card
-// "MAJOR IN PROGRESS" and the like: a card in the top-right corner of the MAIN MENU
-// (drawn while no cgame is loaded), fed by news.txt online (features/news.cpp).
-// Ctrl+N opens its link. Not clickable: at the main menu the engine owns the cursor.
+// "MAJOR IN PROGRESS" and the like, fed by news.txt online (features/news.cpp), on
+// the MAIN MENU only (drawn while no cgame is loaded). Broadcast lower-third, not a
+// box: right-aligned type over a gradient that fades into the screen edge, a live
+// dot, a hairline, the link hint in tracked small caps. Same mono palette as the
+// menu. Ctrl+N opens the link - the card cannot be clicked, the engine owns the
+// cursor on its own menu.
+
+// Uppercase, letter-spaced: the "eyebrow" style. Per glyph through the text cache.
+float tracked_width(int px, int weight, const char* s, float tracking) {
+    float w = 0;
+    for (const char* c = s; *c; ++c) {
+        char g[2] = { *c, 0 };
+        w += ui_text_width(px, weight, g) + tracking;
+    }
+    return w > tracking ? w - tracking : 0;
+}
+void text_tracked(float x, float y, int px, int weight, DWORD col, const char* s, float tracking) {
+    for (const char* c = s; *c; ++c) {
+        char g[2] = { *c, 0 };
+        x += ui_text(x, y, px, weight, col, g) + tracking;
+    }
+}
+
 void draw_news_card(HWND wnd) {
-    static DWORD s_probe = 0;
+    static DWORD s_probe = 0, s_since = 0;
     static bool  s_in_game = true;
     const DWORD now = GetTickCount();
     if (now - s_probe > 500) { s_probe = now; s_in_game = GetModuleHandleA("cgame_mp_x86.dll") != NULL; }
     char title[64], text[128], url[256];
     if (s_in_game || !news_get(title, sizeof(title), text, sizeof(text), url, sizeof(url))) {
         g_news_visible = false;
+        s_since = 0;
         return;
     }
     RECT rc;
@@ -604,14 +626,77 @@ void draw_news_card(HWND wnd) {
     g_vw = rc.right; g_vh = rc.bottom;
     if (g_vw <= 0 || g_vh <= 0) return;
     g_news_visible = true;
+    if (!s_since) s_since = now ? now : 1;
+    for (char* c = title; *c; ++c) *c = (char)toupper((unsigned char)*c);
+
     begin_2d();
-    const float sc = g_vh / 1080.0f > 0.6f ? g_vh / 1080.0f : 0.6f;   // same size at every res
-    const float w = 420 * sc, h = (url[0] ? 96 : 76) * sc, x = g_vw - w - 28 * sc, y = 28 * sc;
-    ui_rect_rounded(x, y, w, h, 10 * sc, 0xE60A0A0A);
-    ui_rect(x, y + 12 * sc, 4 * sc, h - 24 * sc, UI_ACCENT);
-    ui_text(x + 20 * sc, y + 12 * sc, (int)(21 * sc), 600, UI_TEXT, title);
-    ui_text(x + 20 * sc, y + 42 * sc, (int)(14 * sc), 400, UI_MUTED, text);
-    if (url[0]) ui_text(x + 20 * sc, y + 66 * sc, (int)(12 * sc), 600, UI_ACCENT, "CTRL+N   OPEN THE PAGE");
+    // ease in over 700 ms: fade + a slide of a few pixels from the right
+    float t = (now - s_since) / 700.0f; if (t > 1) t = 1;
+    const float ease = t * t * (3 - 2 * t);
+    const float sc = g_vh / 1080.0f > 0.6f ? g_vh / 1080.0f : 0.6f;
+    const float margin = 44 * sc, pad = 22 * sc, slide = (1 - ease) * 18 * sc;
+    const int   px_eye = (int)(12 * sc), px_head = (int)(24 * sc), px_hint = (int)(11 * sc);
+    const float tr_eye = 2.6f * sc, tr_hint = 1.8f * sc;
+    const char* hint = "CTRL + N   OPEN THE PAGE";
+    const float dot_r = 3.5f * sc, dot_gap = 12 * sc;
+
+    const float w_eye  = tracked_width(px_eye, 600, title, tr_eye) + dot_r * 2 + dot_gap;
+    const float w_head = text[0] ? ui_text_width(px_head, 600, text) : 0;
+    const float w_hint = url[0] ? tracked_width(px_hint, 600, hint, tr_hint) : 0;
+    float bw = w_eye; if (w_head > bw) bw = w_head; if (w_hint > bw) bw = w_hint;
+    const float x1 = g_vw - margin + slide;                 // right edge of the type
+    const float y0 = margin;
+    float h = 20 * sc;                                      // eyebrow row
+    if (text[0]) h += 30 * sc;
+    if (url[0])  h += 26 * sc;
+    h += 8 * sc;
+
+    ui_alpha(ease);
+    // backdrop: a gradient that starts transparent to the left of the type and
+    // becomes near-black at the screen edge, so the type reads on any menu art
+    // - soft on every side: a horizontal ramp times a vertical one, so it is a
+    // shadow behind the type, never a band with edges
+    {
+        const float gx0 = x1 - bw - 220 * sc, gx1 = (float)g_vw;
+        const float gy0 = y0 - pad * 1.6f, gy1 = y0 + h + pad * 1.6f;
+        const int cols = 40, rows = 14;
+        for (int j = 0; j < rows; ++j) {
+            const float r0 = (float)j / rows, r1 = (float)(j + 1) / rows;
+            const float d = r0 < 0.5f ? r0 * 2 : (1 - r0) * 2;      // 0 at the edges, 1 mid
+            const float fy = d * d * (3 - 2 * d);
+            for (int i = 0; i < cols; ++i) {
+                const float f0 = (float)i / cols, f1 = (float)(i + 1) / cols;
+                const float a = f0 * f0 * 0.85f * fy;
+                if (a < 0.01f) continue;
+                ui_rect(gx0 + (gx1 - gx0) * f0, gy0 + (gy1 - gy0) * r0,
+                        (gx1 - gx0) * (f1 - f0) + 1, (gy1 - gy0) * (r1 - r0) + 1,
+                        ((DWORD)(a * 255) << 24) | 0x000000);
+            }
+        }
+    }
+    float y = y0;
+    // eyebrow: live dot + tracked small caps, right-aligned
+    {
+        const float pulse = 0.55f + 0.45f * sinf(now * 0.0045f);
+        const float ex = x1 - tracked_width(px_eye, 600, title, tr_eye);
+        const float cx = ex - dot_gap - dot_r, cy = y + px_eye * 0.72f;
+        ui_ellipse(cx, cy, dot_r * (1.6f + 0.9f * pulse), dot_r * (1.6f + 0.9f * pulse), 1.0f,
+                   ((DWORD)(70 * pulse) << 24) | 0xFFFFFF);
+        ui_rect_rounded(cx - dot_r, cy - dot_r, dot_r * 2, dot_r * 2, dot_r, UI_ACCENT);
+        text_tracked(ex, y, px_eye, 600, UI_ACCENT, title, tr_eye);
+        y += 20 * sc;
+    }
+    // headline
+    if (text[0]) {
+        ui_text(x1 - w_head, y, px_head, 600, UI_TEXT, text);
+        y += 30 * sc;
+    }
+    // hairline + hint
+    if (url[0]) {
+        ui_rect(x1 - bw, y + 4 * sc, bw, 1, 0x40FFFFFF);
+        text_tracked(x1 - w_hint, y + 11 * sc, px_hint, 600, UI_MUTED, hint, tr_hint);
+    }
+    ui_alpha(1.0f);
     end_2d();
 }
 
