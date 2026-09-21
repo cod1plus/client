@@ -5,7 +5,7 @@
 ; https://github.com/cod1plus/rulesets and downloaded by the client at start-up; bump the
 ; version below whenever you change a rule (the server publishes "<id>@<version>" and a client
 ; behind that version re-downloads while in game).
-; version 4
+; version 5
 pb_sv_cvar cg_bobAmplitudeDucked IN 0.0075
 pb_sv_cvar cg_bobAmplitudeProne IN 0.03
 pb_sv_cvar cg_bobamplitudestanding IN 0.007
@@ -55,10 +55,12 @@ pb_sv_cvar cg_gunY IN 0
 pb_sv_cvar cg_gunZ IN 0
 pb_sv_cvar cg_hudDamageIconHeight IN 64
 pb_sv_cvar cg_hudDamageIconHeight IN 64
-pb_sv_cvar cg_hudDamageIconInScope IN 0
-pb_sv_cvar cg_hudDamageIconInScope IN 0
-pb_sv_cvar cg_hudDamageIconOffset IN 32
-pb_sv_cvar cg_hudDamageIconOffset IN 32
+; rPAM pushes cg_hudDamageIconInScope 1 / cg_hudDamageIconOffset 128 / cg_weaponCycleDelay 200 (the
+; fast-reload fix: 200 during the rechamber window) to every client with setClientCvar. An exact
+; rule against a server-pushed value is reverted 4x/s by the client AND reported as a persistent
+; violation - so v5 widens those three to ranges that accept what the PAM sets.
+pb_sv_cvar cg_hudDamageIconInScope IN 0 1
+pb_sv_cvar cg_hudDamageIconOffset IN 32 128
 pb_sv_cvar cg_hudDamageIconTime IN 2000
 pb_sv_cvar cg_hudDamageIconTime IN 2000
 pb_sv_cvar cg_hudDamageIconWidth IN 128
@@ -85,7 +87,7 @@ pb_sv_cvar cg_smokeradius_gl IN 0
 pb_sv_cvar cg_smokeradius_rl IN 0
 pb_sv_cvar cg_stereosparation IN 0 0.6
 pb_sv_cvar cg_thirdperson IN 0
-pb_sv_cvar cg_weaponCycleDelay IN 0
+pb_sv_cvar cg_weaponCycleDelay IN 0 200
 pb_sv_cvar cg_weaponMenuFast IN 0
 pb_sv_cvar cg_weaponSelectTime IN 0
 pb_sv_cvar cg_viewsize IN 100
