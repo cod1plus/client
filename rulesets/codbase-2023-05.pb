@@ -5,7 +5,7 @@
 ; https://github.com/cod1plus/rulesets and downloaded by the client at start-up; bump the
 ; version below whenever you change a rule (the server publishes "<id>@<version>" and a client
 ; behind that version re-downloads while in game).
-; version 2
+; version 4
 pb_sv_cvar cg_bobAmplitudeDucked IN 0.0075
 pb_sv_cvar cg_bobAmplitudeProne IN 0.03
 pb_sv_cvar cg_bobamplitudestanding IN 0.007
@@ -290,6 +290,10 @@ pb_sv_cvar r_zfar IN 0
 pb_sv_cvar r_znear IN 4
 pb_sv_cvar r_znear_depthhack IN 0.1
 pb_sv_cvar rate IN 25000
+; PAM match rules (server-script cvars, live on a listen-server host only) - v3 had the
+; names wrong (scr_aimrun / scr_fastreload do not exist in the PAM)
+pb_sv_cvar scr_rpam_aimrun_fix IN 1
+pb_sv_cvar scr_fast_reload_fix IN 1
 pb_sv_cvar seta skill_medic IN 0
 pb_sv_cvar skill_battlesense IN 0
 pb_sv_cvar skill_covertops IN 0
