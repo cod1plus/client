@@ -7,6 +7,7 @@
 #include "core/patches.h"
 #include "core/single_instance.h"
 #include "features/pam_install.h"
+#include "features/news.h"
 #include "netcode/cheat_scan.h"
 #include "netcode/ruleset.h"
 #include "gameplay/viewheight_fix.h"
@@ -165,6 +166,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             patches::widescreen_fix_apply();
             patches::settings_menu_start();  // in-game 1.6X settings menu (FOV + screen ratio)
             patches::overlay_start();        // modern GL settings menu (Ctrl+M)
+            patches::news_start();           // main-menu announcement card (news.txt online)
 
             // per-monitor hardware gamma (dual-screen light bugs; must precede vid init)
             patches::gamma_fix_start();

@@ -22,6 +22,7 @@
 
 #include "ui/gl_overlay.h"
 #include "core/wndhub.h"
+#include "features/news.h"
 #include "ui/modern_menu.h"
 #include "ui/home_menu.h"
 #include "core/iat.h"
@@ -53,6 +54,7 @@ SwapBuffers_t g_orig_swap = nullptr;
 volatile long g_swap_calls = 0;       // proof the SwapBuffers hook still runs (see overlay_tick)
 DWORD  g_hotkey_wndproc_tick = 0;     // last Ctrl+M seen through the WindowProc
 bool   g_wndproc_dead = false;        // the key poll saw a chord the WindowProc never did
+bool   g_news_visible = false;        // the main-menu news card was drawn this frame (Ctrl+N)
 
 // 0 hidden, 1 settings panel, 2 home screen (the modern main-menu replacement).
 // Two screens share one overlay: SETTINGS reached FROM home returns to home on
@@ -432,6 +434,11 @@ bool overlay_listener(HWND w, UINT m, WPARAM wp, LPARAM lp, LRESULT* res) {
         }
     }
 
+    // Ctrl+N: the news card's link (main menu only - the card is not drawn in game)
+    if (m == WM_KEYDOWN && wp == 'N' && (GetKeyState(VK_CONTROL) & 0x8000) && g_mode == 0 && g_news_visible) {
+        news_open_link();
+        return true;
+    }
     // Ctrl+M only (enzo, 2026-09-17): INSERT is a key players bind, and a bare key
     // fires while aiming or typing; a chord does not
     if (m == WM_KEYDOWN && wp == 'M' && (GetKeyState(VK_CONTROL) & 0x8000)) {
@@ -546,6 +553,68 @@ void hotkey_poll(HWND w) {
     if (g_mode == 0) overlay_toggle(true); else overlay_toggle(false);
 }
 
+// 2D bracket around anything we draw at SwapBuffers: the engine's GL state is saved
+// and restored around it, and an ortho projection in window pixels is set up.
+void begin_2d() {
+    // vid_restart destroys the GL context; every cached texture id then belongs to
+    // a dead context and draws as garbage squares (seen live 2026-08-10: the whole
+    // menu turned into black-and-white blocks). Forget the cache and re-rasterise
+    // lazily in the new context.
+    HGLRC rc = wglGetCurrentContext();
+    if (rc != g_glrc) { g_glrc = rc; g_text_cache.clear(); }
+    glPushAttrib(GL_ALL_ATTRIB_BITS);
+    glPushClientAttrib(GL_CLIENT_ALL_ATTRIB_BITS);
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
+    glOrtho(0, g_vw, g_vh, 0, -1, 1);
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+    glViewport(0, 0, g_vw, g_vh);
+    glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
+    glDisable(GL_LIGHTING);   glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_ALPHA_TEST); glDisable(GL_FOG);
+    glDisableClientState(GL_VERTEX_ARRAY);
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    glDisableClientState(GL_COLOR_ARRAY);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+}
+
+void end_2d() {
+    glMatrixMode(GL_MODELVIEW); glPopMatrix();
+    glMatrixMode(GL_PROJECTION); glPopMatrix();
+    glPopClientAttrib();
+    glPopAttrib();
+}
+
+// ------------------------------------------------------------------- news card
+// "MAJOR IN PROGRESS" and the like: a card in the top-right corner of the MAIN MENU
+// (drawn while no cgame is loaded), fed by news.txt online (features/news.cpp).
+// Ctrl+N opens its link. Not clickable: at the main menu the engine owns the cursor.
+void draw_news_card(HWND wnd) {
+    static DWORD s_probe = 0;
+    static bool  s_in_game = true;
+    const DWORD now = GetTickCount();
+    if (now - s_probe > 500) { s_probe = now; s_in_game = GetModuleHandleA("cgame_mp_x86.dll") != NULL; }
+    char title[64], text[128], url[256];
+    if (s_in_game || !news_get(title, sizeof(title), text, sizeof(text), url, sizeof(url))) {
+        g_news_visible = false;
+        return;
+    }
+    RECT rc;
+    GetClientRect(wnd, &rc);
+    g_vw = rc.right; g_vh = rc.bottom;
+    if (g_vw <= 0 || g_vh <= 0) return;
+    g_news_visible = true;
+    begin_2d();
+    const float sc = g_vh / 1080.0f > 0.6f ? g_vh / 1080.0f : 0.6f;   // same size at every res
+    const float w = 420 * sc, h = (url[0] ? 96 : 76) * sc, x = g_vw - w - 28 * sc, y = 28 * sc;
+    ui_rect_rounded(x, y, w, h, 10 * sc, 0xE60A0A0A);
+    ui_rect(x, y + 12 * sc, 4 * sc, h - 24 * sc, UI_ACCENT);
+    ui_text(x + 20 * sc, y + 12 * sc, (int)(21 * sc), 600, UI_TEXT, title);
+    ui_text(x + 20 * sc, y + 42 * sc, (int)(14 * sc), 400, UI_MUTED, text);
+    if (url[0]) ui_text(x + 20 * sc, y + 66 * sc, (int)(12 * sc), 600, UI_ACCENT, "CTRL+N   OPEN THE PAGE");
+    end_2d();
+}
+
 // ------------------------------------------------------------------- swap
 BOOL WINAPI hk_swapbuffers(HDC dc) {
     InterlockedIncrement(&g_swap_calls);
@@ -573,26 +642,7 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
         GetClientRect(wnd, &rc);
         g_vw = rc.right; g_vh = rc.bottom;
         if (g_vw > 0 && g_vh > 0) {
-            // vid_restart destroys the GL context; every cached texture id then
-            // belongs to a dead context and draws as garbage squares (seen live
-            // 2026-08-10: the whole menu turned into black-and-white blocks).
-            // Forget the cache and re-rasterise lazily in the new context.
-            HGLRC rc = wglGetCurrentContext();
-            if (rc != g_glrc) { g_glrc = rc; g_text_cache.clear(); }
-            glPushAttrib(GL_ALL_ATTRIB_BITS);
-            glPushClientAttrib(GL_CLIENT_ALL_ATTRIB_BITS);
-            glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
-            glOrtho(0, g_vw, g_vh, 0, -1, 1);
-            glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
-            glViewport(0, 0, g_vw, g_vh);
-            glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
-            glDisable(GL_LIGHTING);   glDisable(GL_SCISSOR_TEST);
-            glDisable(GL_ALPHA_TEST); glDisable(GL_FOG);
-            glDisableClientState(GL_VERTEX_ARRAY);
-            glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-            glDisableClientState(GL_COLOR_ARRAY);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            begin_2d();
 
             // PRIMARY cursor source: the raw-input tap. WM_MOUSEMOVE cannot do
             // this job - Windows coalesces it to the latest position and the
@@ -640,11 +690,11 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
             g_in.wheel = 0;
             g_in.vk = 0;                        // capture events are one-frame
 
-            glMatrixMode(GL_MODELVIEW); glPopMatrix();
-            glMatrixMode(GL_PROJECTION); glPopMatrix();
-            glPopClientAttrib();
-            glPopAttrib();
+            end_2d();
         }
+    } else if (g_mode == 0 && wnd) {
+        // no menu open: the announcement card, main menu only (no cgame = no game loaded)
+        draw_news_card(wnd);
     }
     return g_orig_swap ? g_orig_swap(dc) : FALSE;
 }

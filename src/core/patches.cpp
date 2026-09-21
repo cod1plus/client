@@ -9,6 +9,7 @@
 #include "netcode/competitive.h"
 #include "netcode/ruleset_fetch.h"
 #include "features/pam_install.h"
+#include "features/news.h"
 #include "netcode/version_gate.h"
 #include "video/window_patch.h"
 #include "video/fullscreen_patch.h"
@@ -223,6 +224,12 @@ void load_config(HMODULE self_module) {
         DWORD n = GetPrivateProfileStringA(
             "cod1reloaded", "pam_manifest_url", "", buf, sizeof(buf), ini_path);
         if (n > 0) snprintf(g_pam_install_config.manifest_url, sizeof(g_pam_install_config.manifest_url), "%s", buf);
+    }
+    g_news_config.enable = read_ini_bool(ini_path, "news_enable", g_news_config.enable);
+    {
+        char buf[256];
+        DWORD n = GetPrivateProfileStringA("cod1reloaded", "news_url", "", buf, sizeof(buf), ini_path);
+        if (n > 0) snprintf(g_news_config.url, sizeof(g_news_config.url), "%s", buf);
     }
     g_hdtex_install_config.enable = read_ini_bool(
         ini_path, "hdtex_download_enable", g_hdtex_install_config.enable);

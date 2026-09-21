@@ -35,6 +35,7 @@ set(COD1RELOADED_SOURCES
     src/core/logger.cpp
     src/core/iat.cpp
     src/core/wndhub.cpp
+    src/features/news.cpp
     src/input/rinput.cpp
     src/netcode/version_patch.cpp
     src/netcode/protocol_patch.cpp
