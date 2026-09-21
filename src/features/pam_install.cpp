@@ -19,13 +19,33 @@ PamInstallConfig g_pam_install_config = {
     /* enable       */ true,
     /* manifest_url */ "https://raw.githubusercontent.com/cod1plus/cod1pluspam/main/pam.manifest",
 };
+PamInstallConfig g_hdtex_install_config = {
+    /* enable       */ true,
+    /* manifest_url */ "",     // set when the pack is published (ini: hdtex_manifest_url)
+};
 
 namespace {
 
 CRITICAL_SECTION g_cs;
 bool      g_cs_init = false;
-bool      g_running = false;
-PamStatus g_status = { PAM_IDLE, "", 0.f, 0, 0, "" };
+
+// One job per package: its config, its status, its own worker thread. The download
+// code below addresses "the current job" through t_job, set at worker entry, so the
+// PAM-era code paths did not have to grow a parameter each.
+struct Job {
+    const PamInstallConfig* cfg;
+    const char* tag;      // log prefix
+    const char* label;    // in status texts
+    bool        running;
+    PamStatus   status;
+    PkgCvar     cvars[PKG_MAX_CVARS];
+    int         ncvars;
+};
+Job g_jobs[PKG_COUNT] = {
+    { &g_pam_install_config,   "pam_install",   "PAM",         false, { PAM_IDLE, "", 0.f, 0, 0, "" }, {}, 0 },
+    { &g_hdtex_install_config, "hdtex_install", "HD textures", false, { PAM_IDLE, "", 0.f, 0, 0, "" }, {}, 0 },
+};
+thread_local Job* t_job = nullptr;
 
 constexpr size_t MAX_MANIFEST_BYTES = 256 * 1024;
 
@@ -35,6 +55,7 @@ struct Manifest {
     int version = 0;
     std::vector<ManifestFile> files;
     std::vector<std::string> removes;
+    std::vector<PkgCvar> cvars;
 };
 
 void cs_init() {
@@ -45,16 +66,17 @@ void cs_init() {
 
 void set_status(int state, const char* text, float progress = -1.f) {
     EnterCriticalSection(&g_cs);
-    g_status.state = state;
-    if (text) snprintf(g_status.text, sizeof(g_status.text), "%s", text);
-    if (progress >= 0.f) g_status.progress = progress;
+    PamStatus& st = t_job->status;
+    st.state = state;
+    if (text) snprintf(st.text, sizeof(st.text), "%s", text);
+    if (progress >= 0.f) st.progress = progress;
     LeaveCriticalSection(&g_cs);
 }
 
 void set_counts(int done, int total) {
     EnterCriticalSection(&g_cs);
-    g_status.files_done = done;
-    g_status.files_total = total;
+    t_job->status.files_done = done;
+    t_job->status.files_total = total;
     LeaveCriticalSection(&g_cs);
 }
 
@@ -131,6 +153,19 @@ bool parse_manifest(const std::string& text, Manifest& m, std::string& err) {
             m.files.push_back(f);
         } else if (t[0] == "remove" && t.size() >= 2) {
             if (valid_name(t[1])) m.removes.push_back(t[1]);
+        } else if (t[0] == "cvar" && t.size() >= 3) {
+            // a cvar the pack needs (seta'd by the menu once installed). Name and value
+            // are plain tokens: no quotes, no semicolons - nothing a console line could
+            // be smuggled into.
+            bool ok = valid_mod(t[1]) && t[1].size() < sizeof(PkgCvar().name) && t[2].size() < sizeof(PkgCvar().value);
+            for (size_t k = 0; ok && k < t[2].size(); ++k)
+                ok = isalnum((unsigned char)t[2][k]) || t[2][k] == '.' || t[2][k] == '-' || t[2][k] == '_';
+            if (ok && (int)m.cvars.size() < PKG_MAX_CVARS) {
+                PkgCvar cv = {};
+                snprintf(cv.name, sizeof(cv.name), "%s", t[1].c_str());
+                snprintf(cv.value, sizeof(cv.value), "%s", t[2].c_str());
+                m.cvars.push_back(cv);
+            }
         }
     }
     if (m.mod.empty()) { err = "manifest names no mod folder"; return false; }
@@ -260,27 +295,29 @@ bool http_get_file(const char* url, const char* path, unsigned long long expect_
 }
 
 // ---------------------------------------------------------------- the job
-DWORD WINAPI worker(LPVOID) {
+DWORD WINAPI worker(LPVOID p) {
+    t_job = (Job*)p;
     char base[MAX_PATH];
     if (!game_dir(base, sizeof(base))) { set_status(PAM_ERROR, "cannot locate the game folder"); goto out; }
     {
-        set_status(PAM_CHECKING, "Fetching the PAM manifest...", 0.f);
+        char txt0[96]; snprintf(txt0, sizeof(txt0), "Fetching the %s manifest...", t_job->label);
+        set_status(PAM_CHECKING, txt0, 0.f);
         std::string text, err;
-        if (!http_get_text(g_pam_install_config.manifest_url, text, err)) {
+        if (!http_get_text(t_job->cfg->manifest_url, text, err)) {
             char b[200]; snprintf(b, sizeof(b), "Manifest: %s", err.c_str());
-            logger::logf("pam_install: %s (%s)", b, g_pam_install_config.manifest_url);
+            logger::logf("%s: %s (%s)", t_job->tag, b, t_job->cfg->manifest_url);
             set_status(PAM_ERROR, b); goto out;
         }
         Manifest m;
         if (!parse_manifest(text, m, err)) {
             char b[200]; snprintf(b, sizeof(b), "Manifest: %s", err.c_str());
-            logger::logf("pam_install: %s", b);
+            logger::logf("%s: %s", t_job->tag, b);
             set_status(PAM_ERROR, b); goto out;
         }
         EnterCriticalSection(&g_cs);
-        snprintf(g_status.mod, sizeof(g_status.mod), "%s", m.mod.c_str());
+        snprintf(t_job->status.mod, sizeof(t_job->status.mod), "%s", m.mod.c_str());
         LeaveCriticalSection(&g_cs);
-        logger::logf("pam_install: manifest %s v%d, %d file(s), %d removal(s)",
+        logger::logf("%s: manifest %s v%d, %d file(s), %d removal(s)", t_job->tag,
                      m.mod.c_str(), m.version, (int)m.files.size(), (int)m.removes.size());
 
         char moddir[MAX_PATH];
@@ -317,13 +354,13 @@ DWORD WINAPI worker(LPVOID) {
             std::string hex;
             if (!http_get_file(f.url.c_str(), part, f.size, done, total, label, hex, err)) {
                 char b[200]; snprintf(b, sizeof(b), "%s: %s", f.name.c_str(), err.c_str());
-                logger::logf("pam_install: %s (%s)", b, f.url.c_str());
+                logger::logf("%s: %s (%s)", t_job->tag, b, f.url.c_str());
                 set_status(PAM_ERROR, b); goto out;
             }
             if (hex != f.sha) {
                 DeleteFileA(part);
                 char b[200]; snprintf(b, sizeof(b), "%s: checksum mismatch, discarded", f.name.c_str());
-                logger::logf("pam_install: %s", b);
+                logger::logf("%s: %s", t_job->tag, b);
                 set_status(PAM_ERROR, b); goto out;
             }
             if (!MoveFileExA(part, path, MOVEFILE_REPLACE_EXISTING)) {
@@ -332,11 +369,11 @@ DWORD WINAPI worker(LPVOID) {
                 char pnew[MAX_PATH]; snprintf(pnew, sizeof(pnew), "%s.new", path);
                 if (!MoveFileExA(part, pnew, MOVEFILE_REPLACE_EXISTING)) {
                     char b[200]; snprintf(b, sizeof(b), "%s: cannot place the file", f.name.c_str());
-                    logger::logf("pam_install: %s", b);
+                    logger::logf("%s: %s", t_job->tag, b);
                     set_status(PAM_ERROR, b); goto out;
                 }
                 ++restart_needed;
-                logger::logf("pam_install: %s is in use, staged as .new (applied at next launch)", f.name.c_str());
+                logger::logf("%s: %s is in use, staged as .new (applied at next launch)", t_job->tag, f.name.c_str());
             }
             done += f.size;
             ++fetched;
@@ -356,59 +393,87 @@ DWORD WINAPI worker(LPVOID) {
         if (restart_needed)
             snprintf(b, sizeof(b), "%d file(s) staged - restart the game to finish (mod in use)", restart_needed);
         else if (fetched == 0)
-            snprintf(b, sizeof(b), "PAM is up to date (%d files, v%d)", (int)m.files.size(), m.version);
+            snprintf(b, sizeof(b), "%s up to date (%d files, v%d)", t_job->label, (int)m.files.size(), m.version);
         else
-            snprintf(b, sizeof(b), "PAM ready: %d file(s) installed, %.0f MB (v%d)", fetched, total / 1048576.0, m.version);
-        logger::logf("pam_install: %s%s", b, removed ? " (+ stale files removed)" : "");
+            snprintf(b, sizeof(b), "%s ready: %d file(s) installed, %.0f MB (v%d)", t_job->label, fetched, total / 1048576.0, m.version);
+        logger::logf("%s: %s%s", t_job->tag, b, removed ? " (+ stale files removed)" : "");
+        // the pack's cvars: handed to the menu (main thread) by pkg_install_take_cvars
+        EnterCriticalSection(&g_cs);
+        t_job->ncvars = 0;
+        for (size_t i = 0; i < m.cvars.size() && t_job->ncvars < PKG_MAX_CVARS; ++i)
+            t_job->cvars[t_job->ncvars++] = m.cvars[i];
+        LeaveCriticalSection(&g_cs);
         set_status(restart_needed ? PAM_RESTART : PAM_DONE, b, 1.f);
     }
 out:
     EnterCriticalSection(&g_cs);
-    g_running = false;
+    t_job->running = false;
     LeaveCriticalSection(&g_cs);
     return 0;
 }
 
 }  // namespace
 
-void pam_install_start() {
+void pkg_install_start(PkgId id) {
     cs_init();
-    if (!g_pam_install_config.enable || !g_pam_install_config.manifest_url[0]) {
-        set_status(PAM_ERROR, "PAM download disabled in cod1reloaded.ini");
+    if (id < 0 || id >= PKG_COUNT) return;
+    Job& j = g_jobs[id];
+    EnterCriticalSection(&g_cs);
+    if (j.running) { LeaveCriticalSection(&g_cs); return; }
+    if (!j.cfg->enable || !j.cfg->manifest_url[0]) {
+        j.status.state = PAM_ERROR;
+        snprintf(j.status.text, sizeof(j.status.text), "%s", !j.cfg->enable
+                 ? "download disabled in cod1reloaded.ini" : "no download link configured yet");
+        LeaveCriticalSection(&g_cs);
         return;
     }
-    EnterCriticalSection(&g_cs);
-    if (g_running) { LeaveCriticalSection(&g_cs); return; }
-    g_running = true;
-    g_status.state = PAM_CHECKING;
-    g_status.progress = 0.f;
-    g_status.files_done = g_status.files_total = 0;
-    snprintf(g_status.text, sizeof(g_status.text), "Starting...");
+    j.running = true;
+    j.status.state = PAM_CHECKING;
+    j.status.progress = 0.f;
+    j.status.files_done = j.status.files_total = 0;
+    snprintf(j.status.text, sizeof(j.status.text), "Starting...");
     LeaveCriticalSection(&g_cs);
-    HANDLE h = CreateThread(NULL, 0, worker, NULL, 0, NULL);
+    HANDLE h = CreateThread(NULL, 0, worker, &j, 0, NULL);
     if (!h) {
         EnterCriticalSection(&g_cs);
-        g_running = false;
+        j.running = false;
+        j.status.state = PAM_ERROR;
+        snprintf(j.status.text, sizeof(j.status.text), "cannot start the download thread");
         LeaveCriticalSection(&g_cs);
-        set_status(PAM_ERROR, "cannot start the download thread");
         return;
     }
     CloseHandle(h);
 }
 
-void pam_install_status(PamStatus* out) {
+void pkg_install_status(PkgId id, PamStatus* out) {
     cs_init();
+    if (id < 0 || id >= PKG_COUNT) { *out = PamStatus{ PAM_IDLE, "", 0.f, 0, 0, "" }; return; }
     EnterCriticalSection(&g_cs);
-    *out = g_status;
+    *out = g_jobs[id].status;
     LeaveCriticalSection(&g_cs);
 }
 
-bool pam_install_running() {
+bool pkg_install_running(PkgId id) {
     cs_init();
+    if (id < 0 || id >= PKG_COUNT) return false;
     EnterCriticalSection(&g_cs);
-    const bool r = g_running;
+    const bool r = g_jobs[id].running;
     LeaveCriticalSection(&g_cs);
     return r;
+}
+
+int pkg_install_take_cvars(PkgId id, PkgCvar* out, int max) {
+    cs_init();
+    if (id < 0 || id >= PKG_COUNT || !out || max <= 0) return 0;
+    EnterCriticalSection(&g_cs);
+    Job& j = g_jobs[id];
+    int n = 0;
+    if (!j.running) {
+        for (; n < j.ncvars && n < max; ++n) out[n] = j.cvars[n];
+        j.ncvars = 0;
+    }
+    LeaveCriticalSection(&g_cs);
+    return n;
 }
 
 // DllMain, before the engine opens any pak: every <game>\<dir>\*.pk3.new replaces its pk3.
@@ -436,7 +501,7 @@ void pam_install_swap_pending() {
         FindClose(h2);
     } while (FindNextFileA(h, &d));
     FindClose(h);
-    if (swapped) logger::logf("pam_install: %d staged pk3(s) swapped in from the previous session", swapped);
+    if (swapped) logger::logf("pkg_install: %d staged pk3(s) swapped in from the previous session", swapped);
 }
 
 }  // namespace patches

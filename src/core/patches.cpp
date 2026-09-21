@@ -224,6 +224,14 @@ void load_config(HMODULE self_module) {
             "cod1reloaded", "pam_manifest_url", "", buf, sizeof(buf), ini_path);
         if (n > 0) snprintf(g_pam_install_config.manifest_url, sizeof(g_pam_install_config.manifest_url), "%s", buf);
     }
+    g_hdtex_install_config.enable = read_ini_bool(
+        ini_path, "hdtex_download_enable", g_hdtex_install_config.enable);
+    {
+        char buf[256];
+        DWORD n = GetPrivateProfileStringA(
+            "cod1reloaded", "hdtex_manifest_url", "", buf, sizeof(buf), ini_path);
+        if (n > 0) snprintf(g_hdtex_install_config.manifest_url, sizeof(g_hdtex_install_config.manifest_url), "%s", buf);
+    }
     g_frame_limiter_config.enable = read_ini_bool(
         ini_path, "frame_limiter_enable", g_frame_limiter_config.enable);
     {

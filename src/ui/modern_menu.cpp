@@ -1185,18 +1185,19 @@ void modern_menu_draw(float sw, float sh) {
         float ly = cy;
         char hdr[64];
 
-        // ---- PAM: the competitive mod, fetched here instead of at the first connect
-        if (g_pam_install_config.enable) {
-            section(cx, ly, pw - 72, "PAM MOD  (the competitive mod every 1.6X match server runs)"); ly += 26;
-            PamStatus ps; pam_install_status(&ps);
+        // ---- packages fetched here instead of at the first connect: the PAM (the
+        // competitive mod) and the HD texture pack. One block each, same mechanics.
+        auto package = [&](PkgId id, const char* title, const char* install_lbl, const char* idle_txt, bool has_url) {
+            section(cx, ly, pw - 72, title); ly += 26;
+            PamStatus ps; pkg_install_status(id, &ps);
             const bool busy = ps.state == PAM_CHECKING || ps.state == PAM_DOWNLOADING;
-            const char* lbl = busy ? "WORKING..." : (ps.state == PAM_DONE ? "CHECK AGAIN" : "INSTALL / UPDATE PAM");
-            if (button(cx, ly, 250, 38, lbl, !busy) && !busy) pam_install_start();
-            const char* txt = ps.state == PAM_IDLE
-                ? "Downloads the mod's pk3s (maps included) so joining a match server never waits on a download."
-                : ps.text;
+            const char* lbl = busy ? "WORKING..." : (ps.state == PAM_DONE ? "CHECK AGAIN" : install_lbl);
+            if (button(cx, ly, 250, 38, lbl, !busy && has_url) && !busy && has_url) pkg_install_start(id);
+            const char* txt = !has_url ? "Download link not configured yet (hdtex_manifest_url in cod1reloaded.ini)."
+                            : ps.state == PAM_IDLE ? idle_txt : ps.text;
             const DWORD col = ps.state == PAM_ERROR ? 0xFFE05252 : (ps.state == PAM_DONE ? 0xFF6FCF7A : UI_TEXT);
-            ui_text(cx + 268, ly + 9, 14, ps.state == PAM_IDLE ? 400 : 500, ps.state == PAM_IDLE ? UI_MUTED : col, txt);
+            const bool muted = !has_url || ps.state == PAM_IDLE;
+            ui_text(cx + 268, ly + 9, 14, muted ? 400 : 500, muted ? UI_MUTED : col, txt);
             if (busy || ps.state == PAM_RESTART) {
                 const float bw = pw - 72;
                 ui_rect_rounded(cx, ly + 46, bw, 6, 3, UI_ROW);
@@ -1204,15 +1205,33 @@ void modern_menu_draw(float sw, float sh) {
                 if (ps.state == PAM_RESTART) f = 1.f;
                 ui_rect_rounded(cx, ly + 46, bw * f, 6, 3, ps.state == PAM_RESTART ? 0xFFE0B252 : UI_ACCENT);
             }
+            // the pack's `cvar` lines, applied once the job is over (main thread = here)
+            if (ps.state == PAM_DONE || ps.state == PAM_RESTART) {
+                PkgCvar cv[PKG_MAX_CVARS];
+                const int n = pkg_install_take_cvars(id, cv, PKG_MAX_CVARS);
+                for (int i = 0; i < n; ++i) {
+                    cmdf("seta %s %s\n", cv[i].name, cv[i].value);
+                    logger::logf("menu: package cvar applied: seta %s %s", cv[i].name, cv[i].value);
+                }
+            }
             ly += 68;
-        }
+        };
+        if (g_pam_install_config.enable)
+            package(PKG_PAM, "PAM MOD  (the competitive mod every 1.6X match server runs)", "INSTALL / UPDATE PAM",
+                    "Downloads the mod's pk3s (maps included) so joining a match server never waits on a download.",
+                    g_pam_install_config.manifest_url[0] != 0);
+        if (g_hdtex_install_config.enable)
+            package(PKG_HDTEX, "HD TEXTURES  (optional texture pack, goes into main)", "INSTALL HD TEXTURES",
+                    "Downloads the HD texture pk3s into main. Servers you play on must run the same pack (sv_pure).",
+                    g_hdtex_install_config.manifest_url[0] != 0);
 
         snprintf(hdr, sizeof(hdr), "CONFIGS - %d  (click to exec)", (int)g_cfgs.size());
         section(cx, ly, lw - 20, hdr);
         snprintf(hdr, sizeof(hdr), "DEMOS - %d  (click to play)", (int)g_demo_ents.size());
         section(cx + lw + 40, ly, lw - 20, hdr);
         ly += 26;
-        const int vis = g_pam_install_config.enable ? 9 : 11; const float rh = 36;   // the PAM block takes two rows
+        const int vis = 11 - (g_pam_install_config.enable ? 2 : 0) - (g_hdtex_install_config.enable ? 2 : 0);
+        const float rh = 36;   // each package block takes two rows
         auto list = [&](float lx, std::vector<std::string>& v, float& scroll,
                         const char* cmd_fmt, bool strip) {
             if (hit(lx, ly, lw, vis * rh)) scroll -= ui_input().wheel * 2;

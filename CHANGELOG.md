@@ -1,5 +1,17 @@
 # cod1reloaded — Changelog
 
+## Non publié
+
+### 📦 Bouton « INSTALL HD TEXTURES » (menu 1.6X, onglet Files)
+- Même mécanique que le bouton PAM (manifeste, SHA-256, `.new` si fichier en cours d'utilisation),
+  cible le dossier que le manifeste nomme (`mod main` pour un pack de textures). Ligne optionnelle
+  `cvar <nom> <valeur>` dans le manifeste, appliquée en `seta` une fois le pack installé (ex.
+  `com_hunkMegs 512`, sans quoi un pack ×4 fait planter le jeu). Clés ini `hdtex_download_enable`,
+  `hdtex_manifest_url` (vide = bouton grisé). Rappel sv_pure : les mêmes pk3 doivent être sur le serveur.
+- Fenêtre : un seul subclass WindowProc pour toute la DLL (`core/wndhub`), fin du crash au retour
+  bureau de la 1.6.6 ; diagnostics Ctrl+M dans le log ; classe fenêtre `Call of Duty Multiplayer`.
+- Plein écran : un `r_fullscreen 1` du joueur n'est plus réécrit à 0 par l'ini livré.
+
 ## v1.6.6 (2026-09-18)
 
 ### 📦 Bouton « INSTALL / UPDATE PAM » (menu 1.6X, onglet Files)
