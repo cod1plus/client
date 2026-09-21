@@ -21,6 +21,7 @@
 //   engine is fixed-function GL1.x, so immediate mode is both safe and simplest.
 
 #include "ui/gl_overlay.h"
+#include "core/wndhub.h"
 #include "ui/modern_menu.h"
 #include "ui/home_menu.h"
 #include "core/iat.h"
@@ -46,8 +47,12 @@ namespace {
 
 typedef BOOL (WINAPI* SwapBuffers_t)(HDC);
 SwapBuffers_t g_orig_swap = nullptr;
-WNDPROC       g_orig_wndproc = nullptr;
-HWND          g_hooked_wnd = nullptr;
+// The window is wndhub's (core/wndhub.cpp): ONE subclass for the whole DLL. This
+// module only registers a listener - the 1.6.6 crash was two modules subclassing
+// the same window on their own and looping through each other.
+volatile long g_swap_calls = 0;       // proof the SwapBuffers hook still runs (see overlay_tick)
+DWORD  g_hotkey_wndproc_tick = 0;     // last Ctrl+M seen through the WindowProc
+bool   g_wndproc_dead = false;        // the key poll saw a chord the WindowProc never did
 
 // 0 hidden, 1 settings panel, 2 home screen (the modern main-menu replacement).
 // Two screens share one overlay: SETTINGS reached FROM home returns to home on
@@ -342,7 +347,7 @@ void ui_alpha(float mul) { g_alpha_mul = mul < 0 ? 0 : (mul > 1 ? 1 : mul); }
 float ui_alpha_get() { return g_alpha_mul; }
 void ui_key_capture(bool on) { g_keycap = on; if (!on) g_in.vk = 0; }
 bool overlay_visible() { return g_mode != 0; }
-HWND overlay_game_window() { return g_hooked_wnd; }
+HWND overlay_game_window() { return wndhub_window(); }
 
 void overlay_toggle(bool on) {
     int was = g_mode;
@@ -373,7 +378,10 @@ void set_mode(int m, bool from_home) {
 // ------------------------------------------------------------------- wndproc
 namespace {
 
-LRESULT CALLBACK hk_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
+// wndhub listener. `return true` = consumed (*res goes back to Windows, nothing
+// below us - not the engine - sees the message); `return false` = pass it on.
+bool overlay_listener(HWND w, UINT m, WPARAM wp, LPARAM lp, LRESULT* res) {
+    *res = 0;
     // Restore the desktop's gamma HERE, not (only) from DLL_PROCESS_DETACH. Calling
     // GDI functions from DllMain's detach handler is a documented Microsoft anti-
     // pattern (loader lock), and worse: on ExitProcess() - which is how Sys_Quit
@@ -382,11 +390,7 @@ LRESULT CALLBACK hk_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     // brightness du jeu... l'applique parfois au bureau" (2026-08-15): the restore
     // call simply never ran on those exits. WM_DESTROY fires on the main thread while
     // the window and full GDI state are still alive, well before ExitProcess - a
-    // reliable hook regardless of how the process is about to end. This wndproc is
-    // ALSO the one subclass that installs unconditionally in every display mode (via
-    // WindowFromDC, see ensure_subclass) - window_patch.cpp's own WM_DESTROY handler
-    // exists but only subclasses when window_borderless=on, which is not enzo's
-    // config (fullscreen=on) - so it never even runs for him. Must run before the
+    // reliable hook regardless of how the process is about to end. Must run before the
     // g_mode==0 early-return below: quitting from gameplay (overlay hidden) must
     // still restore gamma, not just quitting from our own menus.
     if (m == WM_DESTROY) gamma_fix_shutdown();
@@ -412,35 +416,42 @@ LRESULT CALLBACK hk_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     // below or CTRL+M could never be observed.
     if (g_mode != 0 && g_keycap) {
         switch (m) {
-        case WM_KEYDOWN: case WM_SYSKEYDOWN: g_in.vk = (int)wp;      return 0;
-        case WM_LBUTTONDOWN:                 g_in.vk = VK_LBUTTON;   return 0;
-        case WM_RBUTTONDOWN:                 g_in.vk = VK_RBUTTON;   return 0;
-        case WM_MBUTTONDOWN:                 g_in.vk = VK_MBUTTON;   return 0;
+        case WM_KEYDOWN: case WM_SYSKEYDOWN: g_in.vk = (int)wp;      return true;
+        case WM_LBUTTONDOWN:                 g_in.vk = VK_LBUTTON;   return true;
+        case WM_RBUTTONDOWN:                 g_in.vk = VK_RBUTTON;   return true;
+        case WM_MBUTTONDOWN:                 g_in.vk = VK_MBUTTON;   return true;
         case WM_XBUTTONDOWN:
             g_in.vk = (HIWORD(wp) == XBUTTON1) ? VK_XBUTTON1 : VK_XBUTTON2;
-            return 0;
+            return true;
         case WM_MOUSEWHEEL:
             g_in.vk = GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 0xF001 : 0xF002;
-            return 0;
+            return true;
         case WM_KEYUP: case WM_SYSKEYUP: case WM_CHAR:
         case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: case WM_XBUTTONUP:
-            return 0;
+            return true;
         }
     }
 
     // Ctrl+M only (enzo, 2026-09-17): INSERT is a key players bind, and a bare key
     // fires while aiming or typing; a chord does not
     if (m == WM_KEYDOWN && wp == 'M' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+        // One line per press: a player who "cannot open the menu" either has this
+        // line (the overlay saw the key: look at the mode transitions) or does not
+        // (nothing reached our proc: a hook above us ate it, or we are not in the
+        // chain - see hotkey_poll, which then takes over).
+        g_hotkey_wndproc_tick = GetTickCount();
+        g_wndproc_dead = false;
+        logger::logf("overlay: Ctrl+M via WindowProc (mode %d)", g_mode);
         if (g_mode == 0) {
             if (home_menu_is_active()) { g_home_suppress = false; set_mode(2, false); }
             else overlay_toggle(true);
         }
         else if (g_mode == 1 && g_came_from_home) set_mode(2, false);  // settings -> home
         else overlay_toggle(false);
-        return 0;
+        return true;
     }
     if (g_mode == 0)
-        return CallWindowProcA(g_orig_wndproc, w, m, wp, lp);
+        return false;
 
     switch (m) {
     case WM_KEYDOWN:
@@ -448,18 +459,18 @@ LRESULT CALLBACK hk_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             if (g_mode == 1 && g_came_from_home) set_mode(2, false);   // settings -> home
             else if (g_mode == 2) { home_menu_close_via_escape(); set_mode(0, false); }
             else overlay_toggle(false);
-            return 0;
+            return true;
         }
-        return 0;                                   // swallow
+        return true;
     case WM_KEYUP: case WM_SYSKEYUP:
         // RELEASES go through: the Ctrl of Ctrl+M went down before we opened, and if
         // its release is swallowed the engine keeps Ctrl held - console "a" = home,
         // crouch stuck (enzo, 2026-09-18). A release of an already-up key is a no-op.
-        return CallWindowProcA(g_orig_wndproc, w, m, wp, lp);
+        return false;
     case WM_CHAR: case WM_SYSKEYDOWN:
-        return 0;
+        return true;
     case WM_MOUSEMOVE: {
-        if (g_saw_raw) return 0;            // raw input owns the cursor
+        if (g_saw_raw) return true;            // raw input owns the cursor
         POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };
         RECT rc; GetClientRect(w, &rc);
         POINT centre = { rc.right / 2, rc.bottom / 2 };
@@ -481,43 +492,67 @@ LRESULT CALLBACK hk_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             if (g_vh > 0 && g_in.my > g_vh) g_in.my = (float)g_vh;
         }
         g_last_move = p;
-        return 0;
+        return true;
     }
-    case WM_LBUTTONDOWN: g_in.down = true;  return 0;
-    case WM_LBUTTONUP:   g_in.down = false; return 0;
+    case WM_LBUTTONDOWN: g_in.down = true;  return true;
+    case WM_LBUTTONUP:   g_in.down = false; return true;
     case WM_MOUSEWHEEL:
         g_in.wheel += (float)GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
-        return 0;
+        return true;
     case WM_RBUTTONDOWN: case WM_RBUTTONUP:
     case WM_MBUTTONDOWN: case WM_MBUTTONUP:
-        return 0;
+        return true;
     }
-    return CallWindowProcA(g_orig_wndproc, w, m, wp, lp);
+    return false;
 }
 
-void ensure_subclass(HDC dc) {
-    // Do NOT use window_patch::get_game_window(): it only returns a handle once the
-    // BORDERLESS watcher thread has run, and that thread is entirely gated behind
-    // `window_borderless = on` (window_patch.cpp:264). With window_borderless = off
-    // (enzo's own 1440x1080-stretched fullscreen setup) the watcher never starts, the
-    // handle stays null forever, and Ctrl+M has nothing to attach to - found
-    // live 2026-08-10 right after that exact config was applied via ini + vid_restart.
-    // WindowFromDC is the standard overlay technique instead: the HDC handed to us at
-    // every SwapBuffers already belongs to the game's window, in every display mode.
+// The HDC handed to SwapBuffers belongs to the game's window in every display
+// mode (WindowFromDC is the standard overlay technique); wndhub refuses anything
+// that is not the engine's window class, so a third party's HDC cannot fool it.
+void attach_window(HDC dc) {
     HWND w = WindowFromDC(dc);
-    if (!w || w == g_hooked_wnd) return;
-    WNDPROC prev = (WNDPROC)SetWindowLongPtrA(w, GWLP_WNDPROC, (LONG_PTR)hk_wndproc);
-    if (prev) {
-        g_orig_wndproc = prev;
-        g_hooked_wnd = w;
-        logger::logf("  overlay: window subclassed (hwnd %p)", (void*)w);
-    }
+    if (w) wndhub_attach(w);
 }
 
+// Ctrl+M / ESC / clicks normally arrive through the WindowProc, where they are also
+// SWALLOWED so the engine never sees them. If a third-party hook above ours eats
+// the chord (or we are out of the chain and the ping has not healed it yet), this
+// per-frame poll still opens and closes the menu - and says so in the log, which is
+// the diagnostic the "menu impossible to open" reports have been missing. Only
+// while our window is in the foreground, and only once the chord has been held
+// for 100 ms WITHOUT the WindowProc reporting it: GetAsyncKeyState sees the key
+// the instant it goes down, while its WM_KEYDOWN waits in the queue until the
+// engine pumps messages at the start of the next frame - firing on the first
+// frame would race the proc and toggle twice. Once the poll has caught a press
+// the proc missed, the mouse button is polled too, so the menu stays usable; the
+// engine then also receives those inputs - a degraded mode, logged, never the
+// normal one.
+void hotkey_poll(HWND w) {
+    static DWORD s_chord_since = 0;      // 0 = chord not down
+    static bool  s_fired = false;        // once per chord
+    const bool chord = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('M') & 0x8000);
+    const DWORD now = GetTickCount();
+    if (!chord) { s_chord_since = 0; s_fired = false; return; }
+    if (!s_chord_since) { s_chord_since = now ? now : 1; return; }
+    if (s_fired || now - s_chord_since < 100) return;
+    if (!w || GetForegroundWindow() != w) return;
+    if (g_hotkey_wndproc_tick >= s_chord_since) { s_fired = true; return; }   // the proc saw it
+    s_fired = true;
+    if (!g_wndproc_dead) {
+        g_wndproc_dead = true;
+        logger::logf("overlay: Ctrl+M seen by the key poll but NOT by the WindowProc - "
+                     "another hook on the window eats it; menu driven by polling from now on");
+    }
+    if (g_mode == 0) overlay_toggle(true); else overlay_toggle(false);
+}
 
 // ------------------------------------------------------------------- swap
 BOOL WINAPI hk_swapbuffers(HDC dc) {
-    ensure_subclass(dc);
+    InterlockedIncrement(&g_swap_calls);
+    attach_window(dc);
+    HWND wnd = wndhub_window();                   // this frame's window
+    hotkey_poll(wnd);
+    if (g_wndproc_dead && g_mode != 0) g_in.down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
     if (g_mode == 0 && modern_menu_poll_open()) overlay_toggle(true);
     // Level-triggered: enter home the moment the engine opens "main", leave it the
     // moment the engine closes "main" through a path WE did not initiate (e.g. some
@@ -533,9 +568,9 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
     if (!home_active) g_home_suppress = false;      // cvar caught up: re-arm
     if (g_mode == 0 && home_active && !g_home_suppress) set_mode(2, false);
     if (g_mode == 2 && !home_active) set_mode(0, false);
-    if (g_mode != 0 && g_hooked_wnd) {
+    if (g_mode != 0 && wnd) {
         RECT rc;
-        GetClientRect(g_hooked_wnd, &rc);
+        GetClientRect(wnd, &rc);
         g_vw = rc.right; g_vh = rc.bottom;
         if (g_vw > 0 && g_vh > 0) {
             // vid_restart destroys the GL context; every cached texture id then
@@ -617,6 +652,7 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
 }  // namespace
 
 void overlay_start() {
+    wndhub_add_listener(overlay_listener, "overlay");
     void* orig = iat_hook("gdi32.dll", "SwapBuffers", (void*)hk_swapbuffers);
     if (orig) {
         g_orig_swap = (SwapBuffers_t)orig;
@@ -624,6 +660,36 @@ void overlay_start() {
     } else {
         logger::logf("  overlay: SwapBuffers import not found, modern menu OFF");
     }
+}
+
+// Watcher thread, ~1/s. The only way the menu can be entirely absent is our
+// SwapBuffers hook no longer running: a third-party overlay that rewrote the exe's
+// import slot AFTER us without chaining to what it found. Re-hooking on top would
+// loop if that hook DOES chain to us, so this only diagnoses - with the module that
+// owns the slot's new target, which names the culprit in the player's log.
+void overlay_tick() {
+    static long  s_last_calls = -1;
+    static DWORD s_stalled_since = 0;
+    static bool  s_logged = false;
+    if (!g_orig_swap || s_logged) return;
+    const long calls = g_swap_calls;
+    if (calls != s_last_calls) { s_last_calls = calls; s_stalled_since = 0; return; }
+    HWND w = wndhub_window();
+    if (!w || IsIconic(w)) return;                                // no frames expected
+    const DWORD now = GetTickCount();
+    if (!s_stalled_since) { s_stalled_since = now; return; }
+    if (now - s_stalled_since < 3000) return;
+    void* slot = iat_peek("gdi32.dll", "SwapBuffers");
+    if (slot == (void*)hk_swapbuffers) return;                    // ours, just no frames (paused)
+    char mod[MAX_PATH] = "?";
+    HMODULE hm = NULL;
+    if (slot && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)slot, &hm))
+        GetModuleFileNameA(hm, mod, sizeof(mod));
+    s_logged = true;
+    logger::logf("overlay: SwapBuffers hook BYPASSED - the import slot now points to %p (%s) "
+                 "and our hook has not run for 3 s: modern menu unavailable on this machine",
+                 slot, mod);
 }
 
 }  // namespace patches

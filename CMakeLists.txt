@@ -34,6 +34,7 @@ set(COD1RELOADED_SOURCES
     src/gameplay/swing_fix.cpp
     src/core/logger.cpp
     src/core/iat.cpp
+    src/core/wndhub.cpp
     src/input/rinput.cpp
     src/netcode/version_patch.cpp
     src/netcode/protocol_patch.cpp

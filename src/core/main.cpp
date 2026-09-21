@@ -114,6 +114,7 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::netmode_tick();             // follow cod1x_masterlist (1.6 <-> legacy 1.5)
         }
         patches::widescreen_update_stretch();    // drive the stretched-mode vfov ratio (live)
+        patches::overlay_tick();                 // SwapBuffers hook still running? (diagnostic)
         patches::gamma_fix_tick();               // per-monitor gamma: focus/monitor transitions
         monitor_cgame();
         Sleep(5);

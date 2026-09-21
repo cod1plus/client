@@ -25,10 +25,10 @@ struct UiInput {
 };
 
 // --- lifecycle -------------------------------------------------------------
-void overlay_start();          // DllMain: IAT-hook SwapBuffers + subclass the window
-// The game window, learned from WindowFromDC at every SwapBuffers - valid in
-// EVERY display mode, unlike window_patch::get_game_window() which stays NULL
-// unless the borderless watcher runs (the trap that killed gamma restore).
+void overlay_start();          // DllMain: IAT-hook SwapBuffers + register the wndhub listener
+void overlay_tick();           // watcher thread, ~1/s: detects a bypassed SwapBuffers hook (log only)
+// The game window (= wndhub_window()): learned from WindowFromDC at every
+// SwapBuffers, valid in EVERY display mode.
 HWND overlay_game_window();
 bool overlay_visible();
 void overlay_toggle(bool on);

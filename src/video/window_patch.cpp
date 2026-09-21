@@ -1,6 +1,7 @@
 #include "video/window_patch.h"
 #include "video/mode_guard.h"
 #include "core/logger.h"
+#include "core/wndhub.h"
 #include "features/demo_upload.h"
 
 #include <cstring>
@@ -49,42 +50,44 @@ bool engine_cvar_int(const char* name, int* out) {
     *out = *(int*)((char*)cv + WP_CVAR_OFF_INTEGER);
     return true;
 }
-WNDPROC       g_original_wnd_proc = nullptr;
-HWND          g_subclassed_hwnd   = nullptr;
-
-LRESULT CALLBACK cod1reloaded_wnd_proc(HWND, UINT, WPARAM, LPARAM);
+// The window we restyled borderless (NOT a subclass: every WindowProc need of this
+// module - minimize on focus loss, re-fit on return, demo upload on close - is a
+// wndhub listener; this module never touches GWLP_WNDPROC. 1.6.6 did, alongside the
+// overlay's own subclass, and the two looped through each other: see wndhub.h).
+HWND g_borderless_hwnd = nullptr;
 
 struct FindData { DWORD pid; HWND hwnd; };
 
-BOOL CALLBACK enum_windows_cb(HWND hwnd, LPARAM lParam) {
-    auto* d = (FindData*)lParam;
+// The engine's window and nothing else: the class it registers, in our process,
+// top-level, not minimized. The 1.6.6 search ("any visible window >= 200x200 of
+// this process") picked a third-party overlay's window the moment the game was
+// minimized (its rect is 160x28 at -32000 then), and subclassed/restyled THAT.
+bool is_game_window(HWND hwnd) {
     DWORD wnd_pid = 0;
     GetWindowThreadProcessId(hwnd, &wnd_pid);
-    if (wnd_pid != d->pid)                 return TRUE;
-    if (!IsWindowVisible(hwnd))            return TRUE;
-    if (GetWindow(hwnd, GW_OWNER) != NULL) return TRUE; // not top-level
-    RECT rc;
-    if (!GetWindowRect(hwnd, &rc))         return TRUE;
-    if ((rc.right - rc.left) < 200 || (rc.bottom - rc.top) < 200) return TRUE;
+    if (wnd_pid != GetCurrentProcessId())  return false;
+    char cls[64] = {0};
+    if (!GetClassNameA(hwnd, cls, sizeof(cls)) || strcmp(cls, WNDHUB_GAME_CLASS) != 0) return false;
+    if (!IsWindowVisible(hwnd))            return false;
+    if (IsIconic(hwnd))                    return false;
+    if (GetWindow(hwnd, GW_OWNER) != NULL) return false; // not top-level
+    return true;
+}
+
+BOOL CALLBACK enum_windows_cb(HWND hwnd, LPARAM lParam) {
+    auto* d = (FindData*)lParam;
+    if (!is_game_window(hwnd)) return TRUE;
     d->hwnd = hwnd;
     return FALSE;
 }
 
 
 HWND find_main_window() {
+    // the window the engine is rendering to, when known (first SwapBuffers on)
+    HWND hub = wndhub_window();
+    if (hub) return is_game_window(hub) ? hub : NULL;     // minimized: nothing to do
     HWND fg = GetForegroundWindow();
-    if (fg) {
-        DWORD pid = 0;
-        GetWindowThreadProcessId(fg, &pid);
-        if (pid == GetCurrentProcessId() && IsWindowVisible(fg) &&
-            GetWindow(fg, GW_OWNER) == NULL) {
-            RECT rc;
-            if (GetWindowRect(fg, &rc) &&
-                (rc.right - rc.left) >= 200 && (rc.bottom - rc.top) >= 200) {
-                return fg;
-            }
-        }
-    }
+    if (fg && is_game_window(fg)) return fg;
     FindData d = { GetCurrentProcessId(), NULL };
     EnumWindows(enum_windows_cb, (LPARAM)&d);
     return d.hwnd;
@@ -117,19 +120,9 @@ HMONITOR pick_monitor(HWND hwnd) {
 }
 
 
-void restore_subclass() {
-    if (g_subclassed_hwnd && g_original_wnd_proc && IsWindow(g_subclassed_hwnd)) {
-        WNDPROC cur = (WNDPROC)GetWindowLongPtrA(g_subclassed_hwnd, GWLP_WNDPROC);
-        if (cur == cod1reloaded_wnd_proc) {
-            SetWindowLongPtrA(g_subclassed_hwnd, GWLP_WNDPROC,
-                              (LONG_PTR)g_original_wnd_proc);
-        }
-    }
-    g_subclassed_hwnd   = nullptr;
-    g_original_wnd_proc = nullptr;
-}
-
-LRESULT CALLBACK cod1reloaded_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+// wndhub listener: minimize on focus loss, re-fit on the way back, demo upload
+// on close. Never consumes anything - the engine sees every message.
+bool window_listener(HWND hwnd, UINT msg, WPARAM wParam, LPARAM, LRESULT*) {
     if (msg == WM_ACTIVATEAPP) {
         const BOOL activated = (BOOL)wParam;
         // Exclusive fullscreen, coming back from minimize: Windows restored the
@@ -159,37 +152,10 @@ LRESULT CALLBACK cod1reloaded_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         }
     }
 
-
     if (msg == WM_CLOSE || msg == WM_DESTROY) {
         demo_upload_trigger_now();
     }
-
-    WNDPROC orig = g_original_wnd_proc;
-    if (orig && orig != cod1reloaded_wnd_proc) {
-        return CallWindowProcA(orig, hwnd, msg, wParam, lParam);
-    }
-    return DefWindowProcA(hwnd, msg, wParam, lParam);
-}
-
-void subclass_window(HWND hwnd) {
-    if (!hwnd) return;
-    if (g_subclassed_hwnd == hwnd) return;
-
-    WNDPROC cur = (WNDPROC)GetWindowLongPtrA(hwnd, GWLP_WNDPROC);
-    if (cur == cod1reloaded_wnd_proc) {
-        g_subclassed_hwnd = hwnd;
-        return;
-    }
-
-    g_original_wnd_proc = (WNDPROC)SetWindowLongPtrA(
-        hwnd, GWLP_WNDPROC, (LONG_PTR)cod1reloaded_wnd_proc);
-    if (g_original_wnd_proc) {
-        g_subclassed_hwnd = hwnd;
-        logger::logf("window_patch: WindowProc subclassed (orig=0x%p)",
-                     (void*)g_original_wnd_proc);
-    } else {
-        logger::logf("window_patch: SetWindowLongPtr a echoue");
-    }
+    return false;
 }
 
 bool make_borderless(HWND hwnd) {
@@ -257,10 +223,7 @@ bool make_borderless(HWND hwnd) {
     logger::logf("window_patch: borderless applied on %s (%dx%d at %d,%d)",
                  mi.szDevice, w, h, x, y);
 
-    if (g_window_config.minimize_on_focus_loss) {
-        subclass_window(hwnd);
-    }
-
+    g_borderless_hwnd = hwnd;          // minimize-on-focus-loss: the wndhub listener
     SetForegroundWindow(hwnd);
 
     g_applying = false;
@@ -292,17 +255,9 @@ DWORD WINAPI window_watcher_thread(LPVOID) {
         }
 
         if (g_exclusive) {
-            // subclass-only: maintain minimize-on-focus-loss, touch nothing else
-            HWND t = find_main_window();
-            if (g_subclassed_hwnd && !IsWindow(g_subclassed_hwnd)) {
-                // engine recreated its window (normal per mode change): just move on
-                g_subclassed_hwnd   = nullptr;
-                g_original_wnd_proc = nullptr;
-            }
-            if (t && t != g_subclassed_hwnd) {
-                restore_subclass();
-                subclass_window(t);
-            }
+            // nothing to maintain: minimize-on-focus-loss lives in the wndhub
+            // listener, attached by the overlay's SwapBuffers hook on the engine's
+            // own thread. No restyle, no resize, no SetForegroundWindow.
             Sleep(500);
             continue;
         }
@@ -316,19 +271,17 @@ DWORD WINAPI window_watcher_thread(LPVOID) {
 
         if (!g_applied) {
             need = (target != NULL);
-        } else if (!IsWindow(g_subclassed_hwnd) || !IsWindowVisible(g_subclassed_hwnd)) {
-            logger::logf("window_patch: fenetre subclassee 0x%p disparue, re-apply",
-                         (void*)g_subclassed_hwnd);
-            g_subclassed_hwnd   = nullptr;
-            g_original_wnd_proc = nullptr;
+        } else if (!IsWindow(g_borderless_hwnd) || !IsWindowVisible(g_borderless_hwnd)) {
+            logger::logf("window_patch: fenetre borderless 0x%p disparue, re-apply",
+                         (void*)g_borderless_hwnd);
+            g_borderless_hwnd = nullptr;
             g_applied = false;
             need = (target != NULL);
-        } else if (target && target != g_subclassed_hwnd &&
+        } else if (target && target != g_borderless_hwnd &&
                    target == GetForegroundWindow()) {
-
+            // the engine recreated its window (vid_restart): restyle the new one
             logger::logf("window_patch: fenetre active changee 0x%p -> 0x%p",
-                         (void*)g_subclassed_hwnd, (void*)target);
-            restore_subclass();
+                         (void*)g_borderless_hwnd, (void*)target);
             g_applied = false;
             need = true;
         }
@@ -349,7 +302,7 @@ DWORD WINAPI window_watcher_thread(LPVOID) {
 }  
 
 HWND get_game_window() {
-    return g_subclassed_hwnd;
+    return wndhub_window();
 }
 
 void start_window_watcher() {
@@ -362,6 +315,7 @@ void start_window_watcher() {
     if (!g_window_config.borderless_enable)
         logger::logf("window_patch: borderless disabled in INI - watcher in "
                      "minimize-on-focus-loss-only mode");
+    wndhub_add_listener(window_listener, "window_patch");
     HANDLE h = CreateThread(NULL, 0, window_watcher_thread, NULL, 0, NULL);
     if (h) CloseHandle(h);
 }
