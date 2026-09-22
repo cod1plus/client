@@ -436,7 +436,8 @@ bool overlay_listener(HWND w, UINT m, WPARAM wp, LPARAM lp, LRESULT* res) {
     }
 
     // Ctrl+N: the news card's link (main menu only - the card is not drawn in game)
-    if (m == WM_KEYDOWN && wp == 'N' && (GetKeyState(VK_CONTROL) & 0x8000) && g_mode == 0 && g_news_visible) {
+    if (m == WM_KEYDOWN && wp == 'N' && (GetKeyState(VK_CONTROL) & 0x8000) &&
+        ((g_mode == 0 && g_news_visible) || g_mode == 2)) {
         news_open_link();
         return true;
     }
@@ -454,6 +455,7 @@ bool overlay_listener(HWND w, UINT m, WPARAM wp, LPARAM lp, LRESULT* res) {
             if (home_menu_is_active()) { g_home_suppress = false; set_mode(2, false); }
             else overlay_toggle(true);
         }
+        else if (g_mode == 2) set_mode(1, true);                        // home -> settings
         else if (g_mode == 1 && g_came_from_home) set_mode(2, false);  // settings -> home
         else overlay_toggle(false);
         return true;
@@ -465,7 +467,7 @@ bool overlay_listener(HWND w, UINT m, WPARAM wp, LPARAM lp, LRESULT* res) {
     case WM_KEYDOWN:
         if (wp == VK_ESCAPE) {
             if (g_mode == 1 && g_came_from_home) set_mode(2, false);   // settings -> home
-            else if (g_mode == 2) { home_menu_close_via_escape(); set_mode(0, false); }
+            else if (g_mode == 2) home_menu_escape();                  // quit confirm on/off
             else overlay_toggle(false);
             return true;
         }

@@ -73,6 +73,7 @@ set(COD1RELOADED_SOURCES
     src/ui/gl_overlay.cpp
     src/ui/modern_menu.cpp
     src/ui/home_menu.cpp
+    src/ui/menu_hooks.cpp
     src/ui/player_preview.cpp
 )
 

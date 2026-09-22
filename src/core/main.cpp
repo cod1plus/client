@@ -34,6 +34,7 @@
 #include "video/widescreen_fix.h"
 #include "features/avatar_overlay.h"
 #include "ui/gl_overlay.h"
+#include "ui/menu_hooks.h"
 #include "features/engine_2d.h"
 #include "features/discord_rpc.h"
 #include "features/settings_menu.h"
@@ -116,6 +117,7 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
         }
         patches::widescreen_update_stretch();    // drive the stretched-mode vfov ratio (live)
         patches::overlay_tick();                 // SwapBuffers hook still running? (diagnostic)
+        patches::menu_hooks_tick();              // ui_mp_x86.dll: which engine menu is on top (home screen)
         patches::gamma_fix_tick();               // per-monitor gamma: focus/monitor transitions
         monitor_cgame();
         Sleep(5);
