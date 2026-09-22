@@ -6,7 +6,7 @@
 namespace patches {
 
 constexpr const char* RULESET_ID = "codbase-2023-05";
-constexpr int RULESET_VERSION = 5;   // "; version N" header of the .pb
+constexpr int RULESET_VERSION = 6;   // "; version N" header of the .pb
 
 constexpr RuleDef RULESET_TABLE[] = {
     { "cg_bobAmplitudeDucked", RM_EXACT, 1, 0.0075f, 0.0075f, "" },
@@ -117,7 +117,7 @@ constexpr RuleDef RULESET_TABLE[] = {
     { "cl_avidemo", RM_EXACT, 0, 0.0f, 0.0f, "" },
     { "cl_forceavidemo", RM_PROBE, 0, 0.0f, 0.0f, "" },
     { "cl_freelook", RM_EXACT, 0, 1.0f, 1.0f, "" },
-    { "cl_maxpackets", RM_RANGE, 0, 60.0f, 100.0f, "" },
+    { "cl_maxpackets", RM_RANGE, 0, 60.0f, 125.0f, "" },
     { "cl_nodelta", RM_EXACT, 0, 0.0f, 0.0f, "" },
     { "cl_pitchspeed", RM_EXACT, 0, 140.0f, 140.0f, "" },
     { "cl_timeNudge", RM_EXACT, 0, 0.0f, 0.0f, "" },

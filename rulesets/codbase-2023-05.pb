@@ -5,7 +5,7 @@
 ; https://github.com/cod1plus/rulesets and downloaded by the client at start-up; bump the
 ; version below whenever you change a rule (the server publishes "<id>@<version>" and a client
 ; behind that version re-downloads while in game).
-; version 5
+; version 6
 pb_sv_cvar cg_bobAmplitudeDucked IN 0.0075
 pb_sv_cvar cg_bobAmplitudeProne IN 0.03
 pb_sv_cvar cg_bobamplitudestanding IN 0.007
@@ -121,7 +121,10 @@ pb_sv_cvar cl_anglespeedkey IN 1.5
 pb_sv_cvar cl_avidemo IN 0
 pb_sv_cvar cl_forceavidemo IN 0
 pb_sv_cvar cl_freelook IN 1
-pb_sv_cvar cl_maxpackets IN 30 100
+; 1.5 capped cl_maxpackets at 100; the 1.6X client raises the cap to 125 so that a 250 fps
+; player sends exactly one packet every 2 frames (100 = a packet every 3 frames = 83/s, and
+; only 62/s at 125 fps). v6 lets the range reach the cap, as competitive.cfg already does.
+pb_sv_cvar cl_maxpackets IN 60 125
 pb_sv_cvar cl_nodelta IN 0
 pb_sv_cvar cl_pitchspeed IN 140
 pb_sv_cvar cl_punkbuster IN 1
