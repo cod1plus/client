@@ -62,6 +62,11 @@ bool hit(float x, float y, float w, float h) {
 }
 int px(float v, float s) { int r = (int)(v * s + 0.5f); return r < 1 ? 1 : r; }
 
+// The one colour on this screen: a signal red, used where something is live or
+// chosen - the mark, the live dot, the rule under the card you are about to pick.
+constexpr DWORD HOME_RED   = 0xFFE23B2E;
+constexpr DWORD CARD_COOL  = 0xFF0A1220;   // the cards' shadow leans cold: the warm rim on the hero reads warmer
+
 DWORD mixc(DWORD a, DWORD b, float t) {
     if (t < 0) t = 0;
     if (t > 1) t = 1;
@@ -161,7 +166,7 @@ bool card(int idx, float x, float y, float w, float h, const char* img,
     if (!over) *sweep_start = -1;
 
     if (!(img && ui_image_cover(x, y, w, h, img))) ui_rect(x, y, w, h, 0xFF0E0E0E);
-    ui_rect(x, y, w, h, with_alpha(0xFF000000, 0.55f - 0.35f * hv));   // sits back, lifts on hover
+    ui_rect(x, y, w, h, with_alpha(CARD_COOL, 0.58f - 0.36f * hv));    // sits back (cold), lifts on hover
     // the sweep: a soft vertical band crossing the card once, left to right, 0.9 s
     if (*sweep_start >= 0) {
         const float p = (now - *sweep_start) / 0.9f;
@@ -180,10 +185,10 @@ bool card(int idx, float x, float y, float w, float h, const char* img,
     ui_rect_border(x + 0.5f, y + 0.5f, w - 1, h - 1, 0, 1.0f * s, mixc(0x24FFFFFF, 0xE0FFFFFF, hv));
 
     char num[4]; snprintf(num, sizeof(num), "%02d", idx + 1);
-    text_tracked(x + 24 * s, y + 22 * s, px(11, s), 600, mixc(0x50FFFFFF, 0xDFFFFFFF, hv), num, 2.0f * s);
+    text_tracked(x + 24 * s, y + 22 * s, px(11, s), 600, mixc(0x50FFFFFF, HOME_RED, hv), num, 2.0f * s);
     text_tracked(x + 24 * s, y + h - 84 * s, px(10, s), 600, mixc(0xFF969696, 0xFFD2D2D2, hv), caption, 2.4f * s);
     ui_text(x + 24 * s, y + h - 66 * s, px(34, s), 600, UI_TEXT, title);
-    ui_rect(x + 24 * s, y + h - 24 * s, (w - 48 * s) * hv, 1.5f * s, UI_ACCENT);
+    ui_rect(x + 24 * s, y + h - 24 * s, (w - 48 * s) * hv, 2.0f * s, HOME_RED);
     return over && ui_input().clicked;
 }
 
@@ -193,7 +198,7 @@ bool link(long key, float x, float y, const char* label, float s) {
     const bool over = hit(x - 8 * s, y - 10 * s, lw + 16 * s, 30 * s);
     const float hv = ui_smooth(key, over ? 1.f : 0.f, 12.f);
     text_tracked(x, y, px(10, s), 600, mixc(0xFF6A6A6A, UI_TEXT, hv), label, 1.8f * s);
-    ui_rect(x, y + 17 * s, lw * hv, 1, UI_ACCENT);
+    ui_rect(x, y + 17 * s, lw * hv, 1, HOME_RED);
     return over && ui_input().clicked;
 }
 
@@ -292,8 +297,8 @@ HomeAction home_menu_draw(float sw, float sh) {
         ui_text(M, y, px(22, s), 600, UI_TEXT, "CALL OF DUTY");
         const float tw = ui_text_width(px(22, s), 600, "CALL OF DUTY");
         const float bx = M + tw + 12 * s, bw = ui_text_width(px(16, s), 600, "1.6X") + 18 * s;
-        ui_rect_rounded(bx, y + 3 * s, bw, 26 * s, 2 * s, UI_ACCENT);
-        ui_text(bx + 9 * s, y + 4 * s, px(16, s), 600, 0xFF0A0A0A, "1.6X");
+        ui_rect_rounded(bx, y + 3 * s, bw, 26 * s, 2 * s, HOME_RED);
+        ui_text(bx + 9 * s, y + 4 * s, px(16, s), 600, UI_TEXT, "1.6X");
 
         char name[64]; plain_name(name, sizeof(name));
         const float wn = ui_text_width(px(14, s), 600, name);
@@ -312,8 +317,8 @@ HomeAction home_menu_draw(float sw, float sh) {
             const float pulse = 0.55f + 0.45f * sinf(nowt * 0.0045f);
             float x = M;
             ui_ellipse(x + 3 * s, y + 7 * s, 3 * s * (1.5f + pulse), 3 * s * (1.5f + pulse), 1.0f,
-                       with_alpha(0xFFFFFFFF, 0.22f * pulse));
-            ui_rect_rounded(x, y + 4 * s, 6 * s, 6 * s, 3 * s, UI_ACCENT);
+                       with_alpha(HOME_RED, 0.35f * pulse));
+            ui_rect_rounded(x, y + 4 * s, 6 * s, 6 * s, 3 * s, HOME_RED);
             x += 16 * s;
             text_tracked(x, y, px(10, s), 600, UI_ACCENT, nt, 2.4f * s);
             x += tracked_width(px(10, s), 600, nt, 2.4f * s) + 18 * s;
@@ -393,8 +398,8 @@ HomeAction home_menu_draw(float sw, float sh) {
         ui_rect_rounded(bx1, by, bw, bh, 4 * s, mixc(0xFF1A1A1A, 0xFF2A2A2A, h1));
         ui_rect_border(bx1 + 0.5f, by + 0.5f, bw - 1, bh - 1, 4 * s, 1.0f * s, mixc(0x30FFFFFF, 0x80FFFFFF, h1));
         text_c(bx1 + bw / 2, by + 11 * s, px(14, s), 600, UI_TEXT, "Stay");
-        ui_rect_rounded(bx2, by, bw, bh, 4 * s, mixc(0xFFE0E0E0, 0xFFFFFFFF, h2));
-        text_c(bx2 + bw / 2, by + 11 * s, px(14, s), 600, 0xFF0A0A0A, "Quit");
+        ui_rect_rounded(bx2, by, bw, bh, 4 * s, mixc(0xFFC9342A, HOME_RED, h2));
+        text_c(bx2 + bw / 2, by + 11 * s, px(14, s), 600, UI_TEXT, "Quit");
         if (o1 && ui_input().clicked) g_confirm_quit = false;
         if (o2 && ui_input().clicked) {
             logger::logf("home_menu: QUIT confirmed");

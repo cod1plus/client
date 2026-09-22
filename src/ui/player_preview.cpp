@@ -157,7 +157,7 @@ void player_hero_draw(float cx, float gy, float h, float yaw, float t, float alp
     // light pool + contact shadow on the ground: the figure stands IN a place
     for (int r = 6; r >= 1; --r) {
         const float k = r / 6.0f;
-        glColor4ub(255, 255, 255, (GLubyte)(255 * A0 * 0.035f * (1.0f - k)));
+        glColor4ub(255, 214, 170, (GLubyte)(255 * A0 * 0.045f * (1.0f - k)));   // warm, like the rim
         glBegin(GL_TRIANGLE_FAN);
         glVertex2f(cx, gy);
         for (int i = 0; i <= 40; ++i) {
@@ -195,8 +195,12 @@ void player_hero_draw(float cx, float gy, float h, float yaw, float t, float alp
             float f = nx * Vx + ny * Vy + nz * Vz; if (f < 0) f = -f;
             rim = (1.0f - f); rim = rim * rim * rim * 0.70f;        // edge-on faces glow
         }
-        float g = 172.0f * lit + 255.0f * rim; if (g > 255) g = 255;   // moody: lit by the rim, not the key
-        glColor4ub((GLubyte)g, (GLubyte)g, (GLubyte)g, (GLubyte)(255 * A0));
+        // moody: lit by the rim more than the key. Cool key, warm rim - the one
+        // colour pairing every cinematic frame is built on.
+        const float base = 172.0f * lit, r_ = 255.0f * rim;
+        float cr = base * 0.84f + r_ * 1.00f, cg = base * 0.90f + r_ * 0.62f, cb = base * 1.00f + r_ * 0.34f;
+        if (cr > 255) cr = 255; if (cg > 255) cg = 255; if (cb > 255) cb = 255;
+        glColor4ub((GLubyte)cr, (GLubyte)cg, (GLubyte)cb, (GLubyte)(255 * A0));
         glVertex2f(s_sx[a], s_sy[a]);
         glVertex2f(s_sx[b], s_sy[b]);
         glVertex2f(s_sx[c], s_sy[c]);
