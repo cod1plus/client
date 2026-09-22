@@ -132,15 +132,15 @@ void vgrad(float x, float y, float w, float h, float a1, int rows = 24) {
 
 // Small bordered key hint, e.g. [ CTRL+M ] label
 float keycap(float x, float y, const char* key, const char* label, float s) {
-    const float pad = 8 * s, h = 22 * s;
-    float kw = ui_text_width(px(11, s), 600, key) + pad * 2;
+    const float pad = 9 * s, h = 25 * s;
+    float kw = ui_text_width(px(13, s), 600, key) + pad * 2;
     ui_rect_rounded(x, y, kw, h, 3 * s, 0xFF121212);
     ui_rect_border(x, y, kw, h, 3 * s, 1.0f * s, 0xFF303030);
-    ui_text(x + pad, y + 3 * s, px(11, s), 600, UI_MUTED, key);
+    ui_text(x + pad, y + 3 * s, px(13, s), 600, 0xFFB4B4B4, key);
     float total = kw;
     if (label && *label) {
-        text_tracked(x + kw + 10 * s, y + 6 * s, px(10, s), 600, 0xFF6A6A6A, label, 1.8f * s);
-        total += 10 * s + tracked_width(px(10, s), 600, label, 1.8f * s);
+        text_tracked(x + kw + 10 * s, y + 6 * s, px(12, s), 600, 0xFF9A9A9A, label, 1.8f * s);
+        total += 10 * s + tracked_width(px(12, s), 600, label, 1.8f * s);
     }
     return total;
 }
@@ -185,8 +185,8 @@ bool card(int idx, float x, float y, float w, float h, const char* img,
     ui_rect_border(x + 0.5f, y + 0.5f, w - 1, h - 1, 0, 1.0f * s, mixc(0x24FFFFFF, 0xE0FFFFFF, hv));
 
     char num[4]; snprintf(num, sizeof(num), "%02d", idx + 1);
-    text_tracked(x + 24 * s, y + 22 * s, px(11, s), 600, mixc(0x50FFFFFF, HOME_RED, hv), num, 2.0f * s);
-    text_tracked(x + 24 * s, y + h - 84 * s, px(10, s), 600, mixc(0xFF969696, 0xFFD2D2D2, hv), caption, 2.4f * s);
+    text_tracked(x + 24 * s, y + 22 * s, px(13, s), 600, mixc(0x8CFFFFFF, HOME_RED, hv), num, 2.0f * s);
+    text_tracked(x + 24 * s, y + h - 84 * s, px(12, s), 600, mixc(0xFFB4B4B4, 0xFFEAEAEA, hv), caption, 2.4f * s);
     ui_text(x + 24 * s, y + h - 66 * s, px(34, s), 600, UI_TEXT, title);
     ui_rect(x + 24 * s, y + h - 24 * s, (w - 48 * s) * hv, 2.0f * s, HOME_RED);
     return over && ui_input().clicked;
@@ -194,10 +194,10 @@ bool card(int idx, float x, float y, float w, float h, const char* img,
 
 // a tracked text link with a rule that grows on hover; returns true on click
 bool link(long key, float x, float y, const char* label, float s) {
-    const float lw = tracked_width(px(10, s), 600, label, 1.8f * s);
+    const float lw = tracked_width(px(12, s), 600, label, 1.8f * s);
     const bool over = hit(x - 8 * s, y - 10 * s, lw + 16 * s, 30 * s);
     const float hv = ui_smooth(key, over ? 1.f : 0.f, 12.f);
-    text_tracked(x, y, px(10, s), 600, mixc(0xFF6A6A6A, UI_TEXT, hv), label, 1.8f * s);
+    text_tracked(x, y, px(12, s), 600, mixc(0xFF9A9A9A, UI_TEXT, hv), label, 1.8f * s);
     ui_rect(x, y + 17 * s, lw * hv, 1, HOME_RED);
     return over && ui_input().clicked;
 }
@@ -301,10 +301,10 @@ HomeAction home_menu_draw(float sw, float sh) {
         ui_text(bx + 9 * s, y + 4 * s, px(16, s), 600, UI_TEXT, "1.6X");
 
         char name[64]; plain_name(name, sizeof(name));
-        const float wn = ui_text_width(px(14, s), 600, name);
-        const float wp = tracked_width(px(10, s), 600, "PLAYER", 2.0f * s);
-        text_tracked(sw - M - wn - 14 * s - wp, y + 8 * s, px(10, s), 600, 0xFF565656, "PLAYER", 2.0f * s);
-        ui_text(sw - M - wn, y + 4 * s, px(14, s), 600, UI_TEXT, name);
+        const float wn = ui_text_width(px(16, s), 600, name);
+        const float wp = tracked_width(px(12, s), 600, "PLAYER", 2.0f * s);
+        text_tracked(sw - M - wn - 14 * s - wp, y + 8 * s, px(12, s), 600, 0xFF8C8C8C, "PLAYER", 2.0f * s);
+        ui_text(sw - M - wn, y + 2 * s, px(16, s), 600, UI_TEXT, name);
         ui_rect(M, 96 * s, sw - 2 * M, 1, 0x18FFFFFF);
     }
 
@@ -320,10 +320,10 @@ HomeAction home_menu_draw(float sw, float sh) {
                        with_alpha(HOME_RED, 0.35f * pulse));
             ui_rect_rounded(x, y + 4 * s, 6 * s, 6 * s, 3 * s, HOME_RED);
             x += 16 * s;
-            text_tracked(x, y, px(10, s), 600, UI_ACCENT, nt, 2.4f * s);
-            x += tracked_width(px(10, s), 600, nt, 2.4f * s) + 18 * s;
-            if (nx[0]) { ui_text(x, y - 2 * s, px(13, s), 400, 0xFF969696, nx); x += ui_text_width(px(13, s), 400, nx) + 18 * s; }
-            if (nu[0]) text_tracked(x, y + 1 * s, px(10, s), 600, 0xFF565656, "CTRL + N", 1.8f * s);
+            text_tracked(x, y, px(12, s), 600, UI_ACCENT, nt, 2.4f * s);
+            x += tracked_width(px(12, s), 600, nt, 2.4f * s) + 18 * s;
+            if (nx[0]) { ui_text(x, y - 3 * s, px(15, s), 400, 0xFFC0C0C0, nx); x += ui_text_width(px(15, s), 400, nx) + 18 * s; }
+            if (nu[0]) text_tracked(x, y + 1 * s, px(12, s), 600, 0xFF8C8C8C, "CTRL + N", 1.8f * s);
         }
     }
 
@@ -356,28 +356,28 @@ HomeAction home_menu_draw(float sw, float sh) {
         const float fy = sh - 40 * s;
         ui_rect(M, sh - 72 * s, sw - 2 * M, 1, 0x18FFFFFF);
         char ver[48]; snprintf(ver, sizeof(ver), "1.6X  %s", COD1RELOADED_VERSION);
-        ui_text(M, fy - 3 * s, px(12, s), 400, 0xFF565656, ver);
+        ui_text(M, fy - 4 * s, px(13, s), 400, 0xFF8C8C8C, ver);
         // key bindings live in the vanilla Options, fs_game in Mods: the cards do not
         // cover them, these links do
-        float lx = M + ui_text_width(px(12, s), 400, ver) + 40 * s;
+        float lx = M + ui_text_width(px(13, s), 400, ver) + 40 * s;
         if (link(7400, lx, fy, "GAME OPTIONS", s) && !g_confirm_quit) {
             cmdf("close mods_menu\nopen options_multi\n");
             logger::logf("home_menu: GAME OPTIONS");
             result = HomeAction::Navigated;
         }
-        lx += tracked_width(px(10, s), 600, "GAME OPTIONS", 1.8f * s) + 32 * s;
+        lx += tracked_width(px(12, s), 600, "GAME OPTIONS", 1.8f * s) + 32 * s;
         if (link(7401, lx, fy, "MODS", s) && !g_confirm_quit) {
             cmdf("close options_multi\nopen mods_menu\n");
             logger::logf("home_menu: MODS");
             result = HomeAction::Navigated;
         }
         float fx = sw - M;
-        const float w_quit = ui_text_width(px(11, s), 600, "ESC") + 16 * s + 10 * s + tracked_width(px(10, s), 600, "QUIT", 1.8f * s);
+        const float w_quit = ui_text_width(px(13, s), 600, "ESC") + 18 * s + 10 * s + tracked_width(px(12, s), 600, "QUIT", 1.8f * s);
         fx -= w_quit;
         const bool over_quit = hit(fx - 8 * s, fy - 12 * s, w_quit + 16 * s, 34 * s);
         keycap(fx, fy - 6 * s, "ESC", "QUIT", s);
         if (over_quit && ui_input().clicked) g_confirm_quit = true;
-        const float w_set = ui_text_width(px(11, s), 600, "CTRL+M") + 16 * s + 10 * s + tracked_width(px(10, s), 600, "SETTINGS", 1.8f * s);
+        const float w_set = ui_text_width(px(13, s), 600, "CTRL+M") + 18 * s + 10 * s + tracked_width(px(12, s), 600, "SETTINGS", 1.8f * s);
         fx -= 32 * s + w_set;
         keycap(fx, fy - 6 * s, "CTRL+M", "SETTINGS", s);
     }
@@ -389,7 +389,7 @@ HomeAction home_menu_draw(float sw, float sh) {
         const float pw = 440 * s, ph = 190 * s, x = (sw - pw) / 2, y = (sh - ph) / 2;
         ui_rect_rounded(x, y, pw, ph, 6 * s, 0xFF0C0C0C);
         ui_rect_border(x + 0.5f, y + 0.5f, pw - 1, ph - 1, 6 * s, 1.0f * s, 0x3CFFFFFF);
-        text_tracked_c(x + pw / 2, y + 26 * s, px(11, s), 600, UI_MUTED, "LEAVE THE GAME", 2.4f * s);
+        text_tracked_c(x + pw / 2, y + 26 * s, px(13, s), 600, 0xFFA0A0A0, "LEAVE THE GAME", 2.4f * s);
         text_c(x + pw / 2, y + 52 * s, px(24, s), 600, UI_TEXT, "Quit to desktop?");
         const float bw = 150 * s, bh = 42 * s, by = y + ph - 32 * s - bh;
         const float bx1 = x + pw / 2 - bw - 10 * s, bx2 = x + pw / 2 + 10 * s;
