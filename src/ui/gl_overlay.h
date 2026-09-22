@@ -55,6 +55,11 @@ void ui_key_capture(bool on);
 // callers can fall back to a flat colour.
 bool ui_image_cover(float x, float y, float w, float h, const char* path);
 
+// Clip everything drawn until ui_clip_pop() to a rectangle (window pixels, y down).
+// Not nested.
+void ui_clip_push(float x, float y, float w, float h);
+void ui_clip_pop();
+
 // animation helpers (exponential smoothing, per-frame dt computed at swap)
 float ui_smooth(long key, float target, float speed);  // returns the eased value
 void  ui_anim_set(long key, float v);                  // seed (e.g. 0 on open)

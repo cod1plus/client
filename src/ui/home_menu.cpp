@@ -2,8 +2,10 @@
 // overlay while "main" is the engine's top menu (ui/menu_hooks.cpp knows, from inside
 // ui_mp_x86.dll - no pk3 override) and no game is loaded.
 //
-// Three photo cards - PLAY / HOST / SETTINGS - a wordmark, a player plate, a footer
-// of shortcuts: the layout of a modern shooter's front end, in the mod's own
+// The game's own player model, life-size on a slow turntable under a studio light,
+// and three photo cards - PLAY / HOST / SETTINGS - that shift with the cursor
+// (parallax) and catch a light sweep on hover; a wordmark, the player's name, a
+// news line, a footer of shortcuts. A modern shooter's front end in the mod's own
 // monochrome. PLAY and HOST forward the exact engine commands the original
 // main.menu buttons ran (`open joinserver`, `open createserver` - the engine's own
 // screens take over, and this screen returns when they close). QUIT is our own
@@ -21,6 +23,7 @@
 #include "ui/home_menu.h"
 #include "ui/gl_overlay.h"
 #include "ui/menu_hooks.h"
+#include "ui/player_preview.h"
 #include "features/settings_menu.h"   // CODMP_CVAR_FINDVAR_VA / CODMP_CBUF_EXECTEXT_VA
 #include "features/news.h"
 #include "features/updater.h"         // COD1RELOADED_VERSION
@@ -138,22 +141,41 @@ float keycap(float x, float y, const char* key, const char* label, float s) {
 }
 
 // One card: a quiet photo detail, an index, one type block bottom-left, a rule that
-// grows under the title on hover. Nothing else. Returns true on click.
+// grows under the title on hover, a light that sweeps across the photo the moment
+// the cursor arrives. `sweep_t` is that sweep's clock (seconds since hover began,
+// < 0 = none). Returns true on click.
 bool card(int idx, float x, float y, float w, float h, const char* img,
-          const char* caption, const char* title, float ot, float s) {
+          const char* caption, const char* title, float ot, float s, float* sweep_start) {
     // staggered entrance: fade + a short rise, each card 80 ms after the previous
     const float delay = idx * 0.08f;
     float t = (ot - delay) / (1.0f - delay);
     t = t < 0 ? 0 : (t > 1 ? 1 : t);
     const float ease = t * t * (3 - 2 * t);
-    y += (1 - ease) * 14 * s;
+    y += (1 - ease) * 18 * s;
     ui_alpha(ease);
 
     const bool over = hit(x, y, w, h);
     const float hv = ui_smooth(7200 + idx, over ? 1.0f : 0.0f, 9.0f);
+    const float now = GetTickCount() / 1000.0f;
+    if (over && *sweep_start < 0) *sweep_start = now;          // arm the sweep on arrival
+    if (!over) *sweep_start = -1;
 
     if (!(img && ui_image_cover(x, y, w, h, img))) ui_rect(x, y, w, h, 0xFF0E0E0E);
     ui_rect(x, y, w, h, with_alpha(0xFF000000, 0.55f - 0.35f * hv));   // sits back, lifts on hover
+    // the sweep: a soft vertical band crossing the card once, left to right, 0.9 s
+    if (*sweep_start >= 0) {
+        const float p = (now - *sweep_start) / 0.9f;
+        if (p < 1.0f) {
+            const float bx = x - 80 * s + (w + 160 * s) * p, bw = 90 * s;
+            ui_clip_push(x, y, w, h);
+            for (int i = 0; i < 12; ++i) {
+                const float f = (i + 0.5f) / 12.0f;
+                const float a = (1.0f - fabsf(f - 0.5f) * 2.0f) * 0.13f * (1.0f - p * 0.4f);
+                ui_rect(bx + bw * i / 12.0f, y, bw / 12.0f + 1, h, with_alpha(0xFFFFFFFF, a));
+            }
+            ui_clip_pop();
+        }
+    }
     vgrad(x, y + h * 0.45f, w, h * 0.55f, 0.95f, 30);
     ui_rect_border(x + 0.5f, y + 0.5f, w - 1, h - 1, 0, 1.0f * s, mixc(0x24FFFFFF, 0xE0FFFFFF, hv));
 
@@ -175,7 +197,23 @@ bool link(long key, float x, float y, const char* label, float s) {
     return over && ui_input().clicked;
 }
 
-bool g_confirm_quit = false;
+// cinematic vignette: the four edges fall to black, the centre stays
+void vignette(float sw, float sh, float s) {
+    const int n = 18;
+    const float ew = 220 * s, eh = 150 * s;
+    for (int i = 0; i < n; ++i) {
+        const float f0 = (float)i / n, f1 = (float)(i + 1) / n;
+        const float a = (1 - f0) * (1 - f0) * 0.55f;
+        const DWORD c = with_alpha(0xFF000000, a);
+        ui_rect(ew * f0, 0, ew * (f1 - f0) + 1, sh, c);
+        ui_rect(sw - ew * f1, 0, ew * (f1 - f0) + 1, sh, c);
+        ui_rect(0, eh * f0, sw, eh * (f1 - f0) + 1, c);
+        ui_rect(0, sh - eh * f1, sw, eh * (f1 - f0) + 1, c);
+    }
+}
+
+bool  g_confirm_quit = false;
+float g_sweep[3] = { -1, -1, -1 };
 
 }  // namespace
 
@@ -206,12 +244,46 @@ HomeAction home_menu_draw(float sw, float sh) {
     const DWORD nowt = GetTickCount();
     if (nowt - s_lastdraw > 250) { ui_anim_set(7000, 0.0f); g_confirm_quit = false; }
     s_lastdraw = nowt;
-    const float ot = ui_smooth(7000, 1.0f, 4.5f);
+    const float ot = ui_smooth(7000, 1.0f, 3.2f);
+    const float tsec = nowt / 1000.0f;
     const float M = 64 * s;                     // one margin for everything
 
-    // ---- ground: flat. The photos are the only texture on this screen.
+    // parallax: the cursor's offset from the centre moves the layers by depth
+    const UiInput& in = ui_input();
+    const float pxn = sw > 0 ? (in.mx / sw - 0.5f) : 0.f, pyn = sh > 0 ? (in.my / sh - 0.5f) : 0.f;
+    const float par_x = ui_smooth(7010, pxn, 4.0f), par_y = ui_smooth(7011, pyn, 4.0f);
+
+    // ---- ground: flat black, then the light and the figure
     ui_alpha(1.0f);
     ui_rect(0, 0, sw, sh, UI_BG);
+
+    // ---- the cards' column on the right decides how much room the hero has
+    float cw = 280 * s, gap = 28 * s;
+    const float room = sw - 2 * M - 440 * s;              // hero needs ~440 px at 1080p
+    if (cw * 3 + gap * 2 > room) cw = (room - gap * 2) / 3;
+    if (cw < 200 * s) cw = 200 * s;
+    const float ch = cw * (500.0f / 280.0f);
+    const float cards_w = cw * 3 + gap * 2;
+    const float cx0 = sw - M - cards_w - par_x * 14 * s;
+    const float cy  = (sh - ch) / 2 + 24 * s - par_y * 8 * s;
+
+    // ---- hero: the game's own player model, life-size, on a slow turntable
+    {
+        const float hx = M + (cx0 - M) / 2 + par_x * 26 * s;
+        const float hh = sh * 0.66f;
+        const float gy = sh * 0.86f + par_y * 10 * s;
+        // a ghost of the mark behind it, huge and almost invisible - depth
+        ui_alpha(ot * 0.04f);
+        const int gpx = (int)(sh * 0.50f);
+        ui_text(hx - ui_text_width(gpx, 600, "1.6X") / 2 + par_x * 40 * s, sh * 0.24f, gpx, 600, UI_TEXT, "1.6X");
+        // a horizon rule and a faint floor glow under the figure
+        ui_alpha(ot);
+        ui_rect(M, gy + 1, cx0 - M - 24 * s, 1, 0x14FFFFFF);
+        const float fade = ot * ot;
+        player_hero_draw(hx, gy, hh, 0.35f + tsec * 0.28f, tsec, fade);
+    }
+
+    vignette(sw, sh, s);
 
     // ---- top bar: wordmark left, player right, a rule
     ui_alpha(ot);
@@ -226,7 +298,7 @@ HomeAction home_menu_draw(float sw, float sh) {
         char name[64]; plain_name(name, sizeof(name));
         const float wn = ui_text_width(px(14, s), 600, name);
         const float wp = tracked_width(px(10, s), 600, "PLAYER", 2.0f * s);
-        text_tracked(sw - M - wn - 14 * s - wp, y + 8 * s, px(10, s), 600, 0xFF464646, "PLAYER", 2.0f * s);
+        text_tracked(sw - M - wn - 14 * s - wp, y + 8 * s, px(10, s), 600, 0xFF565656, "PLAYER", 2.0f * s);
         ui_text(sw - M - wn, y + 4 * s, px(14, s), 600, UI_TEXT, name);
         ui_rect(M, 96 * s, sw - 2 * M, 1, 0x18FFFFFF);
     }
@@ -246,21 +318,18 @@ HomeAction home_menu_draw(float sw, float sh) {
             text_tracked(x, y, px(10, s), 600, UI_ACCENT, nt, 2.4f * s);
             x += tracked_width(px(10, s), 600, nt, 2.4f * s) + 18 * s;
             if (nx[0]) { ui_text(x, y - 2 * s, px(13, s), 400, 0xFF969696, nx); x += ui_text_width(px(13, s), 400, nx) + 18 * s; }
-            if (nu[0]) text_tracked(x, y + 1 * s, px(10, s), 600, 0xFF464646, "CTRL + N", 1.8f * s);
+            if (nu[0]) text_tracked(x, y + 1 * s, px(10, s), 600, 0xFF565656, "CTRL + N", 1.8f * s);
         }
     }
 
-    // ---- the cards, centred in the free height
-    const float cw = 340 * s, ch = 600 * s, gap = 40 * s;
-    const float x0 = (sw - (cw * 3 + gap * 2)) / 2;
-    const float cy = (sh - ch) / 2 + 20 * s;
+    // ---- the cards
     HomeAction result = HomeAction::None;
     char play[MAX_PATH], host[MAX_PATH], sett[MAX_PATH];
     const char* pplay = home_asset("play.jpg", play, sizeof(play)) ? play : nullptr;
     const char* phost = home_asset("host.jpg", host, sizeof(host)) ? host : nullptr;
     const char* psett = home_asset("settings.jpg", sett, sizeof(sett)) ? sett : nullptr;
 
-    if (card(0, x0, cy, cw, ch, pplay, "JOIN A MATCH", "PLAY", ot, s) && !g_confirm_quit) {
+    if (card(0, cx0, cy, cw, ch, pplay, "JOIN A MATCH", "PLAY", ot, s, &g_sweep[0]) && !g_confirm_quit) {
         // NO "close main" (2026-08-15): forwarded from outside the menu VM it corrupts
         // the UI stack and "open joinserver" silently fails; joinserver is fullscreen
         // and covers main regardless.
@@ -268,12 +337,12 @@ HomeAction home_menu_draw(float sw, float sh) {
         logger::logf("home_menu: PLAY -> open joinserver");
         result = HomeAction::Navigated;
     }
-    if (card(1, x0 + cw + gap, cy, cw, ch, phost, "RUN A SERVER", "HOST", ot, s) && !g_confirm_quit) {
+    if (card(1, cx0 + cw + gap, cy, cw, ch, phost, "RUN A SERVER", "HOST", ot, s, &g_sweep[1]) && !g_confirm_quit) {
         cmdf("close mods_menu\nclose options_multi\nopen createserver\n");
         logger::logf("home_menu: HOST -> open createserver");
         result = HomeAction::Navigated;
     }
-    if (card(2, x0 + (cw + gap) * 2, cy, cw, ch, psett, "DISPLAY, MOUSE, NETCODE", "SETTINGS", ot, s) && !g_confirm_quit)
+    if (card(2, cx0 + (cw + gap) * 2, cy, cw, ch, psett, "DISPLAY, MOUSE, NETCODE", "SETTINGS", ot, s, &g_sweep[2]) && !g_confirm_quit)
         result = HomeAction::OpenSettings;
 
     // ---- footer: version + the engine's own screens on the left, shortcuts on the right
@@ -282,7 +351,7 @@ HomeAction home_menu_draw(float sw, float sh) {
         const float fy = sh - 40 * s;
         ui_rect(M, sh - 72 * s, sw - 2 * M, 1, 0x18FFFFFF);
         char ver[48]; snprintf(ver, sizeof(ver), "1.6X  %s", COD1RELOADED_VERSION);
-        ui_text(M, fy - 3 * s, px(12, s), 400, 0xFF464646, ver);
+        ui_text(M, fy - 3 * s, px(12, s), 400, 0xFF565656, ver);
         // key bindings live in the vanilla Options, fs_game in Mods: the cards do not
         // cover them, these links do
         float lx = M + ui_text_width(px(12, s), 400, ver) + 40 * s;

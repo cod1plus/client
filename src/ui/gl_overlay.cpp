@@ -268,6 +268,13 @@ void ui_rect_border(float x, float y, float w, float h, float r, float th, DWORD
     glLineWidth(1.0f);
 }
 
+void ui_clip_push(float x, float y, float w, float h) {
+    if (w < 0) w = 0; if (h < 0) h = 0;
+    glEnable(GL_SCISSOR_TEST);
+    glScissor((GLint)x, (GLint)(g_vh - (y + h)), (GLsizei)w, (GLsizei)h);   // GL: y up
+}
+void ui_clip_pop() { glDisable(GL_SCISSOR_TEST); }
+
 void ui_ellipse(float cx, float cy, float rx, float ry, float th, DWORD rgba) {
     glDisable(GL_TEXTURE_2D);
     set_color(rgba);
