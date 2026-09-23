@@ -204,8 +204,6 @@ Source is organized by domain under `src/`:
 | `performance/` | FPS cap, frame limiter, CPU/priority/working-set |
 | `features/` | auto-updater, Discord RPC, demo upload, avatar overlay |
 
-See [docs/](docs/) for the reverse-engineering notes.
-
 ---
 
 ## Requirements
