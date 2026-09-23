@@ -1,7 +1,7 @@
 # ============================================================
 # cod1reloaded — .gitignore
 # On garde : src/, CMakeLists.txt, build_cod1.ps1, cod1reloaded.ini,
-# docs/, tools/*.ps1, les assets HUD, les .md.
+# rulesets/, ui_pk3/, README/CHANGELOG/BUILD.
 # On ignore : tout ce qui est généré, lourd, ou hérité de CoD2x.
 # ============================================================
 
@@ -47,6 +47,7 @@ desktop.ini
 
 # --- Dev / non distribué ---
 /tools/
+/FEATURES.md
 /scoreboard-clean*.png
 /TODO.md
 
