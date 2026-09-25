@@ -50,6 +50,7 @@ set(COD1RELOADED_SOURCES
     src/video/mode_guard.cpp
     src/performance/fps_cap.cpp
     src/performance/frame_limiter.cpp
+    src/performance/gpu_sync.cpp
     src/features/updater.cpp
     src/features/demo_upload.cpp
     src/core/toast.cpp

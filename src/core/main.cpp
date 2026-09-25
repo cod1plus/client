@@ -21,6 +21,7 @@
 #include "input/rinput.h"
 #include "performance/fps_cap.h"
 #include "performance/frame_limiter.h"
+#include "performance/gpu_sync.h"
 #include "features/updater.h"
 #include "features/demo_upload.h"
 #include "core/toast.h"
@@ -183,6 +184,9 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             patches::apply_fullscreen_patch();
 
             patches::apply_frame_limiter_patch();
+
+            // one frame in flight: glFinish after every SwapBuffers (gpu_sync = off to skip)
+            patches::gpu_sync_start();
 
             // raw mouse input: hook GetCursorPos now, stays idle until m_rinput 1
             patches::rinput_start();

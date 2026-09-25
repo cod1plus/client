@@ -14,6 +14,7 @@
 #include "input/rinput.h"
 #include "performance/fps_cap.h"
 #include "performance/frame_limiter.h"
+#include "performance/gpu_sync.h"
 #include "features/updater.h"
 #include "features/demo_upload.h"
 #include "performance/cpu_affinity.h"
@@ -217,6 +218,8 @@ void load_config(HMODULE self_module) {
     }
     g_frame_limiter_config.enable = read_ini_bool(
         ini_path, "frame_limiter_enable", g_frame_limiter_config.enable);
+    g_gpu_sync_config.enable = read_ini_bool(
+        ini_path, "gpu_sync", g_gpu_sync_config.enable);
     {
         char buf[16];
         DWORD n = GetPrivateProfileStringA(
