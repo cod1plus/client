@@ -21,6 +21,8 @@ struct GpuSyncConfig {
 extern GpuSyncConfig g_gpu_sync_config;
 
 void gpu_sync_start();   // DllMain: IAT-hook gdi32!SwapBuffers in CoDMP.exe
+// time spent in glFinish over the current window, microseconds (session_report.cpp)
+void gpu_sync_stats(double* avg_us, double* max_us, long* frames, bool reset);
 
 }  // namespace patches
 

@@ -37,6 +37,20 @@
 //    ms); the key stamps are on the stepped clock, so they can disagree with ours by a
 //    tick, never more - the same tick the stamps are quantised to anyway.
 //
+// LATE INPUT SAMPLING. The engine reads the mouse in IN_Frame, BEFORE Com_Frame and so
+// before this wait: every count moved during the wait is only seen next frame. And the
+// Windows message pump (Sys_SendKeyEvents 0x468a40: keys, mouse buttons, wheel) runs in
+// CL_Frame AFTER CL_SendCmd (0x412915 vs 0x412901) - a click arriving during frame N is
+// pumped after N's command is built, dispatched in N+1, in the command of N+1 at best.
+// So once the wait is over we pump the queue and sample the mouse again: the second
+// Com_EventLoop (0x43a6cd) hands the events to CL_MouseEvent (which ADDS to cl.mouseDx,
+// 0x40bbf6) and to the +binds, Cbuf_Execute (0x43a6d2) runs them, and CL_Frame builds
+// this frame's command with everything that happened up to a few microseconds ago.
+// One frame less latency for clicks and keys, the wait's length less for the mouse.
+// IN_MouseMove is self-contained (GetCursorPos - centre, SetCursorPos, Sys_QueEvent);
+// it is called under IN_Frame's own gate (mouse initialised and active). Vanilla 1.5
+// has the same ordering, so this is one place the mod beats it.
+//
 // After a late wake the delta can still read one short (the previous frame crossed a
 // millisecond boundary late, this one did not). That second call used to wait for the
 // NEXT deadline: a doubled frame (8 ms at 250 fps) as a reward for waking 0.3 ms late.
@@ -57,6 +71,7 @@ namespace patches {
 FrameLimiterConfig g_frame_limiter_config = {
     /* enable           */ true,
     /* deadline_bias_us */ 0,
+    /* late_input       */ true,
 };
 
 namespace {
@@ -71,6 +86,10 @@ LONGLONG      g_epoch = 0;           // the QPC count at which the engine's cloc
 bool          g_epoch_set = false;
 unsigned      g_calls = 0;
 bool          g_applied = false;
+// statistics of the current window (session report)
+LONGLONG      g_prev_end = 0;        // QPC at the previous frame's return
+LONGLONG      g_st_max_ticks = 0;
+long          g_st_frames = 0, g_st_late = 0, g_st_long = 0;
 
 int read_com_maxfps_dvar() {
     HMODULE exe = GetModuleHandleA(NULL);
@@ -91,11 +110,37 @@ int engine_sys_milliseconds() {
     return (int)(timeGetTime() - *base);
 }
 
+typedef void (__cdecl* EngineVoidFn_t)();
+
+// the wait is over: the keys and clicks that queued up meanwhile, then the mouse
+void engine_late_input() {
+    ((EngineVoidFn_t)CODMP_SYS_SENDKEYEVENTS_VA)();
+    if (*(volatile int*)CODMP_MOUSE_INITIALIZED_VA && *(volatile int*)CODMP_MOUSE_ACTIVE_VA)
+        ((EngineVoidFn_t)CODMP_IN_MOUSEMOVE_VA)();
+}
+
 const FrameLimiterEngine g_engine = {
     read_com_maxfps_dvar,
     engine_sys_milliseconds,
     (int*)CODMP_COM_LASTTIME_VA,
+    engine_late_input,
 };
+
+// bookkeeping at every return to Com_Frame, then the late input sampling
+void end_of_wait(const FrameLimiterEngine& e, LONGLONG now, bool reloop, LONGLONG step_ticks) {
+    if (reloop) {
+        ++g_st_late;
+    } else {
+        ++g_st_frames;
+        if (g_prev_end) {
+            const LONGLONG period = now - g_prev_end;
+            if (period > g_st_max_ticks) g_st_max_ticks = period;
+            if (step_ticks > 0 && period > step_ticks + step_ticks / 2) ++g_st_long;
+        }
+        g_prev_end = now;
+    }
+    if (g_frame_limiter_config.late_input && e.late_input) e.late_input();
+}
 
 // our clock: QPC on the engine's epoch (rule 3)
 inline int clock_ms(LONGLONG qpc) {
@@ -126,7 +171,20 @@ inline void spin_once(LONGLONG remaining_ticks) {
 
 }  // namespace
 
+void frame_limiter_stats(FrameLimiterStats* out, bool reset) {
+    if (out) {
+        if (g_qpc_freq.QuadPart == 0) QueryPerformanceFrequency(&g_qpc_freq);
+        out->frames = g_st_frames;
+        out->late = g_st_late;
+        out->long_frames = g_st_long;
+        out->max_frame_ms = g_qpc_freq.QuadPart ? (double)g_st_max_ticks * 1000.0 / (double)g_qpc_freq.QuadPart : 0.0;
+    }
+    if (reset) { g_st_frames = 0; g_st_late = 0; g_st_long = 0; g_st_max_ticks = 0; }
+}
+
 void frame_limiter_reset() {
+    g_prev_end = 0;
+    frame_limiter_stats(nullptr, true);
     g_next_deadline = 0;
     g_step_frac = 0;
     g_last_maxfps = 0;
@@ -150,6 +208,7 @@ int frame_wait(const FrameLimiterEngine& e) {
         g_next_deadline = 0;
         const int ret = clock_ms(now.QuadPart);
         g_last_ret = ret; g_have_ret = true;
+        end_of_wait(e, now.QuadPart, false, 0);
         return ret;
     }
 
@@ -177,6 +236,7 @@ int frame_wait(const FrameLimiterEngine& e) {
         g_step_frac = 0;
         const int ret = clock_ms(now.QuadPart);
         g_last_ret = ret;
+        end_of_wait(e, now.QuadPart, true, step_int);
         return ret;
     }
 
@@ -211,6 +271,7 @@ int frame_wait(const FrameLimiterEngine& e) {
 
     const int ret = clock_ms(now.QuadPart);
     g_last_ret = ret; g_have_ret = true;
+    end_of_wait(e, now.QuadPart, false, step_int);
     return ret;
 }
 
@@ -273,8 +334,9 @@ bool apply_frame_limiter_patch() {
 
     g_applied = true;
     logger::logf(
-        "frame_limiter: call at CoDMP+0x%lx redirige -> our wait (0x%08x), engine epoch",
-        (unsigned long)CODMP_FRAME_LIMIT_CALL_OPCODE_RVA, (unsigned)hook);
+        "frame_limiter: call at CoDMP+0x%lx redirige -> our wait (0x%08x), engine epoch, late input %s",
+        (unsigned long)CODMP_FRAME_LIMIT_CALL_OPCODE_RVA, (unsigned)hook,
+        g_frame_limiter_config.late_input ? "on" : "off");
     return true;
 }
 

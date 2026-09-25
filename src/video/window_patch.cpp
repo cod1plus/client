@@ -3,6 +3,7 @@
 #include "core/logger.h"
 #include "core/wndhub.h"
 #include "features/demo_upload.h"
+#include "core/session_report.h"
 
 #include <cstring>
 #include <cstdio>
@@ -153,6 +154,8 @@ bool window_listener(HWND hwnd, UINT msg, WPARAM wParam, LPARAM, LRESULT*) {
     }
 
     if (msg == WM_CLOSE || msg == WM_DESTROY) {
+        // ExitProcess often skips DLL_PROCESS_DETACH: the last 'bilan' line goes here
+        session_report_final("fin");
         demo_upload_trigger_now();
     }
     return false;
