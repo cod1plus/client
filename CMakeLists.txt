@@ -52,6 +52,7 @@ set(COD1RELOADED_SOURCES
     src/performance/frame_limiter.cpp
     src/performance/gpu_sync.cpp
     src/core/session_report.cpp
+    src/core/ini_lock.cpp
     src/features/updater.cpp
     src/features/demo_upload.cpp
     src/core/toast.cpp

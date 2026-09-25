@@ -2,8 +2,41 @@
 
 ## v1.6.9 (2026-09-25)
 
-Base : la 1.6.8 (ruleset compilé en v6) + le correctif du limiteur de frames, rien d'autre — pas de
-home screen ni de menu Ctrl+M de la branche dev.
+Base : la 1.6.8 (ruleset compilé en v6) + la fluidité, rien d'autre — pas de home screen ni de
+menu Ctrl+M de la branche dev. Validé en jeu par enzo et les admins.
+
+### 🔒 Réglages imposés (tout le monde joue pareil)
+- `cod1reloaded.ini` est remis en ligne à chaque lancement : `frame_limiter_enable = on`,
+  `force_1ms_timer = on`, `gpu_sync = auto`, `input_late_sampling = on`, `fullscreen = on`,
+  `refresh_rate = max`, `smoothness_cpu_cores = 0`. Une clé absente est ajoutée avec son explication,
+  une clé modifiée est réécrite ; tout le reste du fichier (et vos autres réglages) est conservé.
+  Les valeurs utilisées sont celles-là quoi que dise le fichier. `raw_mouse_input` reste votre choix.
+- `r_fullscreen` est mis à 1 et passé en lecture seule (un `seta r_fullscreen 0` laissé dans
+  `config_mp.cfg` par une ancienne version est corrigé) ; `r_displayRefresh` est maintenu au Hz maximum
+  de l'écran. Le menu 1.6X et la console ne peuvent plus les changer.
+
+### ⚡ Entrées lues après l'attente de frame
+- Le moteur lisait la souris avant l'attente du limiteur et pompait le clavier / les boutons souris
+  **après** avoir construit la commande de la frame : un clic fait pendant la frame N partait dans la
+  commande de N+1 au mieux (vanilla compris). Le limiteur pompe la file et relit la souris à la fin de
+  son attente : une frame de latence en moins sur les clics et les touches, la durée d'attente en moins
+  sur la souris.
+
+### 🖥️ Plein écran exclusif, Hz maximum
+- En `r_fullscreen 1` la 1.6.8 restylait quand même la fenêtre en borderless (mode hybride) : le
+  watcher ne touche plus à la fenêtre du moteur, garde la réduction à la perte de focus et remet le
+  mode du jeu au retour. Le plafond moteur de `r_displayRefresh` (200 Hz) est levé ; un mode refusé
+  est retenté au meilleur Hz listé (`mode_guard`, chaque changement de mode est dans le log).
+
+### 🎮 GPU : une frame en vol
+- `glFinish` après chaque `SwapBuffers` : la frame qui porte votre mouvement est à l'écran avant la
+  lecture suivante de la souris. En `auto`, si l'attente occupe plus de la moitié de la frame pendant
+  10 s (GPU limitant), la synchro se coupe pour la session et le dit dans le log.
+
+### 📋 Une ligne de bilan dans le log
+- Toutes les 60 s et à la fermeture : `bilan 60 s: 250.0 fps (15000 frames, 0 en retard, 0 longues,
+  max 4.3 ms) | GPU 0.50 ms (max 1.4) | 1920x1080 @ 320 Hz exclusif | com_maxfps 250 | rinput on`.
+  Un joueur qui dit « ça lag » colle cette ligne.
 
 ### ⏱️ Frame limiter : horloge du moteur, plus de frame doublée
 - Depuis la 1.6.3 le limiteur écrivait dans `com_frameTime` des millisecondes depuis le **démarrage de

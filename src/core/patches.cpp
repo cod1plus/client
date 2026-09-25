@@ -15,6 +15,7 @@
 #include "performance/fps_cap.h"
 #include "performance/frame_limiter.h"
 #include "performance/gpu_sync.h"
+#include "core/ini_lock.h"
 #include "features/updater.h"
 #include "features/demo_upload.h"
 #include "performance/cpu_affinity.h"
@@ -218,8 +219,12 @@ void load_config(HMODULE self_module) {
     }
     g_frame_limiter_config.enable = read_ini_bool(
         ini_path, "frame_limiter_enable", g_frame_limiter_config.enable);
-    g_gpu_sync_config.enable = read_ini_bool(
-        ini_path, "gpu_sync", g_gpu_sync_config.enable);
+    {
+        char mode[16] = "";
+        read_ini_string(ini_path, "gpu_sync", mode, sizeof(mode), "auto");
+        g_gpu_sync_config.mode = !_stricmp(mode, "off") ? GPU_SYNC_OFF
+                               : !_stricmp(mode, "on")  ? GPU_SYNC_ON : GPU_SYNC_AUTO;
+    }
     g_frame_limiter_config.late_input = read_ini_bool(
         ini_path, "input_late_sampling", g_frame_limiter_config.late_input);
     {
@@ -417,6 +422,9 @@ void load_config(HMODULE self_module) {
     // a player may set for himself in a text file. Their hardcoded defaults (all off)
     // stand. The two diag_* keys above are kept: they only write to cod1reloaded.log and
     // change nothing the game does.
+
+    // the keys the mod imposes: file brought in line, values forced (core/ini_lock.cpp)
+    ini_lock_apply(ini_path);
 
     logger::logf("config loaded from %s", ini_path);
     logger::logf("  viewheight_lerp_speed = %.2f", g_viewheight_config.viewheight_lerp_speed);

@@ -23,6 +23,7 @@
 #include "performance/frame_limiter.h"
 #include "performance/gpu_sync.h"
 #include "core/session_report.h"
+#include "core/ini_lock.h"
 #include "features/updater.h"
 #include "features/demo_upload.h"
 #include "core/toast.h"
@@ -111,6 +112,7 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::ruleset_tick();             // embedded PB ruleset (sv_competitive_ruleset) -> userinfo cod1x_rs
             patches::rinput_tick();              // follow m_rinput, publish m_rinput_hz
             patches::session_report_tick();      // one 'bilan' line a minute in the log
+            patches::ini_lock_tick();            // r_fullscreen read-only, r_displayRefresh at max
         }
         patches::widescreen_update_stretch();    // drive the stretched-mode vfov ratio (live)
         patches::gamma_fix_tick();               // per-monitor gamma: focus/monitor transitions
