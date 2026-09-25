@@ -220,6 +220,8 @@ void load_config(HMODULE self_module) {
         ini_path, "frame_limiter_enable", g_frame_limiter_config.enable);
     g_gpu_sync_config.enable = read_ini_bool(
         ini_path, "gpu_sync", g_gpu_sync_config.enable);
+    g_frame_limiter_config.late_input = read_ini_bool(
+        ini_path, "input_late_sampling", g_frame_limiter_config.late_input);
     {
         char buf[16];
         DWORD n = GetPrivateProfileStringA(

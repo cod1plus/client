@@ -26,10 +26,19 @@ constexpr uintptr_t CODMP_SYS_TIMEBASE_VA               = 0x01999d40;
 constexpr uintptr_t CODMP_SYS_TIMEINIT_VA               = 0x01460254;
 // Com_Frame's lastTime: com_frameTime of the previous frame (0043a523 mov [8eda90], eax)
 constexpr uintptr_t CODMP_COM_LASTTIME_VA               = 0x008eda90;
+// Late input sampling (see frame_limiter.cpp):
+//   IN_MouseMove()       0x466b70  GetCursorPos - centre, SetCursorPos(centre), Sys_QueEvent(SE_MOUSE)
+//   Sys_SendKeyEvents()  0x468a40  the PeekMessage pump: keys, mouse buttons, wheel
+//   mouse initialised / active flags (IN_Frame's own gate before it calls IN_MouseMove)
+constexpr uintptr_t CODMP_IN_MOUSEMOVE_VA               = 0x00466b70;
+constexpr uintptr_t CODMP_SYS_SENDKEYEVENTS_VA          = 0x00468a40;
+constexpr uintptr_t CODMP_MOUSE_INITIALIZED_VA          = 0x0093b3a4;
+constexpr uintptr_t CODMP_MOUSE_ACTIVE_VA               = 0x0093b3a0;
 
 struct FrameLimiterConfig {
     bool enable;
     int  deadline_bias_us; // +us added to deadline; -500 -> effective 250.5 if running under
+    bool late_input;       // sample the mouse / pump the keys AFTER the wait (ini input_late_sampling)
 };
 
 extern FrameLimiterConfig g_frame_limiter_config;
@@ -40,7 +49,17 @@ struct FrameLimiterEngine {
     int  (*maxfps)();          // com_maxfps->integer (<= 0: no cap)
     int  (*engine_ms)();       // Sys_Milliseconds()
     int* last_time;            // Com_Frame's lastTime
+    void (*late_input)();      // may be null: read the inputs now, the wait is over
 };
+
+// What the last window of frames looked like (session_report.cpp prints it).
+struct FrameLimiterStats {
+    long   frames;        // waits completed (= frames)
+    long   late;          // second calls of the loop: the engine's ms delta read short after a late wake
+    long   long_frames;   // frame periods over 1.5x the target
+    double max_frame_ms;  // longest frame period
+};
+void frame_limiter_stats(FrameLimiterStats* out, bool reset);   // out may be null
 
 // One call of Com_Frame's spin loop: waits for the frame's deadline, returns the value
 // Com_Frame stores in com_frameTime (see frame_limiter.cpp for the two rules it obeys).

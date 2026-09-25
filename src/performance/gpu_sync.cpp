@@ -17,11 +17,10 @@ SwapBuffers_t g_orig_swap = nullptr;
 glFinish_t    g_glFinish  = nullptr;
 bool          g_resolve_tried = false;
 
-// the minute's statistics: time spent in glFinish
+// the window's statistics: time spent in glFinish (read by session_report.cpp)
 LARGE_INTEGER g_freq = {};
 LONGLONG g_sum_ticks = 0, g_max_ticks = 0;
 long     g_frames = 0;
-DWORD    g_last_report = 0;
 
 // opengl32.dll is loaded by the engine at video init, well after DllMain: resolve at
 // the first frame, once
@@ -48,22 +47,21 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
     g_sum_ticks += d;
     if (d > g_max_ticks) g_max_ticks = d;
     ++g_frames;
-    const DWORD now = GetTickCount();
-    if (!g_last_report) g_last_report = now;
-    if (now - g_last_report >= 60000 && g_frames > 0) {
-        if (!g_freq.QuadPart) QueryPerformanceFrequency(&g_freq);
-        const double us = 1000000.0 / (double)g_freq.QuadPart;
-        // a large average means the GPU, not the CPU, sets the frame rate - the wait is
-        // then time the frame would have spent queued anyway, now spent in the open
-        logger::logf("gpu_sync: glFinish avg %.0f us, max %.0f us over %ld frames",
-                     (double)g_sum_ticks / g_frames * us, (double)g_max_ticks * us, g_frames);
-        g_sum_ticks = 0; g_max_ticks = 0; g_frames = 0;
-        g_last_report = now;
-    }
     return r;
 }
 
 }  // namespace
+
+// A large average means the GPU, not the CPU, sets the frame rate - the wait is then
+// time the frame would have spent queued anyway, now spent in the open.
+void gpu_sync_stats(double* avg_us, double* max_us, long* frames, bool reset) {
+    if (!g_freq.QuadPart) QueryPerformanceFrequency(&g_freq);
+    const double us = g_freq.QuadPart ? 1000000.0 / (double)g_freq.QuadPart : 0.0;
+    if (avg_us) *avg_us = g_frames ? (double)g_sum_ticks / g_frames * us : 0.0;
+    if (max_us) *max_us = (double)g_max_ticks * us;
+    if (frames) *frames = g_frames;
+    if (reset) { g_sum_ticks = 0; g_max_ticks = 0; g_frames = 0; }
+}
 
 void gpu_sync_start() {
     if (!g_gpu_sync_config.enable) {

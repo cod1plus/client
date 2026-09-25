@@ -147,6 +147,19 @@ bool mode_guard_reapply_fullscreen() {
     return rc == DISP_CHANGE_SUCCESSFUL;
 }
 
+bool mode_guard_current_mode(int* w, int* h, int* hz) {
+    if (!g_fs_mode_valid) return false;
+    *w = (int)g_fs_mode.dmPelsWidth;
+    *h = (int)g_fs_mode.dmPelsHeight;
+    *hz = (int)g_fs_mode.dmDisplayFrequency;
+    DEVMODEA cur;
+    memset(&cur, 0, sizeof(cur));
+    cur.dmSize = sizeof(cur);
+    if (EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &cur) && cur.dmDisplayFrequency > 1)
+        *hz = (int)cur.dmDisplayFrequency;     // what the display runs, whatever was asked
+    return true;
+}
+
 bool mode_guard_fullscreen_size(int* w, int* h) {
     if (!g_fs_mode_valid) return false;
     *w = (int)g_fs_mode.dmPelsWidth;

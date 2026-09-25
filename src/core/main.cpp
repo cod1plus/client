@@ -22,6 +22,7 @@
 #include "performance/fps_cap.h"
 #include "performance/frame_limiter.h"
 #include "performance/gpu_sync.h"
+#include "core/session_report.h"
 #include "features/updater.h"
 #include "features/demo_upload.h"
 #include "core/toast.h"
@@ -109,6 +110,7 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::cheat_scan_tick();          // cvar-name cheat detection -> userinfo cod1x_ac
             patches::ruleset_tick();             // embedded PB ruleset (sv_competitive_ruleset) -> userinfo cod1x_rs
             patches::rinput_tick();              // follow m_rinput, publish m_rinput_hz
+            patches::session_report_tick();      // one 'bilan' line a minute in the log
         }
         patches::widescreen_update_stretch();    // drive the stretched-mode vfov ratio (live)
         patches::gamma_fix_tick();               // per-monitor gamma: focus/monitor transitions
@@ -201,6 +203,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             }
             break;
         case DLL_PROCESS_DETACH:
+            patches::session_report_final("fin");
             patches::rinput_shutdown();      // unregister the raw input device + join its thread
             patches::gamma_fix_shutdown();   // never leave the desktop gamma modified
             patches::fps_cap_shutdown();

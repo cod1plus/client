@@ -2,6 +2,7 @@
 #include "video/mode_guard.h"
 #include "core/logger.h"
 #include "features/demo_upload.h"
+#include "core/session_report.h"
 
 #include <cstring>
 #include <cstdio>
@@ -159,6 +160,8 @@ LRESULT CALLBACK cod1reloaded_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
     }
 
     if (msg == WM_CLOSE || msg == WM_DESTROY) {
+        // ExitProcess often skips DLL_PROCESS_DETACH: the last 'bilan' line goes here
+        session_report_final("fin");
         demo_upload_trigger_now();
     }
 
