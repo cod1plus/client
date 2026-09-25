@@ -1,9 +1,9 @@
 # cod1reloaded — Changelog
 
-## v1.6.8 correctif (2026-09-25)
+## v1.6.9 (2026-09-25)
 
-Même base que la 1.6.8 publiée, plus deux corrections ; la version reste « 1.6.8 » pour que l'updater
-ne réclame rien.
+Base : la 1.6.8 (ruleset compilé en v6) + le correctif du limiteur de frames, rien d'autre — pas de
+home screen ni de menu Ctrl+M de la branche dev.
 
 ### ⏱️ Frame limiter : horloge du moteur, plus de frame doublée
 - Depuis la 1.6.3 le limiteur écrivait dans `com_frameTime` des millisecondes depuis le **démarrage de
