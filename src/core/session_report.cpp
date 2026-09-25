@@ -50,9 +50,11 @@ void report(const char* tag, DWORD now) {
         }
     }
 
-    char gpu[64] = "GPU -";
+    char gpu[64];
     if (gpu_frames > 0)
         snprintf(gpu, sizeof(gpu), "GPU %.2f ms (max %.1f)", gpu_avg / 1000.0, gpu_max / 1000.0);
+    else
+        snprintf(gpu, sizeof(gpu), "GPU sync %s", gpu_sync_state());
 
     const double fps = fs.frames * 1000.0 / (double)elapsed;
     logger::logf("bilan %s: %.1f fps (%ld frames, %ld en retard, %ld longues, max %.1f ms) | %s | "
