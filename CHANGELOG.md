@@ -2,6 +2,22 @@
 
 ## Non publié
 
+### ⏱️ Frame limiter : horloge du moteur, plus de frame doublée
+- Depuis la 1.6.3 le limiteur écrivait dans `com_frameTime` des millisecondes depuis le **démarrage de
+  Windows** (QPC) alors que le moteur horodate ses événements clavier en millisecondes depuis le
+  **lancement du jeu** (`Sys_Milliseconds`). `CL_KeyState` / `IN_KeyUp` comparent les deux : un appui
+  comptait pour une frame entière, un relâchement perdait sa fraction — le mouvement clavier (strafe,
+  peek, saut) était quantifié à la frame au lieu d'être précis à la milliseconde. Le limiteur rend
+  désormais une horloge continue calée sur l'époque du moteur (recalée s'il dérive).
+- Après un réveil tardif, le delta entier du moteur pouvait lire 3 au lieu de 4 : le second appel
+  attendait la **prochaine** échéance et la frame doublait (8 ms à 250 fps). Ce second appel est
+  reconnu et finit la milliseconde. `tools/test_frame_limiter.cpp` rejoue la boucle de `Com_Frame`
+  contre le vrai code : 0 frame doublée, 250,00 fps exacts (l'ancien : 74 doublées sur 1500 avec une
+  frame lente toutes les 20, et 3,8 jours d'écart d'horloge).
+- Windows 11 : la résolution 1 ms du timer est conservée même si la fenêtre est masquée
+  (`PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION`) ; sans quoi `Sleep(1)` dure 15,6 ms et le
+  jeu tombe à ~62 fps sous un overlay plein écran.
+
 ### 📦 Bouton « INSTALL HD TEXTURES » (menu 1.6X, onglet Files)
 - Même mécanique que le bouton PAM (manifeste, SHA-256, `.new` si fichier en cours d'utilisation),
   cible le dossier que le manifeste nomme (`mod main` pour un pack de textures). Ligne optionnelle
