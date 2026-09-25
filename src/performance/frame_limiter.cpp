@@ -90,6 +90,7 @@ bool          g_applied = false;
 LONGLONG      g_prev_end = 0;        // QPC at the previous frame's return
 LONGLONG      g_st_max_ticks = 0;
 long          g_st_frames = 0, g_st_late = 0, g_st_long = 0;
+long          g_st_total = 0;        // frames since the start, never reset
 
 int read_com_maxfps_dvar() {
     HMODULE exe = GetModuleHandleA(NULL);
@@ -132,6 +133,7 @@ void end_of_wait(const FrameLimiterEngine& e, LONGLONG now, bool reloop, LONGLON
         ++g_st_late;
     } else {
         ++g_st_frames;
+        ++g_st_total;
         if (g_prev_end) {
             const LONGLONG period = now - g_prev_end;
             if (period > g_st_max_ticks) g_st_max_ticks = period;
@@ -181,6 +183,8 @@ void frame_limiter_stats(FrameLimiterStats* out, bool reset) {
     }
     if (reset) { g_st_frames = 0; g_st_late = 0; g_st_long = 0; g_st_max_ticks = 0; }
 }
+
+long frame_limiter_total_frames() { return g_st_total; }
 
 void frame_limiter_reset() {
     g_prev_end = 0;

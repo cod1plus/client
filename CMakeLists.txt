@@ -56,6 +56,7 @@ set(COD1RELOADED_SOURCES
     src/performance/gpu_sync.cpp
     src/core/session_report.cpp
     src/core/ini_lock.cpp
+    src/netcode/net_diag.cpp
     src/features/updater.cpp
     src/features/demo_upload.cpp
     src/core/toast.cpp
@@ -93,8 +94,19 @@ add_library(mss32 SHARED
     src/mss32_proxy.def
 )
 
-target_include_directories(cod1reloaded PRIVATE src)
-target_include_directories(mss32 PRIVATE src)
+# The shipped cod1reloaded.ini goes into the DLL as a byte array (build/generated/
+# ini_template.h): a launch without the file next to mss32.dll writes it back instead of
+# running the compiled defaults in silence. Re-generated whenever the .ini changes.
+file(READ "${CMAKE_SOURCE_DIR}/cod1reloaded.ini" COD1RELOADED_INI_HEX HEX)
+string(LENGTH "${COD1RELOADED_INI_HEX}" _ini_hex_len)
+math(EXPR COD1RELOADED_INI_SIZE "${_ini_hex_len} / 2")
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," COD1RELOADED_INI_BYTES "${COD1RELOADED_INI_HEX}")
+configure_file("${CMAKE_SOURCE_DIR}/src/core/ini_template.h.in"
+               "${CMAKE_BINARY_DIR}/generated/ini_template.h" @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/cod1reloaded.ini")
+
+target_include_directories(cod1reloaded PRIVATE src "${CMAKE_BINARY_DIR}/generated")
+target_include_directories(mss32 PRIVATE src "${CMAKE_BINARY_DIR}/generated")
 
 # Build a DLL that never touches the mouse at all, for bisecting input problems.
 # `raw_mouse_input = off` in the ini is NOT the same thing: it only sets the default of

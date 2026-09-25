@@ -60,6 +60,7 @@ struct FrameLimiterStats {
     double max_frame_ms;  // longest frame period
 };
 void frame_limiter_stats(FrameLimiterStats* out, bool reset);   // out may be null
+long frame_limiter_total_frames();   // frames since the patch went in, never reset (net_diag)
 
 // One call of Com_Frame's spin loop: waits for the frame's deadline, returns the value
 // Com_Frame stores in com_frameTime (see frame_limiter.cpp for the two rules it obeys).

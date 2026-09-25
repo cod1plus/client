@@ -1,6 +1,26 @@
 # cod1reloaded — Changelog
 
-## Non publié
+## Non publié (correctif 1.6.9, build de test du 2026-09-26)
+
+### 📄 `cod1reloaded.ini` absent = recréé, plus jamais les défauts compilés en silence
+- Un joueur (1.6.9, D:\) jouait SANS `cod1reloaded.ini` à côté de `mss32.dll` : `load_config` sortait
+  sans une ligne de log, aucun verrou, et les défauts compilés s'appliquaient — dont `smoothness_cpu_cores`
+  = 2, soit le jeu entier épinglé sur UN cœur physique (mask 0x3) : 1 200 à 2 800 frames longues par
+  minute, `glFinish` à 54 % (pilote GPU affamé), gpu_sync qui se coupe. Le fichier livré est désormais
+  embarqué dans la DLL (`build/generated/ini_template.h`, généré par CMake depuis `cod1reloaded.ini`) et
+  réécrit tel quel quand il manque, avec une ligne `*** cod1reloaded.ini was MISSING …` dans le log ;
+  si l'écriture échoue, les valeurs verrouillées sont forcées quand même et le log le dit.
+- Défauts compilés alignés sur l'ini livré : `smoothness_cpu_cores` 2 → 0, working set max 512 → 5000 MB.
+- `tools/test_ini_template.cpp` : copie embarquée identique octet pour octet, verrou sans effet dessus.
+
+### 📡 Diagnostic réseau dans le bilan (pour les 999)
+- Hook des imports `WSOCK32.dll` `recvfrom`/`sendto` (le moteur les importe par ORDINAL, 17/20 :
+  `iat_hook_ordinal`). Le bilan gagne `net recu N pq (trou max X ms) envoye N pq (trou max X ms)`.
+- Quand un silence ≥ 0,8 s (ce qu'il faut pour un 999 à snaps 40) se termine alors qu'une partie était
+  en cours (≥ 10 paquets/s dans chaque sens la seconde d'avant), UNE ligne dit ce que le jeu faisait
+  pendant : `jeu gele (N frames)`, `reseau entrant ou serveur` (le jeu tournait et envoyait) ou
+  `anomalie client` (le jeu tournait, recevait, n'envoyait plus). Un silence encore ouvert après 1 s
+  est signalé par le watcher. 40 lignes max par session.
 
 ## v1.6.9 (2026-09-25)
 

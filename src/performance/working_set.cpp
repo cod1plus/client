@@ -5,10 +5,12 @@
 
 namespace patches {
 
+// same values as the shipped .ini, for a launch without one (the max is clamped to the
+// 32-bit address space in working_set_apply)
 WorkingSetConfig g_working_set_config = {
     /* enable  */ true,
     /* min_mb  */ 128,
-    /* max_mb  */ 512,
+    /* max_mb  */ 5000,
 };
 
 namespace {

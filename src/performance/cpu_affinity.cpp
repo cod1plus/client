@@ -5,8 +5,11 @@
 
 namespace patches {
 
+// 0 = no affinity, like the shipped .ini (and imposed by ini_lock since 1.6.9). The old
+// compiled default of 2 pinned a player whose .ini had gone missing to ONE physical core
+// (mask 0x3): stutter, GPU driver threads starved, gpu_sync switching itself off.
 CpuAffinityConfig g_cpu_affinity_config = {
-    /* cores_count */ 2,
+    /* cores_count */ 0,
     /* first_core  */ 0,
 };
 

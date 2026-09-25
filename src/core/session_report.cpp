@@ -3,6 +3,7 @@
 #include "core/logger.h"
 #include "performance/frame_limiter.h"
 #include "performance/gpu_sync.h"
+#include "netcode/net_diag.h"
 #include "video/mode_guard.h"
 #include "features/settings_menu.h"   // CODMP_CVAR_FINDVAR_VA
 #include "netcode/protocol_patch.h"   // CODMP_CVAR_COUNT_VA
@@ -57,12 +58,21 @@ void report(const char* tag, DWORD now) {
     else
         snprintf(gpu, sizeof(gpu), "GPU sync %s", gpu_sync_state());
 
+    NetDiagStats ns;
+    net_diag_stats(&ns, true);
+    char net[96];
+    if (ns.rx_packets || ns.tx_packets)
+        snprintf(net, sizeof(net), "net recu %ld pq (trou max %.0f ms) envoye %ld pq (trou max %.0f ms)",
+                 ns.rx_packets, ns.rx_max_gap_ms, ns.tx_packets, ns.tx_max_gap_ms);
+    else
+        snprintf(net, sizeof(net), "net -");
+
     const double fps = fs.frames * 1000.0 / (double)elapsed;
     logger::logf("bilan %s: %.1f fps (%ld frames, %ld en retard, %ld longues, max %.1f ms) | %s | "
-                 "%dx%d @ %d Hz %s | com_maxfps %d | rinput %s",
+                 "%dx%d @ %d Hz %s | com_maxfps %d | rinput %s | %s",
                  tag, fps, fs.frames, fs.late, fs.long_frames, fs.max_frame_ms, gpu,
                  w, h, hz, exclusive ? "exclusif" : "fenetre",
-                 cvar_int("com_maxfps", 0), cvar_int("m_rinput", 0) ? "on" : "off");
+                 cvar_int("com_maxfps", 0), cvar_int("m_rinput", 0) ? "on" : "off", net);
 }
 
 }  // namespace
