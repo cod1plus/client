@@ -19,6 +19,10 @@ namespace patches {
 void menu_hooks_tick();                 // watcher thread: (re)install when the UI DLL is up
 bool ui_main_menu_active();             // "main" is the engine's top menu right now
 const char* ui_menu_top();              // its name ("" when none / unknown)
+// Any loaded menu by name (main thread): shown right now? / hide it (clears the
+// visible+focus flags like Menu_Close, without running its onClose script).
+bool ui_menu_visible(const char* name);
+void ui_menu_hide(const char* name);
 
 }  // namespace patches
 

@@ -71,10 +71,14 @@ set(COD1RELOADED_SOURCES
     src/netcode/antilag.cpp
     src/core/single_instance.cpp
     src/ui/gl_overlay.cpp
+    src/ui/ui_draw.cpp
     src/ui/modern_menu.cpp
     src/ui/home_menu.cpp
     src/ui/menu_hooks.cpp
     src/ui/player_preview.cpp
+    src/ui/streamer_hud.cpp
+    src/ui/game_image.cpp
+    src/ui/radar_map.cpp
 )
 
 add_library(cod1reloaded SHARED
@@ -130,10 +134,10 @@ target_link_options(mss32 PRIVATE
 )
 
 target_link_libraries(cod1reloaded PRIVATE
-    kernel32 user32 winmm wininet shell32 advapi32 gdiplus gdi32 opengl32
+    kernel32 user32 winmm wininet shell32 advapi32 gdiplus gdi32 opengl32 ole32
 )
 target_link_libraries(mss32 PRIVATE
-    kernel32 user32 winmm wininet shell32 advapi32 gdiplus gdi32 opengl32
+    kernel32 user32 winmm wininet shell32 advapi32 gdiplus gdi32 opengl32 ole32
 )
 
 set_target_properties(cod1reloaded PROPERTIES
@@ -147,3 +151,19 @@ set_target_properties(mss32 PROPERTIES
     OUTPUT_NAME "mss32"
     RUNTIME_OUTPUT_DIRECTORY "${COD1RELOADED_OUTPUT_DIR}"
 )
+
+# Offline render of the native streamer overlay (tools/hud_preview/main.cpp): the same
+# drawing code as the DLL, into a PNG - how its look is checked before shipping.
+#     mingw32-make hud_preview && build/hud_preview.exe scene.txt out.png
+add_executable(hud_preview EXCLUDE_FROM_ALL
+    tools/hud_preview/main.cpp
+    src/ui/ui_draw.cpp
+    src/ui/streamer_hud.cpp
+    src/ui/game_image.cpp
+    src/ui/radar_map.cpp
+)
+target_include_directories(hud_preview PRIVATE src)
+target_compile_options(hud_preview PRIVATE -Wall -Wextra -Wno-unused-parameter -O2)
+target_link_options(hud_preview PRIVATE -static -static-libgcc -static-libstdc++)
+target_link_libraries(hud_preview PRIVATE user32 gdi32 gdiplus opengl32 ole32)
+set_target_properties(hud_preview PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${COD1RELOADED_OUTPUT_DIR}")

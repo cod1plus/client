@@ -21,10 +21,12 @@
 //   engine is fixed-function GL1.x, so immediate mode is both safe and simplest.
 
 #include "ui/gl_overlay.h"
+#include "ui/ui_draw.h"
 #include "core/wndhub.h"
 #include "features/news.h"
 #include "ui/modern_menu.h"
 #include "ui/home_menu.h"
+#include "ui/streamer_hud.h"
 #include "core/iat.h"
 #include "core/logger.h"
 #include "input/rinput.h"
@@ -78,283 +80,13 @@ bool    g_prev_down = false;
 bool    g_saw_raw = false;   // raw tap delivered: ignore the WM_MOUSEMOVE fallback
 POINT   g_last_move = { -1, -1 };
 int     g_vw = 0, g_vh = 0;         // viewport size this frame
-float   g_alpha_mul = 1.0f;
 float   g_dt = 0.016f;
 DWORD   g_last_tick = 0;
-std::map<long, float> g_anim;
-HGLRC   g_glrc = NULL;              // vid_restart detector: context change = dead textures
-
-// ---------------------------------------------------------------- text cache
-struct TextTex { GLuint id = 0; int w = 0, h = 0; };
-std::map<std::string, TextTex> g_text_cache;
-
-TextTex make_text(const char* utf8, int px, int weight) {
-    TextTex out;
-    wchar_t wide[512];
-    int wn = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide, 511);
-    if (wn <= 0) return out;
-    wide[511] = 0;
-
-    HDC dc = CreateCompatibleDC(NULL);
-    if (!dc) return out;
-    HFONT font = CreateFontW(-px, 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                             DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                             L"Segoe UI");
-    HGDIOBJ of = SelectObject(dc, font);
-    SIZE sz = {};
-    GetTextExtentPoint32W(dc, wide, wn - 1, &sz);
-    int w = sz.cx + 2, h = sz.cy + 2;
-
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
-    bmi.bmiHeader.biWidth = w;
-    bmi.bmiHeader.biHeight = -h;                    // top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    void* bits = nullptr;
-    HBITMAP bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
-    if (bmp && bits) {
-        HGDIOBJ ob = SelectObject(dc, bmp);
-        RECT rc = { 0, 0, w, h };
-        SetBkColor(dc, RGB(0, 0, 0));
-        SetTextColor(dc, RGB(255, 255, 255));
-        ExtTextOutW(dc, 1, 1, ETO_OPAQUE, &rc, wide, wn - 1, NULL);
-        GdiFlush();
-
-        // luminance of white-on-black == coverage == alpha
-        unsigned char* a = (unsigned char*)malloc((size_t)w * h);
-        const DWORD* p = (const DWORD*)bits;
-        for (int i = 0; i < w * h; ++i) a[i] = (unsigned char)(p[i] & 0xff);
-
-        glGenTextures(1, &out.id);
-        glBindTexture(GL_TEXTURE_2D, out.id);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, w, h, 0,
-                     GL_ALPHA, GL_UNSIGNED_BYTE, a);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        free(a);
-        out.w = w; out.h = h;
-        SelectObject(dc, ob);
-    }
-    if (bmp) DeleteObject(bmp);
-    SelectObject(dc, of);
-    DeleteObject(font);
-    DeleteDC(dc);
-    return out;
-}
-
-ULONG_PTR g_gdiplus_token = 0;
-bool      g_gdiplus_up    = false;
-
-void ensure_gdiplus() {
-    if (g_gdiplus_up) return;
-    Gdiplus::GdiplusStartupInput in;
-    if (Gdiplus::GdiplusStartup(&g_gdiplus_token, &in, nullptr) == Gdiplus::Ok)
-        g_gdiplus_up = true;
-}
-
-// GDI+ locks 32bpp bitmaps as BGRA in memory (little-endian); GL wants RGBA - swap
-// the R/B bytes per pixel once at load time rather than fighting GL_BGRA support
-// across whatever ancient GL1.x driver this idTech3 build ends up on.
-TextTex load_image(const char* path) {
-    TextTex out;
-    ensure_gdiplus();
-    if (!g_gdiplus_up) return out;
-
-    wchar_t wpath[MAX_PATH];
-    MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, MAX_PATH);
-    Gdiplus::Bitmap bmp(wpath);
-    if (bmp.GetLastStatus() != Gdiplus::Ok) return out;
-
-    int w = (int)bmp.GetWidth(), h = (int)bmp.GetHeight();
-    if (w <= 0 || h <= 0) return out;
-
-    Gdiplus::BitmapData bd;
-    Gdiplus::Rect rc(0, 0, w, h);
-    if (bmp.LockBits(&rc, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &bd) != Gdiplus::Ok)
-        return out;
-
-    unsigned char* px = (unsigned char*)malloc((size_t)w * h * 4);
-    for (int y = 0; y < h; ++y) {
-        const unsigned char* src = (const unsigned char*)bd.Scan0 + (size_t)y * bd.Stride;
-        unsigned char* dst = px + (size_t)y * w * 4;
-        for (int x = 0; x < w; ++x) {
-            dst[x * 4 + 0] = src[x * 4 + 2];   // B -> R
-            dst[x * 4 + 1] = src[x * 4 + 1];   // G
-            dst[x * 4 + 2] = src[x * 4 + 0];   // R -> B
-            dst[x * 4 + 3] = src[x * 4 + 3];   // A
-        }
-    }
-    bmp.UnlockBits(&bd);
-
-    glGenTextures(1, &out.id);
-    glBindTexture(GL_TEXTURE_2D, out.id);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    free(px);
-    out.w = w; out.h = h;
-    return out;
-}
-
-const TextTex& get_text(const char* utf8, int px, int weight) {
-    char key[560];
-    snprintf(key, sizeof(key), "%d|%d|%s", px, weight, utf8);
-    auto it = g_text_cache.find(key);
-    if (it != g_text_cache.end()) return it->second;
-    return g_text_cache.emplace(key, make_text(utf8, px, weight)).first->second;
-}
-
-inline void set_color(DWORD c) {
-    float a = ((c >> 24) & 0xff) * g_alpha_mul;
-    glColor4ub((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff,
-               (GLubyte)(a > 255 ? 255 : a));
-}
-
-// ------------------------------------------------------------------ drawing
-void arc_fan(float cx, float cy, float r, float a0, float a1) {
-    for (int i = 0; i <= 6; ++i) {
-        float a = a0 + (a1 - a0) * i / 6.0f;
-        glVertex2f(cx + cosf(a) * r, cy + sinf(a) * r);
-    }
-}
 
 }  // namespace
 
-void ui_rect(float x, float y, float w, float h, DWORD rgba) {
-    glDisable(GL_TEXTURE_2D);
-    set_color(rgba);
-    glBegin(GL_QUADS);
-    glVertex2f(x, y); glVertex2f(x + w, y);
-    glVertex2f(x + w, y + h); glVertex2f(x, y + h);
-    glEnd();
-}
-
-void ui_rect_rounded(float x, float y, float w, float h, float r, DWORD rgba) {
-    if (r <= 0.5f) { ui_rect(x, y, w, h, rgba); return; }
-    if (r > w / 2) r = w / 2;
-    if (r > h / 2) r = h / 2;
-    glDisable(GL_TEXTURE_2D);
-    set_color(rgba);
-    const float PI = 3.14159265f;
-    glBegin(GL_TRIANGLE_FAN);
-    glVertex2f(x + w / 2, y + h / 2);
-    arc_fan(x + r,     y + r,     r, PI,          PI * 1.5f);   // top-left
-    arc_fan(x + w - r, y + r,     r, PI * 1.5f,   PI * 2.0f);   // top-right
-    arc_fan(x + w - r, y + h - r, r, 0,           PI * 0.5f);   // bottom-right
-    arc_fan(x + r,     y + h - r, r, PI * 0.5f,   PI);          // bottom-left
-    glVertex2f(x, y + r);                                       // close the fan
-    glEnd();
-}
-
-void ui_rect_border(float x, float y, float w, float h, float r, float th, DWORD rgba) {
-    // two rounded rects would need stenciling; a line loop is enough at 1-2px
-    (void)r;
-    glDisable(GL_TEXTURE_2D);
-    set_color(rgba);
-    glLineWidth(th);
-    glBegin(GL_LINE_LOOP);
-    glVertex2f(x, y); glVertex2f(x + w, y);
-    glVertex2f(x + w, y + h); glVertex2f(x, y + h);
-    glEnd();
-    glLineWidth(1.0f);
-}
-
-void ui_clip_push(float x, float y, float w, float h) {
-    if (w < 0) w = 0; if (h < 0) h = 0;
-    glEnable(GL_SCISSOR_TEST);
-    glScissor((GLint)x, (GLint)(g_vh - (y + h)), (GLsizei)w, (GLsizei)h);   // GL: y up
-}
-void ui_clip_pop() { glDisable(GL_SCISSOR_TEST); }
-
-void ui_ellipse(float cx, float cy, float rx, float ry, float th, DWORD rgba) {
-    glDisable(GL_TEXTURE_2D);
-    set_color(rgba);
-    glLineWidth(th);
-    glBegin(GL_LINE_LOOP);
-    for (int i = 0; i < 40; ++i) {
-        float a = 2.0f * 3.14159265f * i / 40.0f;
-        glVertex2f(cx + cosf(a) * rx, cy + sinf(a) * ry);
-    }
-    glEnd();
-    glLineWidth(1.0f);
-}
-
-float ui_text(float x, float y, int px, int weight, DWORD rgba, const char* utf8) {
-    const TextTex& t = get_text(utf8, px, weight);
-    if (!t.id) return 0;
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, t.id);
-    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-    set_color(rgba);
-    glBegin(GL_QUADS);
-    glTexCoord2f(0, 0); glVertex2f(x, y);
-    glTexCoord2f(1, 0); glVertex2f(x + t.w, y);
-    glTexCoord2f(1, 1); glVertex2f(x + t.w, y + t.h);
-    glTexCoord2f(0, 1); glVertex2f(x, y + t.h);
-    glEnd();
-    return (float)t.w;
-}
-
-bool ui_image_cover(float x, float y, float w, float h, const char* path) {
-    char key[560];
-    snprintf(key, sizeof(key), "img:%s", path);
-    auto it = g_text_cache.find(key);
-    if (it == g_text_cache.end()) {
-        it = g_text_cache.emplace(key, load_image(path)).first;
-    }
-    const TextTex& t = it->second;
-    if (!t.id) return false;
-
-    float img_ar = (float)t.w / t.h, box_ar = w / h;
-    float u0 = 0, u1 = 1, v0 = 0, v1 = 1;
-    if (img_ar > box_ar) {                    // image wider than box: crop left/right
-        float keep = box_ar / img_ar;
-        u0 = (1.0f - keep) * 0.5f; u1 = 1.0f - u0;
-    } else {                                   // image taller than box: crop top/bottom
-        float keep = img_ar / box_ar;
-        v0 = (1.0f - keep) * 0.5f; v1 = 1.0f - v0;
-    }
-
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, t.id);
-    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-    set_color(0xFFFFFFFF);
-    glBegin(GL_QUADS);
-    glTexCoord2f(u0, v0); glVertex2f(x, y);
-    glTexCoord2f(u1, v0); glVertex2f(x + w, y);
-    glTexCoord2f(u1, v1); glVertex2f(x + w, y + h);
-    glTexCoord2f(u0, v1); glVertex2f(x, y + h);
-    glEnd();
-    return true;
-}
-
-float ui_text_width(int px, int weight, const char* utf8) {
-    return (float)get_text(utf8, px, weight).w;
-}
-
 const UiInput& ui_input() { return g_in; }
 
-float ui_smooth(long key, float target, float speed) {
-    auto it = g_anim.find(key);
-    if (it == g_anim.end()) it = g_anim.emplace(key, target).first;
-    float k = 1.0f - expf(-speed * g_dt);
-    it->second += (target - it->second) * k;
-    if (it->second > target - 0.001f && it->second < target + 0.001f)
-        it->second = target;
-    return it->second;
-}
-void ui_anim_set(long key, float v) { g_anim[key] = v; }
-void ui_alpha(float mul) { g_alpha_mul = mul < 0 ? 0 : (mul > 1 ? 1 : mul); }
-float ui_alpha_get() { return g_alpha_mul; }
 void ui_key_capture(bool on) { g_keycap = on; if (!on) g_in.vk = 0; }
 bool overlay_visible() { return g_mode != 0; }
 HWND overlay_game_window() { return wndhub_window(); }
@@ -563,38 +295,6 @@ void hotkey_poll(HWND w) {
     if (g_mode == 0) overlay_toggle(true); else overlay_toggle(false);
 }
 
-// 2D bracket around anything we draw at SwapBuffers: the engine's GL state is saved
-// and restored around it, and an ortho projection in window pixels is set up.
-void begin_2d() {
-    // vid_restart destroys the GL context; every cached texture id then belongs to
-    // a dead context and draws as garbage squares (seen live 2026-08-10: the whole
-    // menu turned into black-and-white blocks). Forget the cache and re-rasterise
-    // lazily in the new context.
-    HGLRC rc = wglGetCurrentContext();
-    if (rc != g_glrc) { g_glrc = rc; g_text_cache.clear(); }
-    glPushAttrib(GL_ALL_ATTRIB_BITS);
-    glPushClientAttrib(GL_CLIENT_ALL_ATTRIB_BITS);
-    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
-    glOrtho(0, g_vw, g_vh, 0, -1, 1);
-    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
-    glViewport(0, 0, g_vw, g_vh);
-    glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
-    glDisable(GL_LIGHTING);   glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_ALPHA_TEST); glDisable(GL_FOG);
-    glDisableClientState(GL_VERTEX_ARRAY);
-    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-    glDisableClientState(GL_COLOR_ARRAY);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-}
-
-void end_2d() {
-    glMatrixMode(GL_MODELVIEW); glPopMatrix();
-    glMatrixMode(GL_PROJECTION); glPopMatrix();
-    glPopClientAttrib();
-    glPopAttrib();
-}
-
 // ------------------------------------------------------------------- news card
 // "MAJOR IN PROGRESS" and the like, fed by news.txt online (features/news.cpp), on
 // the MAIN MENU only (drawn while no cgame is loaded). Broadcast lower-third, not a
@@ -638,7 +338,7 @@ void draw_news_card(HWND wnd) {
     if (!s_since) s_since = now ? now : 1;
     for (char* c = title; *c; ++c) *c = (char)toupper((unsigned char)*c);
 
-    begin_2d();
+    ui_begin_2d(g_vw, g_vh);
     // ease in over 700 ms: fade + a slide of a few pixels from the right
     float t = (now - s_since) / 700.0f; if (t > 1) t = 1;
     const float ease = t * t * (3 - 2 * t);
@@ -706,7 +406,7 @@ void draw_news_card(HWND wnd) {
         text_tracked(x1 - w_hint, y + 11 * sc, px_hint, 600, UI_MUTED, hint, tr_hint);
     }
     ui_alpha(1.0f);
-    end_2d();
+    ui_end_2d();
 }
 
 // ------------------------------------------------------------------- swap
@@ -736,7 +436,7 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
         GetClientRect(wnd, &rc);
         g_vw = rc.right; g_vh = rc.bottom;
         if (g_vw > 0 && g_vh > 0) {
-            begin_2d();
+            ui_begin_2d(g_vw, g_vh);
 
             // PRIMARY cursor source: the raw-input tap. WM_MOUSEMOVE cannot do
             // this job - Windows coalesces it to the latest position and the
@@ -758,6 +458,7 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
             DWORD now = GetTickCount();
             g_dt = g_last_tick ? (now - g_last_tick) / 1000.0f : 0.016f;
             if (g_dt > 0.05f) g_dt = 0.05f;
+            ui_frame_dt(g_dt);
             g_last_tick = now;
 
             g_in.clicked = g_in.down && !g_prev_down;
@@ -772,11 +473,11 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
             // cursor: small triangle pointer, drawn last
             float mx = g_in.mx, my = g_in.my;
             glDisable(GL_TEXTURE_2D);
-            set_color(0xFF000000);
+            ui_set_color(0xFF000000);
             glBegin(GL_TRIANGLES);
             glVertex2f(mx, my); glVertex2f(mx + 15, my + 6); glVertex2f(mx + 6, my + 15);
             glEnd();
-            set_color(0xFFFFFFFF);
+            ui_set_color(0xFFFFFFFF);
             glBegin(GL_TRIANGLES);
             glVertex2f(mx + 1, my + 2); glVertex2f(mx + 12, my + 6.5f); glVertex2f(mx + 6.5f, my + 12);
             glEnd();
@@ -784,11 +485,28 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
             g_in.wheel = 0;
             g_in.vk = 0;                        // capture events are one-frame
 
-            end_2d();
+            ui_end_2d();
         }
     } else if (g_mode == 0 && wnd) {
         // no menu open: the announcement card, main menu only (no cgame = no game loaded)
         draw_news_card(wnd);
+        // in game, PAM streamer team: the native caster overlay (ui/streamer_hud.cpp)
+        if (streamer_hud_frame()) {
+            RECT rc;
+            GetClientRect(wnd, &rc);
+            g_vw = rc.right; g_vh = rc.bottom;
+            if (g_vw > 0 && g_vh > 0) {
+                const DWORD now = GetTickCount();
+                g_dt = g_last_tick ? (now - g_last_tick) / 1000.0f : 0.016f;
+                if (g_dt > 0.05f) g_dt = 0.05f;
+                ui_frame_dt(g_dt);
+                g_last_tick = now;
+                ui_begin_2d(g_vw, g_vh);
+                streamer_hud_draw((float)g_vw, (float)g_vh);
+                ui_alpha(1.0f);
+                ui_end_2d();
+            }
+        }
     }
     return g_orig_swap ? g_orig_swap(dc) : FALSE;
 }

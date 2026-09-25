@@ -55,10 +55,60 @@ void ui_key_capture(bool on);
 // callers can fall back to a flat colour.
 bool ui_image_cover(float x, float y, float w, float h, const char* path);
 
+// Images decoded from memory (e.g. a file read out of a pk3 through the engine's
+// filesystem), cached under `key`. ui_image_known: already decoded (or failed) -
+// load only once. ui_image_draw stretches it over [x,y,w,h] (no crop), tinted by rgba.
+bool ui_image_known(const char* key);
+bool ui_image_load_mem(const char* key, const void* data, int len);
+bool ui_image_draw(float x, float y, float w, float h, const char* key, DWORD rgba);
+
+// Filled triangle and a straight line (window pixels).
+void ui_triangle(float x1, float y1, float x2, float y2, float x3, float y3, DWORD rgba);
+void ui_line(float x1, float y1, float x2, float y2, float th, DWORD rgba);
+
 // Clip everything drawn until ui_clip_pop() to a rectangle (window pixels, y down).
 // Not nested.
 void ui_clip_push(float x, float y, float w, float h);
 void ui_clip_pop();
+// A horizontal scale set on the modelview (glScalef) for the drawing that follows:
+// ui_clip_push rectangles are then given in those scaled coordinates. 1 = none.
+void ui_clip_xscale(float s);
+
+// --- extended 2D (ui/ui_draw.cpp) --------------------------------------------
+// Faces: Segoe UI (default) and Consolas for tracked small caps / tabular figures.
+enum UiFont { UI_FONT_SANS = 0, UI_FONT_MONO = 1 };
+// Text snapped to whole pixels. Weight = GDI weight (400 regular .. 900 black).
+float ui_text_font(float x, float y, int px, int weight, DWORD rgba, const char* utf8, int font);
+float ui_text_font_width(int px, int weight, const char* utf8, int font);
+float ui_text_font_height(int px, int weight, int font);   // line box of that size
+// Letter-spaced: every glyph placed apart by `tracking` extra pixels. Returns the width.
+float ui_text_tracked(float x, float y, int px, int weight, DWORD rgba, const char* s, float tracking, int font);
+float ui_text_tracked_width(int px, int weight, const char* s, float tracking, int font);
+
+// Anti-aliased shapes (feathered one-pixel rim). Polygons must be convex, x/y pairs.
+void ui_aa_rect(float x, float y, float w, float h, float r, DWORD rgba);           // r = corner radius
+void ui_aa_rect_vgrad(float x, float y, float w, float h, float r, DWORD top, DWORD bottom);
+void ui_aa_stroke_rect(float x, float y, float w, float h, float r, float th, DWORD rgba);
+void ui_aa_poly(const float* xy, int n, DWORD rgba);
+void ui_aa_poly_vgrad(const float* xy, int n, DWORD top, DWORD bottom);
+void ui_aa_poly_stroke(const float* xy, int n, float th, DWORD rgba);
+void ui_aa_disc(float cx, float cy, float r, DWORD rgba);
+void ui_aa_ring(float cx, float cy, float r, float th, DWORD rgba);
+void ui_aa_line(float x1, float y1, float x2, float y2, float th, DWORD rgba);
+// Soft drop shadow of a rounded rectangle, `blur` pixels of falloff.
+void ui_shadow(float x, float y, float w, float h, float r, float blur, DWORD rgba);
+// Axis-aligned gradients (no rim: meant for full-pixel boxes).
+void ui_rect_vgrad(float x, float y, float w, float h, DWORD top, DWORD bottom);
+void ui_rect_hgrad(float x, float y, float w, float h, DWORD left, DWORD right);
+
+// Textures from raw pixels (bytes R,G,B,A, rows top-down), cached under `key` until the
+// GL context changes. Uploading under an existing key replaces it. A failed upload (null
+// pixels) is remembered, so ui_tex_known also means "do not try again".
+bool ui_tex_known(const char* key);
+bool ui_tex_upload(const char* key, int w, int h, const void* rgba, bool repeat, bool mipmap);
+bool ui_tex_size(const char* key, int* w, int* h);
+bool ui_tex_draw(const char* key, float x, float y, float w, float h,
+                 float u0, float v0, float u1, float v1, DWORD rgba);
 
 // animation helpers (exponential smoothing, per-frame dt computed at swap)
 float ui_smooth(long key, float target, float speed);  // returns the eased value

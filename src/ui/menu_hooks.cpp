@@ -94,7 +94,31 @@ void scan_focused(uintptr_t base) {
     }
 }
 
+uintptr_t menu_slot(const char* name) {
+    const uintptr_t base = (uintptr_t)GetModuleHandleA("ui_mp_x86.dll");
+    if (!base || !name) return 0;
+    const int count = *(const int*)(base + RVA_MENUCOUNT);
+    if (count <= 0 || count > MENU_MAX) return 0;
+    for (int i = 0; i < count; ++i) {
+        const uintptr_t m = base + RVA_MENUS + (uintptr_t)i * MENU_STRIDE;
+        const char* n = *(const char* const*)(m + 0x20);
+        if (n && strcmp(n, name) == 0) return m;
+    }
+    return 0;
+}
+
 }  // namespace
+
+bool ui_menu_visible(const char* name) {
+    const uintptr_t m = menu_slot(name);
+    return m && (*(const int*)(m + 0x48) & 4);
+}
+
+void ui_menu_hide(const char* name) {
+    const uintptr_t m = menu_slot(name);
+    if (m && (*(const int*)(m + 0x48) & 6))
+        *(int*)(m + 0x48) &= ~6;              // what Menu_Close clears (no onClose script)
+}
 
 // ---- the C side of the hooks (main thread, inside the UI DLL's own calls) ----
 extern "C" void uih_on_activate(const char* name) { set_top(name); }
