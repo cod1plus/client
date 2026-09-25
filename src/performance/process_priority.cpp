@@ -61,6 +61,12 @@ typedef struct _COD1R_PWR_THROTTLING_STATE {
 } PROCESS_POWER_THROTTLING_STATE_LOCAL;
 #define PROCESS_POWER_THROTTLING_STATE_LOCAL_VERSION   1
 #define PROCESS_POWER_THROTTLING_EXECUTION_SPEED_LOCAL 0x1
+// Windows 11: a process whose window is occluded / minimized / invisible has its
+// timeBeginPeriod(1) IGNORED unless it opts out with this bit. The frame limiter sleeps
+// on that 1 ms resolution; without it a Sleep(1) lasts 15.6 ms and the game runs at
+// ~62 fps while a full-screen overlay covers it. Opt out (bit in ControlMask, clear in
+// StateMask = "do not ignore").
+#define PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION_LOCAL 0x4
 
 void disable_power_throttling_impl() {
     // SetProcessInformation is Win8+; resolve dynamically (Win7 just skips)
@@ -76,14 +82,20 @@ void disable_power_throttling_impl() {
 
     PROCESS_POWER_THROTTLING_STATE_LOCAL state = {};
     state.Version      = PROCESS_POWER_THROTTLING_STATE_LOCAL_VERSION;
-    state.ControlMask  = PROCESS_POWER_THROTTLING_EXECUTION_SPEED_LOCAL;
-    state.StateMask    = 0; // disabled
+    state.ControlMask  = PROCESS_POWER_THROTTLING_EXECUTION_SPEED_LOCAL |
+                         PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION_LOCAL;
+    state.StateMask    = 0; // both disabled: full speed, timer resolution always honoured
 
     if (fn(GetCurrentProcess(), 4, &state, sizeof(state))) {  // 4 = ProcessPowerThrottling
-        logger::logf("process_priority: power throttling disabled");
+        logger::logf("process_priority: power throttling disabled, 1 ms timer kept when occluded");
     } else {
-        logger::logf("process_priority: SetProcessInformation failed (err=%lu)",
-                     GetLastError());
+        // Windows 10 rejects the timer bit: ask for the execution speed alone
+        state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED_LOCAL;
+        if (fn(GetCurrentProcess(), 4, &state, sizeof(state)))
+            logger::logf("process_priority: power throttling disabled");
+        else
+            logger::logf("process_priority: SetProcessInformation failed (err=%lu)",
+                         GetLastError());
     }
 }
 

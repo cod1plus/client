@@ -1,5 +1,31 @@
 # cod1reloaded — Changelog
 
+## v1.6.8 correctif (2026-09-25)
+
+Même base que la 1.6.8 publiée, plus deux corrections ; la version reste « 1.6.8 » pour que l'updater
+ne réclame rien.
+
+### ⏱️ Frame limiter : horloge du moteur, plus de frame doublée
+- Depuis la 1.6.3 le limiteur écrivait dans `com_frameTime` des millisecondes depuis le **démarrage de
+  Windows** (QPC) alors que le moteur horodate ses événements clavier en millisecondes depuis le
+  **lancement du jeu** (`Sys_Milliseconds`). `CL_KeyState` / `IN_KeyUp` comparent les deux : un appui
+  comptait pour une frame entière, un relâchement perdait sa fraction — le mouvement clavier (strafe,
+  peek, saut) était quantifié à la frame au lieu d'être précis à la milliseconde. Le limiteur rend
+  désormais une horloge continue calée sur l'époque du moteur (recalée s'il dérive).
+- Après une frame en dépassement (plus de 4 ms à 250 fps), le delta entier du moteur pouvait lire 3 au
+  lieu de 4 : le second appel attendait la **prochaine** échéance et la frame suivante doublait (8 ms).
+  Selon la phase de la grille, c'était toutes les frames en dépassement ou aucune — les micro-lags
+  « parfois oui, parfois non ». Ce second appel est reconnu et finit la milliseconde.
+  `tools/test_frame_limiter.cpp` rejoue la boucle de `Com_Frame` contre le vrai code : 0 frame
+  doublée, 250,00 fps exacts (avant : 74 doublées sur 75 dépassements, 3,8 jours d'écart d'horloge).
+- Windows 11 : la résolution 1 ms du timer est conservée même si la fenêtre est masquée
+  (`PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION`) ; sans quoi `Sleep(1)` dure 15,6 ms et le
+  jeu tombe à ~62 fps sous un overlay plein écran.
+
+### 🧠 Working set
+- Tailles calculées en 64 bits (le maximum de 5000 MB de l'ini débordait à 904 MB), plafonnées à
+  l'espace d'adressage ; un minimum refusé par Windows ne fait plus perdre le maximum.
+
 ## v1.6.8 (2026-09-20)
 
 Base : la 1.6.7 (= code 1.6.5, la 1.6.6 est retirée) + le ruleset cvar de la 1.6.6, rien d'autre.
