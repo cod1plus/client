@@ -9,6 +9,7 @@
 
 #include <windows.h>
 #include <cstdio>
+#include <cstring>
 
 namespace patches {
 
