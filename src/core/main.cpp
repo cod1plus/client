@@ -147,8 +147,14 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             // apply pending update (rename .new -> .dll) before file gets locked
             patches::updater_apply_pending();
             logger::init(hModule);
-            logger::logf("cod1reloaded DLL_PROCESS_ATTACH (loaded as 0x%08x, version %s)",
-                         (unsigned)(uintptr_t)hModule, patches::COD1RELOADED_VERSION);
+            logger::logf("cod1reloaded DLL_PROCESS_ATTACH (loaded as 0x%08x, version %s%s)",
+                         (unsigned)(uintptr_t)hModule, patches::COD1RELOADED_VERSION,
+#ifdef COD1RELOADED_DEV_UNLOCK
+                         " DEV UNLOCK build - ini lock off, do not ship"
+#else
+                         ""
+#endif
+                         );
             patches::load_config(hModule);
 
             // must run before FS_InitFilesystem so the first pak scan picks it up (~150ms sync on cache miss)

@@ -165,6 +165,14 @@ int max_listed_hz() {
 }  // namespace
 
 void ini_lock_apply(const char* ini_path) {
+#ifdef COD1RELOADED_DEV_UNLOCK
+    // dev build: the file is the truth, nothing rewritten, nothing forced
+    char buf[32];
+    GetPrivateProfileStringA("cod1reloaded", "gpu_sync", "(absent)", buf, sizeof(buf), ini_path);
+    logger::logf("ini_lock: DEV UNLOCK BUILD - nothing imposed, cod1reloaded.ini taken as written "
+                 "(gpu_sync = %s); r_fullscreen / r_displayRefresh left to the engine. DO NOT SHIP", buf);
+    return;
+#endif
     std::vector<std::string> changes;
     const bool ok = rewrite_ini(ini_path, changes);
     force_values();
@@ -183,6 +191,9 @@ void ini_lock_apply(const char* ini_path) {
 }
 
 void ini_lock_tick() {
+#ifdef COD1RELOADED_DEV_UNLOCK
+    return;   // nothing imposed in a dev unlock build (see ini_lock_apply)
+#endif
     if (!engine_ready()) return;
     static DWORD s_last = 0;
     const DWORD now = GetTickCount();

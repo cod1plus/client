@@ -130,6 +130,20 @@ if (COD1RELOADED_NO_RINPUT)
     message(STATUS "cod1reloaded: output -> ${COD1RELOADED_OUTPUT_DIR}")
 endif()
 
+# Dev builds only: core/ini_lock.cpp imposes nothing - the seven locked keys are taken as
+# written in cod1reloaded.ini (e.g. gpu_sync = on to force the sync instead of auto) and
+# r_fullscreen / r_displayRefresh are left to the engine. The log says so at every launch.
+# Never ship this: the whole point of the lock is that everybody plays the same.
+#     cmake -S . -B build-devunlock -DCOD1RELOADED_DEV_UNLOCK=ON ...
+option(COD1RELOADED_DEV_UNLOCK "ini_lock imposes nothing: the .ini is taken as written (dev only)" OFF)
+if (COD1RELOADED_DEV_UNLOCK)
+    target_compile_definitions(cod1reloaded PRIVATE COD1RELOADED_DEV_UNLOCK=1)
+    target_compile_definitions(mss32 PRIVATE COD1RELOADED_DEV_UNLOCK=1)
+    set(COD1RELOADED_OUTPUT_DIR "${COD1RELOADED_OUTPUT_DIR}/devunlock")
+    message(STATUS "cod1reloaded: DEV UNLOCK - ini_lock imposes nothing (do not ship)")
+    message(STATUS "cod1reloaded: output -> ${COD1RELOADED_OUTPUT_DIR}")
+endif()
+
 target_compile_options(cod1reloaded PRIVATE
     -Wall -Wextra -Wno-unused-parameter
     -O2
