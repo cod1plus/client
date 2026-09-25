@@ -15,6 +15,10 @@ constexpr uintptr_t CODMP_RFULLSCREEN_ORIGINAL_PTR     = 0x005a7c54; // ptr to "
 struct FullscreenConfig {
     // gotcha: CVAR_ARCHIVE seta in config_mp.cfg overrides this default
     bool force_windowed_default;
+    // true when cod1reloaded.ini spells out `fullscreen = on/off`: with `on`, display_probe
+    // repairs a stale `seta r_fullscreen 0` in config_mp.cfg (see enforce_ini_fullscreen).
+    // A `1` in the config always wins - it is the player's own choice.
+    bool ini_key_present;
 };
 
 extern FullscreenConfig g_fullscreen_config;

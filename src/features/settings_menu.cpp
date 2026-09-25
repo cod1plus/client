@@ -344,6 +344,18 @@ void settings_menu_start() {
                  g_settings_menu_config.menu_name);
 }
 
+// r_displayRefresh is clamped to 200 by the ENGINE: R_Register does
+//   push 200.0f ; push 0.0f ; mov eax,1 ; call Cvar_CheckRange   (CoDMP.exe 0x4be6d0)
+// so `seta r_displayRefresh 320` becomes "200.000000", the driver has no 200 Hz mode at
+// most resolutions -> BADMODE -> the fallback path. A 2003 limit on 2026 panels (enzo,
+// 320 Hz, 2026-09-17). The imm32 of that push is the whole cap: lift it to 1000.
+void settings_menu_patch_refresh_cap() {
+    if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000) return;
+    const bool ok = poke_dword(CODMP_REFRESH_CAP_IMM_VA, 0x43480000u /* 200.0f */, 0x447a0000u /* 1000.0f */);
+    logger::logf("settings_menu: r_displayRefresh engine cap 200 -> 1000 @0x%08x %s",
+                 (unsigned)CODMP_REFRESH_CAP_IMM_VA, ok ? "patched" : "SKIPPED (bytes differ)");
+}
+
 // Called from apply_to_cgame() on every cgame (re)load, before CG_Init proceeds.
 void settings_menu_apply_to_cgame(HMODULE cgame) {
     if (!g_settings_menu_config.enable || !g_settings_menu_config.fov_unlock || !cgame) return;

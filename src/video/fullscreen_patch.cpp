@@ -7,6 +7,7 @@ namespace patches {
 
 FullscreenConfig g_fullscreen_config = {
     /* force_windowed_default */ true,
+    /* ini_key_present        */ false,
 };
 
 namespace {

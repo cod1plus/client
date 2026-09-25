@@ -173,4 +173,84 @@ void display_mode_guard() {
     }
 }
 
+namespace {
+
+// Position of the value of the LAST `seta r_fullscreen "N"` / `set r_fullscreen N` in
+// the buffer (the one the engine ends up with), or -1. The name must stand alone.
+long find_fullscreen_value(const char* buf, int* value, int* value_len) {
+    const char* name = "r_fullscreen";
+    const size_t nlen = strlen(name);
+    long pos = -1;
+    for (const char* p = strstr(buf, name); p; p = strstr(p + nlen, name)) {
+        if (p != buf && !is_sep(*(p - 1))) continue;
+        const char* v = p + nlen;
+        if (!is_sep(*v)) continue;
+        while (*v == ' ' || *v == '\t' || *v == '"') ++v;
+        if (*v < '0' || *v > '9') continue;
+        const char* e = v;
+        while (*e >= '0' && *e <= '9') ++e;
+        pos = (long)(v - buf);
+        *value = atoi(v);
+        *value_len = (int)(e - v);
+    }
+    return pos;
+}
+
+}  // namespace
+
+void enforce_ini_fullscreen() {
+    if (!g_fullscreen_config.ini_key_present) return;
+    const int want = g_fullscreen_config.force_windowed_default ? 0 : 1;
+
+    char* buf = nullptr;
+    if (!read_config_mp(&buf)) return;              // fresh install: default covers it
+    int have = -1, vlen = 0;
+    const long pos = find_fullscreen_value(buf, &have, &vlen);
+    if (pos < 0 || have == want) { free(buf); return; }
+
+    // ONE direction only. The mod's r_fullscreen default was "0" up to 1.6.8, and the
+    // engine writes every archived cvar back on exit, so a "0" in the config is
+    // ambiguous: it is what an older build left there for a player who never chose it
+    // (ini on, config 0 -> repaired below). A "1" can ONLY come from the player (vanilla
+    // Options menu, or the file): 1.6.6 rewrote it to 0 because the shipped .ini said
+    // `fullscreen = off`, which threw every exclusive-fullscreen player into a borderless
+    // window. Their choice stands; window_patch follows r_fullscreen live.
+    if (have == 1 && want == 0) {
+        logger::logf("display_probe: config_mp.cfg asks r_fullscreen 1 (exclusive) while "
+                     "cod1reloaded.ini says fullscreen = off - the config is the player's "
+                     "choice, keeping exclusive fullscreen");
+        free(buf);
+        return;
+    }
+
+    // rewrite just the digit(s), everything else byte-identical
+    char exe_path[MAX_PATH];
+    DWORD len = GetModuleFileNameA(NULL, exe_path, MAX_PATH);
+    if (len == 0 || len == MAX_PATH) { free(buf); return; }
+    char* slash = strrchr(exe_path, '\\');
+    if (!slash) { free(buf); return; }
+    *(slash + 1) = '\0';
+    char cfg_path[MAX_PATH];
+    if (snprintf(cfg_path, sizeof(cfg_path), "%smain\\config_mp.cfg", exe_path)
+        >= (int)sizeof(cfg_path)) { free(buf); return; }
+
+    const size_t total = strlen(buf);
+    FILE* f = fopen(cfg_path, "wb");
+    if (!f) {
+        logger::logf("display_probe: config_mp.cfg has r_fullscreen %d but the .ini says "
+                     "fullscreen = %s - cannot rewrite it (err=%lu)", have,
+                     want ? "on" : "off", GetLastError());
+        free(buf);
+        return;
+    }
+    fwrite(buf, 1, (size_t)pos, f);
+    fprintf(f, "%d", want);
+    fwrite(buf + pos + vlen, 1, total - (size_t)pos - (size_t)vlen, f);
+    fclose(f);
+    free(buf);
+    logger::logf("display_probe: config_mp.cfg had r_fullscreen %d but cod1reloaded.ini "
+                 "says fullscreen = %s -> rewritten to %d (an older build left it there; "
+                 "set the .ini key to what you want)", have, want ? "on" : "off", want);
+}
+
 }  // namespace patches

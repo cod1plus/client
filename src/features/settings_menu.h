@@ -26,6 +26,8 @@ extern SettingsMenuConfig g_settings_menu_config;
 //   MINCLAMP : CG_GetEffectiveFov min-80 branch 'jp +0x0a' (7A 0A) -> 'jmp +0x0a' (EB 0A)
 constexpr uintptr_t CGAME_FOV_CVAR_FLAGS_RVA  = 0x000769ec;
 constexpr uintptr_t CGAME_FOV_MINCLAMP_JP_RVA = 0x000344e6;
+// CoDMP.exe R_Register: `push 0x43480000` (200.0f) = the r_displayRefresh Cvar_CheckRange max
+constexpr uintptr_t CODMP_REFRESH_CAP_IMM_VA   = 0x004be6d1;
 
 // CoDMP.exe (base 0x400000) engine fns not already declared in other headers.
 constexpr uintptr_t CODMP_CVAR_FINDVAR_VA  = 0x0043b790; // cvar_t* Cvar_FindVar(name)
@@ -33,6 +35,7 @@ constexpr uintptr_t CODMP_CBUF_EXECTEXT_VA = 0x0042a180; // void Cbuf_ExecuteTex
 
 void settings_menu_start();                        // DllMain: log enable state
 void settings_menu_apply_to_cgame(HMODULE cgame);  // FOV unlock (idempotent, safe to re-run)
+void settings_menu_patch_refresh_cap();            // DllMain: lift the engine's r_displayRefresh 200 Hz cap
 void settings_menu_tick();                         // watcher thread: register cvars, poll key, poll ratio
 
 }  // namespace patches

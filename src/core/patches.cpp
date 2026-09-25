@@ -229,9 +229,12 @@ void load_config(HMODULE self_module) {
         bool windowed = read_ini_bool(ini_path, "force_windowed_default",
                                       g_fullscreen_config.force_windowed_default);
         char probe[16];
+        g_fullscreen_config.ini_key_present = false;
         if (GetPrivateProfileStringA("cod1reloaded", "fullscreen", "",
-                                     probe, sizeof(probe), ini_path) > 0)
+                                     probe, sizeof(probe), ini_path) > 0) {
             windowed = !read_ini_bool(ini_path, "fullscreen", !windowed);
+            g_fullscreen_config.ini_key_present = true;
+        }
         g_fullscreen_config.force_windowed_default = windowed;
     }
     g_window_config.borderless_enable = read_ini_bool(
