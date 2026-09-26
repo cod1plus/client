@@ -17,7 +17,7 @@ namespace {
 typedef void* (__cdecl* Cvar_FindVar_t)(const char*);
 constexpr int CV_STRING = 0x04;
 const char* kCacheName = "cod1reloaded-demos.idx";
-const char* kCacheMagic = "cod1x-demo-index 1";
+const char* kCacheMagic = "cod1x-demo-index 2";    // 2: maps per gamestate + kill segment (1 had the LAST map)
 
 std::vector<DemoItem> g_items;
 
@@ -119,7 +119,7 @@ void cache_load() {
         p = e + 1;
         const std::vector<std::string> f2 = split_tabs(line);
         if (f2.empty()) continue;
-        if (f2[0] == "D" && f2.size() >= 17) {
+        if (f2[0] == "D" && f2.size() >= 18) {
             CacheEntry ce;
             ce.size = _strtoui64(f2[2].c_str(), nullptr, 10);
             ce.mtime = _strtoui64(f2[3].c_str(), nullptr, 10);
@@ -137,9 +137,19 @@ void cache_load() {
             d.snapshots = atoi(f2[14].c_str());
             d.gamestates = atoi(f2[15].c_str());
             d.error = unesc(f2[16]);
+            {
+                const std::string ml = unesc(f2[17]);          // "german_town,mp_carentan"
+                size_t q = 0;
+                while (!ml.empty()) {
+                    const size_t c = ml.find(',', q);
+                    d.maps.push_back(ml.substr(q, c == std::string::npos ? std::string::npos : c - q));
+                    if (c == std::string::npos) break;
+                    q = c + 1;
+                }
+            }
             cur = &(g_cache[lower(unesc(f2[1]))] = ce);
             ++demos;
-        } else if (f2[0] == "K" && f2.size() >= 13 && cur) {
+        } else if (f2[0] == "K" && f2.size() >= 14 && cur) {
             DemoKill k;
             k.server_time = atoi(f2[1].c_str());
             k.t_ms = atoi(f2[2].c_str());
@@ -152,6 +162,7 @@ void cache_load() {
             k.attacker_name = unesc(f2[9]);
             k.victim_name = unesc(f2[10]);
             k.weapon_name = unesc(f2[11]);
+            k.segment = atoi(f2[12].c_str());
             cur->info.kills.push_back(k);
         }
     }
@@ -167,15 +178,18 @@ void cache_save() {
     fprintf(f, "%s\n", kCacheMagic);
     for (const auto& kv : g_cache) {
         const DemoInfo& d = kv.second.info;
-        fprintf(f, "D\t%s\t%llu\t%llu\t%d\t%s\t%s\t%s\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
+        std::string maps;
+        for (size_t i = 0; i < d.maps.size(); ++i) { if (i) maps += ','; maps += d.maps[i]; }
+        fprintf(f, "D\t%s\t%llu\t%llu\t%d\t%s\t%s\t%s\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\n",
                 esc(kv.first).c_str(), (unsigned long long)kv.second.size, (unsigned long long)kv.second.mtime,
                 d.ok ? 1 : 0, esc(d.map).c_str(), esc(d.gametype).c_str(), esc(d.hostname).c_str(),
                 d.recorder, esc(d.recorder_name).c_str(), d.first_time, d.last_time, d.duration_ms,
-                d.messages, d.snapshots, d.gamestates, esc(d.error).c_str());
+                d.messages, d.snapshots, d.gamestates, esc(d.error).c_str(), esc(maps).c_str());
         for (const DemoKill& k : d.kills)
-            fprintf(f, "K\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t\n",
+            fprintf(f, "K\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%d\t\n",
                     k.server_time, k.t_ms, k.attacker, k.victim, k.weapon, k.mod, k.pov, k.pov_weapon,
-                    esc(k.attacker_name).c_str(), esc(k.victim_name).c_str(), esc(k.weapon_name).c_str());
+                    esc(k.attacker_name).c_str(), esc(k.victim_name).c_str(), esc(k.weapon_name).c_str(),
+                    k.segment);
     }
     const bool ok = fclose(f) == 0;
     if (!ok || !MoveFileExA(tmp.c_str(), cp.c_str(), MOVEFILE_REPLACE_EXISTING)) DeleteFileA(tmp.c_str());

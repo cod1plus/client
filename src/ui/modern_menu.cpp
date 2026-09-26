@@ -37,6 +37,8 @@
 #include <cstring>
 #include <algorithm>
 #include <vector>
+#include <map>
+#include <cctype>
 #include <string>
 
 namespace patches {
@@ -858,6 +860,20 @@ void play_demo_at(const DemoItem& it, const DemoKill* k) {
     overlay_toggle(false);
 }
 
+// a demo whose map is missing ends on the engine's "Couldn't load" popup (ui/demo_seek)
+bool map_installed(const std::string& m) { return demo_map_installed(m); }
+// a demo of a mod folder that is not loaded: its maps live in that mod, not checkable here
+bool maps_checkable(const DemoItem& it) {
+    return _stricmp(it.dir.c_str(), "Main") == 0 || _stricmp(it.dir.c_str(), cv_str("fs_game", "")) == 0;
+}
+// the map the demo starts on, then the one of that segment
+bool segment_playable(const DemoItem& it, int segment) {
+    if (!maps_checkable(it)) return true;
+    const std::vector<std::string>& m = it.info.maps;
+    if (!m.empty() && !map_installed(m[0])) return false;
+    return segment < 0 || segment >= (int)m.size() || map_installed(m[segment]);
+}
+
 float chip(float x, float y, const char* s, bool filled) {
     const float w = ui_text_width(11, 600, s) + 12;
     if (filled) ui_rect_rounded(x, y, w, 19, 5, 0xFFE8E8E8);
@@ -870,6 +886,7 @@ void draw_demos_tab(float cx, float cy, float cw, float bottom) {
     std::vector<DemoItem>& items = demo_library_items();
     if (!g_demo_scanned || GetTickCount() - g_demo_scan_tick > 15000) {
         demo_library_scan();                     // cheap: the folders only
+        demo_maps_forget();                      // a map may have been installed meanwhile
         g_demo_scanned = true;
         g_demo_scan_tick = GetTickCount();
         g_demo_sel = -1;
@@ -909,7 +926,9 @@ void draw_demos_tab(float cx, float cy, float cw, float bottom) {
         ui_rect_rounded(cx, ry, lw, rh - 6, 8, sel ? UI_ACCENT : mixc(UI_ROW, UI_ROW_HOT, hv));
         const DWORD t1 = sel ? 0xFF0A0A0A : UI_TEXT;
         const DWORD t2 = sel ? 0xFF404040 : UI_MUTED;
-        const std::string title = it.state == DEMO_READY ? map_label(it.info.map) : demo_base(it.name);
+        std::string title = it.state == DEMO_READY ? map_label(it.info.map) : demo_base(it.name);
+        if (it.state == DEMO_READY && it.info.maps.size() > 1)
+            title += "  +" + std::to_string(it.info.maps.size() - 1);
         ui_text(cx + 14, ry + 6, 16, 600, t1, title.c_str());
         const std::string date = filedate(it.mtime);
         const float dw = ui_text_width(12, 400, date.c_str());
@@ -959,7 +978,14 @@ void draw_demos_tab(float cx, float cy, float cw, float bottom) {
     float y = cy - 6;
     const std::string title = it.state == DEMO_READY ? map_label(d.map) : demo_base(it.name);
     ui_text(rx, y, 30, 600, UI_TEXT, title.c_str());
-    if (button(rx + rw - 190, y, 190, 44, "Play from start", true)) { play_demo_at(it, nullptr); return; }
+    const bool start_ok = it.state != DEMO_READY || segment_playable(it, 0);
+    if (start_ok) {
+        if (button(rx + rw - 190, y, 190, 44, "Play from start", true)) { play_demo_at(it, nullptr); return; }
+    } else {
+        ui_rect_rounded(rx + rw - 190, y, 190, 44, 8, UI_ROW);
+        const char* na = "Map missing";
+        ui_text(rx + rw - 95 - ui_text_width(16, 600, na) / 2, y + 11, 16, 600, 0xFF5A5A5A, na);
+    }
     y += 46;
     if (it.state != DEMO_READY) {
         std::string msg = it.state == DEMO_FAILED ? "This demo could not be read: " + d.error
@@ -973,9 +999,26 @@ void draw_demos_tab(float cx, float cy, float cw, float bottom) {
         meta += "   \xc2\xb7   " + mmss(d.duration_ms) + "   \xc2\xb7   " + filedate(it.mtime);
         ui_text(rx, y, 14, 400, UI_MUTED, meta.c_str());
         y += 22;
-        const std::string host = strip_colors(d.hostname);
+        std::string host = strip_colors(d.hostname);
+        if (d.maps.size() > 1) {                       // map changes inside the demo
+            std::string seq;
+            for (size_t i = 0; i < d.maps.size(); ++i) seq += (i ? "  \xe2\x86\x92  " : "") + map_label(d.maps[i]);
+            host = host.empty() ? seq : host + "   \xc2\xb7   " + seq;
+        }
         if (!host.empty()) ui_text(rx, y, 13, 400, UI_HINT, host.c_str());
-        y += 34;
+        y += 24;
+        // the maps this machine cannot load, named: the engine would only say "Couldn't load"
+        if (maps_checkable(it)) {
+            std::string missing;
+            for (const std::string& m : d.maps)
+                if (!map_installed(m) && missing.find(m) == std::string::npos) missing += (missing.empty() ? "" : ", ") + m;
+            if (!missing.empty()) {
+                const std::string w = "Map not installed: " + missing +
+                    (start_ok ? "  -  the kills on it cannot be played" : "  -  this demo cannot be played");
+                ui_text(rx, y, 13, 600, UI_DANGER, w.c_str());
+            }
+        }
+        y += 22;
     }
 
     // filter + lead
@@ -1017,7 +1060,7 @@ void draw_demos_tab(float cx, float cy, float cw, float bottom) {
         if (bx + tw > rx + rw) bx = rx + rw - tw;
         ui_rect_rounded(bx, ty - 30, tw, 24, 6, 0xFFE8E8E8);
         ui_text(bx + 8, ty - 26, 12, 600, 0xFF0A0A0A, t.c_str());
-        if (ui_input().clicked) { play_demo_at(it, tip); return; }
+        if (ui_input().clicked && segment_playable(it, tip->segment)) { play_demo_at(it, tip); return; }
     }
     y = ty + 48;
 
@@ -1047,9 +1090,11 @@ void draw_demos_tab(float cx, float cy, float cw, float bottom) {
         const KillRow& r = rows[i + (int)g_kill_scroll];
         const DemoKill& k = *r.k;
         const float ry = y + i * kh;
-        const bool over = hit(rx, ry, rw, kh - 5) || tip == &k;
+        const bool playable = segment_playable(it, k.segment);
+        const bool over = playable && (hit(rx, ry, rw, kh - 5) || tip == &k);
         const float hv = ui_smooth(wkey(rx, ry, 10), over ? 1.0f : 0.0f, 16.0f);
         ui_rect_rounded(rx, ry, rw, kh - 5, 6, mixc(UI_ROW, UI_ROW_HOT, hv));
+        if (!playable) ui_alpha(ui_alpha_get() * 0.35f);           // its map is missing: shown, not clickable
         const std::string t = mmss(k.t_ms);
         ui_text_font(rx + 14, ry + 8, 15, 600, UI_TEXT, t.c_str(), UI_FONT_MONO);
         std::string who = g_demo_filter == 0 ? std::string()
@@ -1070,6 +1115,7 @@ void draw_demos_tab(float cx, float cy, float cw, float bottom) {
             snprintf(g, sizeof(g), "%dK", r.group);
             chip(bx, ry + 8, g, true);
         }
+        if (!playable) { ui_alpha(ui_alpha_get() / 0.35f); continue; }
         if (over) {                                   // play glyph at the far right
             const float px2 = rx + rw - 22, py2 = ry + 10;
             ui_triangle(px2, py2, px2, py2 + 15, px2 + 12, py2 + 7.5f, UI_ACCENT);

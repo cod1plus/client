@@ -32,13 +32,15 @@ struct DemoKill {
     int  mod = -1;               // means of death when flagged (8 = headshot, 7 = melee ...)
     int  pov = -1;               // whose eyes the demo shows at that moment (ps.clientNum)
     int  pov_weapon = -1;        // the weapon in that player's hands (ps.weapon), same index space
+    int  segment = 0;            // which gamestate (map) of the demo it happened in: maps[segment]
     std::string attacker_name, victim_name, weapon_name;
 };
 
 struct DemoInfo {
     bool ok = false;
     std::string error;                   // why it stopped, when !ok (kills up to there are kept)
-    std::string map, hostname, gametype;
+    std::string map, hostname, gametype; // map = the FIRST one (the one playback loads first)
+    std::vector<std::string> maps;       // one per gamestate: a map change inside the demo adds one
     int  recorder = -1;                  // clientNum from the gamestate (who recorded)
     std::string recorder_name;
     int  first_time = 0, last_time = 0;  // server times of the first / last snapshot

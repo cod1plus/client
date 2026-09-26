@@ -12,6 +12,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
+#include <map>
 
 namespace patches {
 
@@ -39,7 +41,6 @@ struct Seek {
     float       progress = 0;
     bool        muted = false;
     char        saved_volume[32] = {};
-    float       last_ts = -1;
     int         steps = 0;
 } g;
 
@@ -92,22 +93,60 @@ void unmute() {
     if (!mp.empty()) DeleteFileA(mp.c_str());
 }
 
-void set_timescale(float ts) {
-    if (g.last_ts > 0 && fabsf(ts - g.last_ts) < g.last_ts * 0.02f) return;
-    char v[32];
-    snprintf(v, sizeof(v), "%g", ts);
-    set("timescale", v);
-    g.last_ts = ts;
+int cvar_int_now(const char* n) {
+    void* c = find(n);
+    return c ? *(int*)((char*)c + 0x20) : -1;
+}
+
+// `fixedtime`: when non-zero, Com_ModifyMsec (0x43a310) hands the client EXACTLY that
+// many ms per frame, whatever the real frame took - the step is ours, not the frame
+// rate's (timescale multiplied a frame time that swings during the fast-forward: +4.5 s
+// past the target at 2000x). Compared with what the cvar HOLDS each frame: something
+// resets these cheat cvars during playback (timescale was reset 41 times in 1 s).
+int g_resets = 0;
+int g_last_fixed = 0;
+void set_fixedtime(int ms) {
+    const int cur = cvar_int_now("fixedtime");
+    if (g_last_fixed > 0 && cur != g_last_fixed) ++g_resets;
+    g_last_fixed = ms;
+    if (cur == ms) return;
+    char v[16];
+    snprintf(v, sizeof(v), "%d", ms);
+    set("fixedtime", v);
 }
 
 void finish(const char* why) {
-    set_timescale(1.0f);
-    g.last_ts = -1;
+    set("fixedtime", "0");
+    g_last_fixed = 0;
+    void* ts = find("timescale");
+    if (ts && *(float*)((char*)ts + CV_VALUE) != 1.0f) set("timescale", "1");
     unmute();
     logger::logf("demo_seek: %s", why);
 }
 
 }  // namespace
+
+namespace {
+std::map<std::string, bool> g_map_ok;
+}
+
+bool demo_map_installed(const std::string& m) {
+    if (m.empty()) return true;
+    std::string key = m;
+    for (char& c : key) c = (char)tolower((unsigned char)c);
+    auto it = g_map_ok.find(key);
+    if (it != g_map_ok.end()) return it->second;
+    typedef int  (__cdecl* FS_FOpenFileRead_t)(const char*, int*, int, int);
+    typedef void (__cdecl* FS_FCloseFile_t)(int);
+    int f = 0;
+    *(volatile int*)0x01908e60 = 1;                          // set by every engine caller
+    ((FS_FOpenFileRead_t)0x0042bc70)(("maps/mp/" + m + ".bsp").c_str(), &f, 0, 0);
+    if (f) ((FS_FCloseFile_t)0x0042b600)(f);
+    g_map_ok[key] = f != 0;
+    return f != 0;
+}
+
+void demo_maps_forget() { g_map_ok.clear(); }
 
 void demo_seek_play(const std::string& dir, const std::string& name_noext,
                     int target_server_time, int first_server_time, const std::string& label) {
@@ -190,6 +229,11 @@ void poll_goto_cvar() {
         logger::logf("demo_seek: cod1x_demo_goto - %s unreadable (%s)", found.c_str(), info.error.c_str());
         return;
     }
+    if (!info.maps.empty() && !demo_map_installed(info.maps[0])) {
+        logger::logf("demo_seek: cod1x_demo_goto - %s starts on %s, which is not installed", base.c_str(),
+                     info.maps[0].c_str());
+        return;
+    }
     char label[64];
     snprintf(label, sizeof(label), "%d:%02d", off_ms / 60000, (off_ms / 1000) % 60);
     demo_seek_play(dir, base, off_ms > 1000 ? info.first_time + off_ms : 0, info.first_time, label);
@@ -244,20 +288,30 @@ void demo_seek_frame() {
         if (g.progress < 0) g.progress = 0;
         if (g.progress > 1) g.progress = 1;
         if (remaining <= 30) {
-            char why[128];
-            snprintf(why, sizeof(why), "reached %d (target %d, %+d ms) in %lu ms, %d timescale steps",
-                     t, g.target, t - g.target, GetTickCount() - g.t_seek, g.steps);
+            char why[160];
+            snprintf(why, sizeof(why), "reached %d (target %d, %+d ms) in %lu ms, %d steps, %d cvar resets undone",
+                     t, g.target, t - g.target, GetTickCount() - g.t_seek, g.steps, g_resets);
             finish(why);
             g.state = SETTLE;
             g.t_settle = GetTickCount();
             return;
         }
-        // each frame covers about half of what is left: fast, and never past the target
-        float ts = (float)(remaining / (2.0 * (g_frame_ms > 1.0 ? g_frame_ms : 1.0)));
-        if (ts < 1) ts = 1;
-        if (ts > 400) ts = 400;
-        set_timescale(ts);
+        // each frame covers half of what is left (at most 2 min of demo per frame: the
+        // engine parses every message of the step within that one frame)
+        int step = remaining / 2;
+        if (step > 120000) step = 120000;
+        if (step < 1) step = 1;
+        set_fixedtime(step);
         ++g.steps;
+        // once a second: where the chain stands (cvar -> cls.frametime -> cl.serverTime -> snapshot)
+        static DWORD s_diag = 0;
+        if (GetTickCount() - s_diag >= 1000) {
+            s_diag = GetTickCount();
+            logger::logf("demo_seek: +%lu ms  snap %d  left %d ms  step %d  fixedtime %d  frametime %d  "
+                         "serverTime %d  frame %.2f ms  resets %d",
+                         GetTickCount() - g.t_seek, t, remaining, step, cvar_int_now("fixedtime"),
+                         *(volatile int*)0x015b8bbc, *(volatile int*)0x0148dca0, g_frame_ms, g_resets);
+        }
         return;
     }
     case SETTLE:

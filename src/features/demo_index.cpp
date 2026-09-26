@@ -437,6 +437,8 @@ void read_playerstate(Msg& m, const uint8_t* from, uint8_t* to) {
 }
 
 // ------------------------------------------------------------------ the parse
+std::string info_value(const std::string& info, const char* key);
+
 struct Snap {
     bool valid = false;
     int  messageNum = -1;
@@ -503,6 +505,11 @@ struct Parser {
         prev = nullptr;
         have_gamestate = true;
         ++out->gamestates;
+        out->maps.push_back(info_value(cs[0], "mapname"));
+        if (out->gamestates == 1) {
+            out->hostname = info_value(cs[0], "sv_hostname");
+            out->gametype = info_value(cs[0], "g_gametype");
+        }
         weapons.clear();
         {
             const std::string& wl = cs[CS_WEAPONS];
@@ -625,6 +632,7 @@ struct Parser {
             if (wi < 0 && k.attacker == pov) wi = I(ns.ps.data(), PS_WEAPON);
             if (wi > 0 && wi <= (int)weapons.size()) k.weapon_name = demo_weapon_label(weapons[wi - 1].c_str());
             k.pov = pov;
+            k.segment = out->gamestates > 0 ? out->gamestates - 1 : 0;
             k.pov_weapon = I(ns.ps.data(), PS_WEAPON);
             auto nm = names.find(k.victim);
             if (nm != names.end()) k.victim_name = nm->second;
@@ -740,9 +748,7 @@ bool demo_index_buffer(const unsigned char* data, size_t size, DemoInfo* out) {
         if (!p.message(data + pos + 8, len)) break;
         pos += 8 + (size_t)len;
     }
-    out->map = info_value(p.cs[0], "mapname");
-    out->hostname = info_value(p.cs[0], "sv_hostname");
-    out->gametype = info_value(p.cs[0], "g_gametype");
+    out->map = out->maps.empty() ? std::string() : out->maps.front();
     auto rn = p.names.find(out->recorder);
     if (rn != p.names.end()) out->recorder_name = rn->second;
     out->duration_ms = out->last_time - out->first_time;
