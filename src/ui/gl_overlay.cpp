@@ -27,6 +27,7 @@
 #include "ui/modern_menu.h"
 #include "ui/home_menu.h"
 #include "ui/demo_seek.h"
+#include "ui/eye_debug.h"
 #include "ui/streamer_hud.h"
 #include "core/iat.h"
 #include "core/logger.h"
@@ -415,6 +416,7 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
     InterlockedIncrement(&g_swap_calls);
     attach_window(dc);
     demo_seek_frame();                            // demo fast-forward to a kill (ui/demo_seek)
+    eye_debug_frame();                            // player_debugEyePosition (ui/eye_debug)
     HWND wnd = wndhub_window();                   // this frame's window
     hotkey_poll(wnd);
     if (g_wndproc_dead && g_mode != 0) g_in.down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
@@ -514,6 +516,17 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
                 g_last_tick = now;
                 ui_begin_2d(g_vw, g_vh);
                 streamer_hud_draw((float)g_vw, (float)g_vh);
+                ui_alpha(1.0f);
+                ui_end_2d();
+            }
+        }
+        // local server debug: the camera point over the body (player_debugEyePosition)
+        if (eye_debug_active()) {
+            RECT rc;
+            GetClientRect(wnd, &rc);
+            if (rc.right > 0 && rc.bottom > 0) {
+                ui_begin_2d(rc.right, rc.bottom);
+                eye_debug_draw((float)rc.right, (float)rc.bottom);
                 ui_alpha(1.0f);
                 ui_end_2d();
             }
