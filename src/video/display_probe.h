@@ -36,6 +36,10 @@ void enforce_ini_fullscreen();
 // stretch with view_mode = stretched. DllMain, after enforce_ini_fullscreen().
 void enforce_max_hz_native();
 
+// Rewrites (or appends) one `seta <name> "<value>"` of main\config_mp.cfg. For DllMain
+// time, before the engine executes the file. False when the file cannot be read/written.
+bool config_mp_set(const char* name, const char* value);
+
 }  // namespace patches
 
 #endif

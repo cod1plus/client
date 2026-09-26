@@ -28,6 +28,7 @@
 #include "core/session_report.h"
 #include "core/ini_lock.h"
 #include "netcode/net_diag.h"
+#include "ui/demo_seek.h"
 #include "features/updater.h"
 #include "features/demo_upload.h"
 #include "core/toast.h"
@@ -203,6 +204,8 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             // `fullscreen = on/off` in the .ini beats a stale `seta r_fullscreen` left in
             // config_mp.cfg by an older build (players windowed without knowing why)
             patches::enforce_ini_fullscreen();
+            // a crash in the middle of a demo fast-forward left mss_volume 0 in config_mp.cfg
+            patches::demo_seek_startup_recover();
             // refresh_rate = max: a custom res the driver lists below the panel's max Hz
             // is swapped for the res that has it (4:3 stretch emulated by the mod)
             patches::enforce_max_hz_native();
@@ -236,6 +239,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             break;
         case DLL_PROCESS_DETACH:
             patches::session_report_final("fin");
+            patches::demo_seek_restore_now();
             patches::rinput_shutdown();      // unregister the raw input device + join its thread
             patches::gamma_fix_shutdown();   // never leave the desktop gamma modified
             patches::fps_cap_shutdown();

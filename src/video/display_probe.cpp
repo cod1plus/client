@@ -432,4 +432,14 @@ void enforce_max_hz_native() {
                  was_stretched ? ", view_mode = stretched (the 4:3 stretch is now done by the mod, same look)" : "");
 }
 
+// Rewrites (or appends) one `seta` of main\config_mp.cfg before the engine reads it.
+bool config_mp_set(const char* name, const char* value) {
+    char* buf = nullptr;
+    if (!read_config_mp(&buf)) return false;
+    cfg_put(&buf, name, value);
+    const bool ok = write_config_mp(buf);
+    free(buf);
+    return ok;
+}
+
 }  // namespace patches

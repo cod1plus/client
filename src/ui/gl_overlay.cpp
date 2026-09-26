@@ -26,6 +26,7 @@
 #include "features/news.h"
 #include "ui/modern_menu.h"
 #include "ui/home_menu.h"
+#include "ui/demo_seek.h"
 #include "ui/streamer_hud.h"
 #include "core/iat.h"
 #include "core/logger.h"
@@ -413,6 +414,7 @@ void draw_news_card(HWND wnd) {
 BOOL WINAPI hk_swapbuffers(HDC dc) {
     InterlockedIncrement(&g_swap_calls);
     attach_window(dc);
+    demo_seek_frame();                            // demo fast-forward to a kill (ui/demo_seek)
     HWND wnd = wndhub_window();                   // this frame's window
     hotkey_poll(wnd);
     if (g_wndproc_dead && g_mode != 0) g_in.down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
@@ -485,6 +487,15 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
             g_in.wheel = 0;
             g_in.vk = 0;                        // capture events are one-frame
 
+            ui_end_2d();
+        }
+    } else if (g_mode == 0 && wnd && demo_seek_curtain_visible()) {
+        // a demo is being fast-forwarded to a kill: cover it
+        RECT rc;
+        GetClientRect(wnd, &rc);
+        if (rc.right > 0 && rc.bottom > 0) {
+            ui_begin_2d(rc.right, rc.bottom);
+            demo_seek_draw_curtain((float)rc.right, (float)rc.bottom);
             ui_end_2d();
         }
     } else if (g_mode == 0 && wnd) {

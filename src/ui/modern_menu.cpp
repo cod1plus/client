@@ -26,6 +26,9 @@
 #include "features/settings_menu.h"
 #include "features/pam_install.h"
 #include "video/display_probe.h"
+#include "ui/demo_library.h"
+#include "ui/demo_seek.h"
+#include "features/demo_index.h"
 
 #include <cstdio>
 #include <cstdarg>
@@ -531,6 +534,10 @@ void icon_tab(int id, float x, float y, DWORD c) {
         ui_rect(x, y + 2, 8, 3, c);
         ui_rect_border(x, y + 5, 18, 11, 0, 1.5f, c);
         break;
+    case 5:                                             // demos: frame + play
+        ui_rect_border(x, y + 2, 18, 14, 0, 1.5f, c);
+        ui_triangle(x + 7, y + 5.5f, x + 7, y + 12.5f, x + 12.5f, y + 9, c);
+        break;
     default:                                            // about: the letter i
         ui_ellipse(x + 9, y + 9, 8.5f, 8.5f, 1.5f, c);
         ui_rect(x + 8, y + 4, 2, 2, c);
@@ -750,6 +757,334 @@ void info_card(float x, float y, float w, const char* title,
     }
 }
 
+// ------------------------------------------------------------------ demos tab
+// Every demo of every search-path folder, what is inside it (features/demo_index reads
+// the file itself: map, recorder, kills with their server time) and a click on a kill
+// plays the demo from a few seconds before it (ui/demo_seek fast-forwards there).
+int   g_demo_sel = -1;
+std::string g_demo_sel_path;
+float g_demo_scroll = 0, g_kill_scroll = 0;
+int   g_demo_filter = 0;             // 0 the recorder's kills, 1 the eyes on screen, 2 every obituary
+int   g_demo_lead = 1;               // 3 / 5 / 10 s before the kill
+DWORD g_demo_scan_tick = 0;
+bool  g_demo_scanned = false;
+
+std::string strip_colors(const std::string& s) {
+    std::string o;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '^' && i + 1 < s.size() && s[i + 1] != '^') { ++i; continue; }
+        o += s[i];
+    }
+    return o;
+}
+std::string mmss(int ms) {
+    if (ms < 0) ms = 0;
+    char b[16];
+    snprintf(b, sizeof(b), "%d:%02d", ms / 60000, (ms / 1000) % 60);
+    return b;
+}
+std::string filedate(uint64_t ft) {
+    FILETIME f, lf;
+    SYSTEMTIME st;
+    f.dwLowDateTime = (DWORD)ft;
+    f.dwHighDateTime = (DWORD)(ft >> 32);
+    if (!FileTimeToLocalFileTime(&f, &lf) || !FileTimeToSystemTime(&lf, &st)) return "";
+    char b[32];
+    snprintf(b, sizeof(b), "%04d-%02d-%02d  %02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+    return b;
+}
+std::string map_label(const std::string& m) {
+    std::string s = m;
+    if (s.size() > 3 && (_strnicmp(s.c_str(), "mp_", 3) == 0 || _strnicmp(s.c_str(), "xp_", 3) == 0)) s = s.substr(3);
+    for (char& c : s) if (c == '_') c = ' ';
+    if (!s.empty()) s[0] = (char)toupper((unsigned char)s[0]);
+    return s.empty() ? std::string("?") : s;
+}
+std::string gametype_label(const std::string& g) {
+    if (g == "sd")  return "Search & Destroy";
+    if (g == "dm")  return "Deathmatch";
+    if (g == "tdm") return "Team Deathmatch";
+    if (g == "re")  return "Retrieval";
+    if (g == "bel") return "Behind Enemy Lines";
+    if (g == "hq")  return "Headquarters";
+    return g;
+}
+std::string demo_base(const std::string& n) {
+    size_t p = n.rfind('.');
+    return p == std::string::npos ? n : n.substr(0, p);
+}
+std::string weapon_or_mod(const DemoKill& k) {
+    if (!k.weapon_name.empty()) return k.weapon_name;
+    return k.mod >= 0 ? demo_mod_label(k.mod) : "";
+}
+
+struct KillRow { const DemoKill* k; int group; };   // group = kills in the multi-kill it belongs to
+
+bool keep_kill(const DemoInfo& d, const DemoKill& k, int filter) {
+    const bool world = k.attacker < 0 || k.attacker >= 64;
+    const bool self = k.attacker == k.victim;
+    if (filter == 0) return !world && !self && k.attacker == d.recorder;
+    if (filter == 1) return !world && !self && k.attacker == k.pov;
+    return true;
+}
+
+void collect_kills(const DemoInfo& d, int filter, std::vector<KillRow>& rows) {
+    rows.clear();
+    for (const DemoKill& k : d.kills)
+        if (keep_kill(d, k, filter)) rows.push_back({ &k, 1 });
+    // multi-kills: the same killer again within 5 s of his previous one
+    for (size_t i = 0; i < rows.size();) {
+        size_t j = i + 1;
+        while (j < rows.size() && rows[j].k->attacker == rows[j - 1].k->attacker &&
+               rows[j].k->t_ms - rows[j - 1].k->t_ms <= 5000) ++j;
+        for (size_t m = i; m < j; ++m) rows[m].group = (int)(j - i);
+        i = j;
+    }
+}
+
+void play_demo_at(const DemoItem& it, const DemoKill* k) {
+    int target = 0;
+    std::string label;
+    if (k) {
+        static const int leads[] = { 3000, 5000, 10000 };
+        target = k->server_time - leads[g_demo_lead < 0 || g_demo_lead > 2 ? 1 : g_demo_lead];
+        if (target <= it.info.first_time + 1000) target = 0;          // that close to the start: just play
+        label = mmss(k->t_ms);
+        const std::string w = weapon_or_mod(*k);
+        if (!w.empty()) label += "   " + w;
+        label += "   \xe2\x86\x92   " + strip_colors(k->victim_name);
+    }
+    demo_seek_play(it.dir, demo_base(it.name), target, it.info.first_time, label);
+    overlay_toggle(false);
+}
+
+float chip(float x, float y, const char* s, bool filled) {
+    const float w = ui_text_width(11, 600, s) + 12;
+    if (filled) ui_rect_rounded(x, y, w, 19, 5, 0xFFE8E8E8);
+    else ui_rect_border(x, y, w, 19, 5, 1.0f, 0xFF5A5A5A);
+    ui_text(x + 6, y + 2, 11, 600, filled ? 0xFF0A0A0A : 0xFFBDBDBD, s);
+    return w;
+}
+
+void draw_demos_tab(float cx, float cy, float cw, float bottom) {
+    std::vector<DemoItem>& items = demo_library_items();
+    if (!g_demo_scanned || GetTickCount() - g_demo_scan_tick > 15000) {
+        demo_library_scan();                     // cheap: the folders only
+        g_demo_scanned = true;
+        g_demo_scan_tick = GetTickCount();
+        g_demo_sel = -1;
+        for (size_t i = 0; i < items.size(); ++i)
+            if (items[i].path == g_demo_sel_path) g_demo_sel = (int)i;
+        if (g_demo_sel < 0 && !items.empty()) { g_demo_sel = 0; g_demo_sel_path = items[0].path; }
+        if (g_demo_sel >= 0) demo_library_request(g_demo_sel);
+    }
+    demo_library_pump(true);
+
+    // ---- left: the demos, newest first
+    float lw = cw * 0.36f;
+    if (lw < 340) lw = 340;
+    if (lw > 460) lw = 460;
+    int ready = 0, total = 0;
+    demo_library_progress(&ready, &total);
+    char hdr[96];
+    if (ready < total) snprintf(hdr, sizeof(hdr), "DEMOS - %d    reading %d / %d", total, ready, total);
+    else snprintf(hdr, sizeof(hdr), "DEMOS - %d", total);
+    section(cx, cy, lw, hdr);
+    const float ly = cy + 26;
+    const float rh = 58;
+    int vis = (int)((bottom - ly) / rh);
+    if (vis < 3) vis = 3;
+    if (hit(cx, ly, lw, vis * rh)) g_demo_scroll -= ui_input().wheel * 2;
+    int maxoff = (int)items.size() - vis;
+    if (maxoff < 0) maxoff = 0;
+    if (g_demo_scroll < 0) g_demo_scroll = 0;
+    if (g_demo_scroll > maxoff) g_demo_scroll = (float)maxoff;
+    for (int i = 0; i < vis && i + (int)g_demo_scroll < (int)items.size(); ++i) {
+        const int idx = i + (int)g_demo_scroll;
+        const DemoItem& it = items[idx];
+        const float ry = ly + i * rh;
+        const bool sel = idx == g_demo_sel;
+        const bool over = hit(cx, ry, lw, rh - 6);
+        const float hv = ui_smooth(wkey(cx, ry, 9), over ? 1.0f : 0.0f, 14.0f);
+        ui_rect_rounded(cx, ry, lw, rh - 6, 8, sel ? UI_ACCENT : mixc(UI_ROW, UI_ROW_HOT, hv));
+        const DWORD t1 = sel ? 0xFF0A0A0A : UI_TEXT;
+        const DWORD t2 = sel ? 0xFF404040 : UI_MUTED;
+        const std::string title = it.state == DEMO_READY ? map_label(it.info.map) : demo_base(it.name);
+        ui_text(cx + 14, ry + 6, 16, 600, t1, title.c_str());
+        const std::string date = filedate(it.mtime);
+        const float dw = ui_text_width(12, 400, date.c_str());
+        ui_text(cx + lw - dw - 12, ry + 9, 12, 400, t2, date.c_str());
+        char l2[160];
+        if (it.state == DEMO_READY) {
+            int mine = 0;
+            for (const DemoKill& k : it.info.kills) if (keep_kill(it.info, k, 0)) ++mine;
+            snprintf(l2, sizeof(l2), "%s  \xc2\xb7  %s  \xc2\xb7  %d kill%s", demo_base(it.name).c_str(),
+                     mmss(it.info.duration_ms).c_str(), mine, mine == 1 ? "" : "s");
+        } else if (it.state == DEMO_FAILED) {
+            snprintf(l2, sizeof(l2), "%s  \xc2\xb7  unreadable", demo_base(it.name).c_str());
+        } else {
+            snprintf(l2, sizeof(l2), "%s  \xc2\xb7  reading...", demo_base(it.name).c_str());
+        }
+        ui_text(cx + 14, ry + 29, 13, 400, t2, l2);
+        if (_stricmp(it.dir.c_str(), "Main") != 0) {           // a mod folder's demo
+            const char* tag = it.dir.c_str();
+            while (*tag == '_') ++tag;
+            const float tw = ui_text_width(11, 600, tag) + 12;
+            ui_rect_rounded(cx + lw - tw - 10, ry + 29, tw, 18, 5, sel ? 0xFFD0D0D0 : 0xFF101010);
+            ui_text(cx + lw - tw - 4, ry + 31, 11, 600, sel ? 0xFF303030 : 0xFF8A8A8A, tag);
+        }
+        if (over && ui_input().clicked && !sel) {
+            g_demo_sel = idx;
+            g_demo_sel_path = it.path;
+            g_kill_scroll = 0;
+            demo_library_request(idx);
+        }
+    }
+    if (items.empty())
+        ui_text(cx + 4, ly + 6, 14, 400, UI_MUTED, "No demo in any demos/ folder yet - record one with /record.");
+    if (maxoff > 0) {
+        const float trackh = vis * rh - 6;
+        const float thumbh = trackh * vis / (float)items.size();
+        const float thumby = ly + (trackh - thumbh) * (g_demo_scroll / maxoff);
+        ui_rect_rounded(cx + lw + 6, ly, 3, trackh, 1.5f, UI_ROW);
+        ui_rect_rounded(cx + lw + 6, thumby, 3, thumbh, 1.5f, 0xFF3A3A3A);
+    }
+
+    // ---- right: the selected demo
+    const float rx = cx + lw + 40;
+    const float rw = cw - lw - 40;
+    if (g_demo_sel < 0 || g_demo_sel >= (int)items.size() || rw < 300) return;
+    const DemoItem& it = items[g_demo_sel];
+    const DemoInfo& d = it.info;
+    float y = cy - 6;
+    const std::string title = it.state == DEMO_READY ? map_label(d.map) : demo_base(it.name);
+    ui_text(rx, y, 30, 600, UI_TEXT, title.c_str());
+    if (button(rx + rw - 190, y, 190, 44, "Play from start", true)) { play_demo_at(it, nullptr); return; }
+    y += 46;
+    if (it.state != DEMO_READY) {
+        std::string msg = it.state == DEMO_FAILED ? "This demo could not be read: " + d.error
+                                                  : std::string("Reading the demo - map, players and every kill...");
+        ui_text(rx, y + 4, 14, 400, UI_MUTED, msg.c_str());
+        return;
+    }
+    {
+        std::string meta = gametype_label(d.gametype);
+        if (!d.recorder_name.empty()) meta += "   \xc2\xb7   recorded by " + strip_colors(d.recorder_name);
+        meta += "   \xc2\xb7   " + mmss(d.duration_ms) + "   \xc2\xb7   " + filedate(it.mtime);
+        ui_text(rx, y, 14, 400, UI_MUTED, meta.c_str());
+        y += 22;
+        const std::string host = strip_colors(d.hostname);
+        if (!host.empty()) ui_text(rx, y, 13, 400, UI_HINT, host.c_str());
+        y += 34;
+    }
+
+    // filter + lead
+    static const char* filters[] = { "My kills", "On screen", "Every kill" };
+    const int nf = segmented(rx, y, 330, filters, 3, g_demo_filter);
+    if (nf != g_demo_filter) { g_demo_filter = nf; g_kill_scroll = 0; }
+    if (rw >= 600) {
+        ui_text(rx + 350, y + 11, 13, 400, UI_HINT, "start");
+        static const char* leads[] = { "3 s", "5 s", "10 s" };
+        g_demo_lead = segmented(rx + 390, y, 200, leads, 3, g_demo_lead);
+        if (rw >= 740) ui_text(rx + 604, y + 11, 13, 400, UI_HINT, "before the kill");
+    }
+    y += 54;
+
+    std::vector<KillRow> rows;
+    collect_kills(d, g_demo_filter, rows);
+
+    // timeline: every kill of the filter placed on the demo's length; hover, click = play
+    const float ty = y + 8;
+    const float dur = d.duration_ms > 0 ? (float)d.duration_ms : 1.0f;
+    ui_rect(rx, ty + 10, rw, 2, 0xFF262626);
+    const DemoKill* tip = nullptr;
+    float tipx = 0;
+    for (const KillRow& r : rows) {
+        const float x = rx + rw * (r.k->t_ms / dur);
+        const bool over = hit(x - 4, ty - 2, 8, 26);
+        if (over) { tip = r.k; tipx = x; }
+        ui_rect(x - 1, ty + (over ? 0 : 3), over ? 3.0f : 2.0f, over ? 22.0f : 16.0f,
+                r.group > 1 ? 0xFFFFFFFF : 0xFFB0B0B0);
+    }
+    ui_text(rx, ty + 24, 11, 400, UI_HINT, "0:00");
+    const std::string endt = mmss(d.duration_ms);
+    ui_text(rx + rw - ui_text_width(11, 400, endt.c_str()), ty + 24, 11, 400, UI_HINT, endt.c_str());
+    if (tip) {
+        std::string t = mmss(tip->t_ms) + "  " + weapon_or_mod(*tip) + "  \xe2\x86\x92  " + strip_colors(tip->victim_name);
+        const float tw = ui_text_width(12, 600, t.c_str()) + 16;
+        float bx = tipx - tw / 2;
+        if (bx < rx) bx = rx;
+        if (bx + tw > rx + rw) bx = rx + rw - tw;
+        ui_rect_rounded(bx, ty - 30, tw, 24, 6, 0xFFE8E8E8);
+        ui_text(bx + 8, ty - 26, 12, 600, 0xFF0A0A0A, t.c_str());
+        if (ui_input().clicked) { play_demo_at(it, tip); return; }
+    }
+    y = ty + 48;
+
+    // the list
+    char lh[96];
+    static const int leads_s[] = { 3, 5, 10 };
+    snprintf(lh, sizeof(lh), "%d KILL%s  -  click one: the demo starts %d s before it", (int)rows.size(),
+             rows.size() == 1 ? "" : "S", leads_s[g_demo_lead < 0 || g_demo_lead > 2 ? 1 : g_demo_lead]);
+    section(rx, y, rw, lh);
+    y += 26;
+    if (rows.empty()) {
+        const char* why = g_demo_filter == 0
+            ? "No kill by the player who recorded it. Try On screen (the eyes the demo shows)."
+            : "No kill in this view.";
+        ui_text(rx + 4, y + 4, 14, 400, UI_MUTED, why);
+        return;
+    }
+    const float kh = 40;
+    int kvis = (int)((bottom - y) / kh);
+    if (kvis < 2) kvis = 2;
+    if (hit(rx, y, rw, kvis * kh)) g_kill_scroll -= ui_input().wheel * 2;
+    int kmax = (int)rows.size() - kvis;
+    if (kmax < 0) kmax = 0;
+    if (g_kill_scroll < 0) g_kill_scroll = 0;
+    if (g_kill_scroll > kmax) g_kill_scroll = (float)kmax;
+    for (int i = 0; i < kvis && i + (int)g_kill_scroll < (int)rows.size(); ++i) {
+        const KillRow& r = rows[i + (int)g_kill_scroll];
+        const DemoKill& k = *r.k;
+        const float ry = y + i * kh;
+        const bool over = hit(rx, ry, rw, kh - 5) || tip == &k;
+        const float hv = ui_smooth(wkey(rx, ry, 10), over ? 1.0f : 0.0f, 16.0f);
+        ui_rect_rounded(rx, ry, rw, kh - 5, 6, mixc(UI_ROW, UI_ROW_HOT, hv));
+        const std::string t = mmss(k.t_ms);
+        ui_text_font(rx + 14, ry + 8, 15, 600, UI_TEXT, t.c_str(), UI_FONT_MONO);
+        std::string who = g_demo_filter == 0 ? std::string()
+                                             : strip_colors(k.attacker_name) + "  ";
+        who += "\xe2\x86\x92  " + strip_colors(k.victim_name);
+        const float right_w = 230;
+        ui_clip_push(rx + 76, ry, rw - 76 - right_w, kh);
+        ui_text(rx + 76, ry + 8, 15, g_demo_filter == 0 ? 600 : 400, UI_TEXT, who.c_str());
+        ui_clip_pop();
+        float bx = rx + rw - right_w;
+        const std::string w = k.weapon_name.empty() ? std::string() : k.weapon_name;
+        if (!w.empty()) ui_text(bx, ry + 9, 13, 400, UI_MUTED, w.c_str());
+        bx += 110;
+        if (k.mod == 8) bx += chip(bx, ry + 8, "HEADSHOT", false) + 6;
+        else if (k.mod == 7) bx += chip(bx, ry + 8, "MELEE", false) + 6;
+        if (r.group > 1) {
+            char g[8];
+            snprintf(g, sizeof(g), "%dK", r.group);
+            chip(bx, ry + 8, g, true);
+        }
+        if (over) {                                   // play glyph at the far right
+            const float px2 = rx + rw - 22, py2 = ry + 10;
+            ui_triangle(px2, py2, px2, py2 + 15, px2 + 12, py2 + 7.5f, UI_ACCENT);
+        }
+        if (hit(rx, ry, rw, kh - 5) && ui_input().clicked) { play_demo_at(it, &k); return; }
+    }
+    if (kmax > 0) {
+        const float trackh = kvis * kh - 5;
+        const float thumbh = trackh * kvis / (float)rows.size();
+        const float thumby = y + (trackh - thumbh) * (g_kill_scroll / kmax);
+        ui_rect_rounded(rx + rw + 6, y, 3, trackh, 1.5f, UI_ROW);
+        ui_rect_rounded(rx + rw + 6, thumby, 3, thumbh, 1.5f, 0xFF3A3A3A);
+    }
+}
+
 }  // namespace
 
 bool modern_menu_poll_open() {
@@ -783,19 +1118,20 @@ void modern_menu_draw(float sw, float sh) {
     ui_text(38, 88, 11, 600, UI_MUTED, "C O D 1  R E L O A D E D");
     ui_rect(36, 118, rail - 72, 1, UI_LINE);
 
-    static const char* tabs[] = { "Display", "Mouse", "Keys", "Game", "Files", "About" };
+    static const char* tabs[] = { "Display", "Mouse", "Keys", "Game", "Files", "Demos", "About" };
     static const char* subs[] = {
         "Resolution, refresh rate and how the image reaches the screen.",
         "Raw input and aim feel. What your hand does is what the game gets.",
         "Click an action, press the new key. Saved to your config instantly.",
         "Performance, HUD, effects and the competitive netcode.",
         "Configs and demos - Main and every mod folder. One click to run.",
+        "Every demo, every kill in it. Click a kill: the demo plays from just before.",
         "What this client is and what runs under the hood.",
     };
     float taby = 150;
     float tsel = ui_smooth(8002, (float)g_tab, 13.0f);
     ui_rect_rounded(20, 150 + tsel * 54 - 6, rail - 40, 46, 10, UI_ACCENT);
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 7; ++i) {
         bool over = hit(20, taby - 6, rail - 40, 46);
         float prox = 1.0f - (tsel > i ? tsel - i : i - tsel);
         if (prox < 0) prox = 0;
@@ -1314,6 +1650,8 @@ void modern_menu_draw(float sw, float sh) {
              "Configs from Main/configs. Demos from every folder's demos/ - playing a mod's");
         hint(cx, ly + vis * rh + 30,
              "demo loads that mod first (fs_game + renderer restart), then plays it.");
+    } else if (g_tab == 5) {
+        draw_demos_tab(cx, cy, pw - 120, sh - 36);
     } else {
         // ABOUT: what 1.6X actually is - the feature list doubles as a changelog
         ui_text(cx, cy, 22, 600, UI_TEXT, "cod1reloaded  -  the 1.6X competitive client");

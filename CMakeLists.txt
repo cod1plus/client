@@ -57,6 +57,9 @@ set(COD1RELOADED_SOURCES
     src/core/session_report.cpp
     src/core/ini_lock.cpp
     src/netcode/net_diag.cpp
+    src/features/demo_index.cpp
+    src/ui/demo_library.cpp
+    src/ui/demo_seek.cpp
     src/features/updater.cpp
     src/features/demo_upload.cpp
     src/core/toast.cpp
