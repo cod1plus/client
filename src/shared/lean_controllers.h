@@ -51,8 +51,9 @@ extern "C" {
 /* Bump on ANY change to the shared arithmetic. Both sides print it; a mismatch in the
  * two logs means one repo was copied and the other was not.
  * v2: the movement-transition blend (lc_ctx_t.blend, see lean_controllers.c "BLEND").
- * v3: crouch + lean right bends like crouch + lean left (x1.25, not the engine's x1.5). */
-#define LC_VERSION 3
+ * v3: crouch + lean right bends like crouch + lean left (x1.25, not the engine's x1.5).
+ * v4: crouch + lean right bends like STAND + lean right (x0.8) - enzo, in game. */
+#define LC_VERSION 4
 
 #define LC_SIDE_CLIENT 0
 #define LC_SIDE_SERVER 1

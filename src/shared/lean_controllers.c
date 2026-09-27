@@ -6,7 +6,7 @@
  * The engine function runs first on both sides; we only post-process its buffer:
  *
  *   engine BG_Player_DoControllersInternal   ->  "pre"
- *   lc_apply(): [v3: crouch-right bend], lateral top-up, [v2: the BLEND], then the
+ *   lc_apply(): [v3/v4: crouch-right bend], lateral top-up, [v2: the BLEND], then the
  *               back-bone reprojection                                          -> "post"
  *   (engine BG_Player_DoControllers limiter: a no-op when the blend is on, see BLEND)
  *
@@ -69,19 +69,20 @@
  *     stand: left x1.25, right x0.8        crouch: left x1.25, right x1.5
  * so a crouched player leaning right bends ~1.9x more than standing, and with the lateral
  * shift on top it was the most exposed pose of all (head ~7 u past the camera, enzo's
- * player_debugEyePosition screenshots, 2026-09-27). v3 brings crouch-right to x1.25, the
- * crouch-left value. It cannot be done at the source on both sides: the server's 1.5f
+ * player_debugEyePosition screenshots, 2026-09-27). v3 brought crouch-right to x1.25 (the
+ * crouch-left value); in game crouch-right still went visibly further right than
+ * stand-right (x0.8), so v4 uses x0.8: crouch-right bends like stand-right. It cannot be done at the source on both sides: the server's 1.5f
  * (.rodata 0x73d9c) has exactly the two readers of that branch, but cgame's (0x3006b6c8)
  * is pooled with 13 readers. Measured on the real server function instead, loaded with
  * dlopen and fed 20000 random poses (test/test_crouch_right_engine.c): with 0x73d9c
- * patched to 1.25, the ONLY buffer slots that move are the three back-bone rolls and the
- * head roll, each by exactly 1.25 / 1.5 - and nothing moves in any other stance or side
+ * patched to LC_CROUCH_RIGHT, the ONLY buffer slots that move are the three back-bone rolls and the
+ * head roll, each by exactly LC_CROUCH_RIGHT / 1.5 - and nothing moves in any other stance or side
  * (max difference 0). So scaling those four slots here, under the engine's own condition
- * (eFlags crouch 0x20, not prone 0x40, fLeanFrac > 0), IS the engine with 1.25 - on both
+ * (eFlags crouch 0x20, not prone 0x40, fLeanFrac > 0), IS the engine with that constant - on both
  * sides, before the reprojection like the engine's own multiply. Lateral shift, camera,
  * legs, pelvis, standing and left leans: untouched. */
 #define LC_ENGINE_CROUCH_RIGHT 1.5f
-#define LC_CROUCH_RIGHT        1.25f
+#define LC_CROUCH_RIGHT        0.8f
 
 /* ---- entityState_s / clientInfo_t fields, dump only ----------------------------
  * Names and offsets from the engine's own netfield table (CoDMP.exe file 0x180110) and
@@ -526,7 +527,7 @@ int lc_apply(float* out, const lc_ctx_t* ctx)
         lc_dump(out, ctx, "pre");
     }
 
-    /* 0) CROUCH + LEAN RIGHT BEND (v3) - see LC_CROUCH_RIGHT. The condition is the
+    /* 0) CROUCH + LEAN RIGHT BEND (v3, x0.8 since v4) - see LC_CROUCH_RIGHT. The condition is the
      * engine's own branch, read from the same eFlags it read (not ctx->stance, which each
      * host derives its own way): crouch bit set, not in the prone branch, leaning right.
      * lf has the engine's sign: out[20] = fLeanFrac * 3.75 is not touched by the multiply. */
