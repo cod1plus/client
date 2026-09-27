@@ -6,15 +6,12 @@
  * The engine function runs first on both sides; we only post-process its buffer:
  *
  *   engine BG_Player_DoControllersInternal   ->  "pre"
- *   lc_apply(): lateral top-up, then the back-bone reprojection   ->  "post"
- *   client only: apply_ctrl_smooth() temporal filter              ->  "smooth"
+ *   lc_apply(): lateral top-up, [v2: the BLEND], then the back-bone reprojection -> "post"
+ *   (engine BG_Player_DoControllers limiter: a no-op when the blend is on, see BLEND)
  *
- * The third stage has no server counterpart and this file deliberately does NOT own it:
- * it is a display filter with per-client history and a per-frame velocity clamp, so it is
- * not a pure function of the state the server has. It is the one client-only stage left
- * after this file lands, and it is why lc_dump() is exported - dumping "smooth" next to
- * "post" is what will show whether it moves the drawn pose away from the tested one, or
- * whether it converges as intended when the player holds a lean still.
+ * The old client-only apply_ctrl_smooth() stage ("smooth") is dead since 1.6.5 and stays
+ * dead: the BLEND below is what it should have been - the same code on both sides, fed
+ * only by networked state and the game clock, and never triggered by the lean.
  *
  * MEASUREMENT PROTOCOL this instrumentation is built for
  *   Two clients. One stands still, full lean left, does not move. The other watches.
@@ -69,6 +66,8 @@
  * Names and offsets from the engine's own netfield table (CoDMP.exe file 0x180110) and
  * the disassembly; see anim_shared.h. Nothing here is written. */
 #define LC_ES_EFLAGS           0x08
+#define LC_ES_MOVEMENT_DIR     0x6c   /* angles2[1] = (float) ps->movementDir, signed:
+                                       * BG_PlayerStateToEntityState 0x1c5d1..0x1c5f9 */
 #define LC_ES_LEGS_ANIM        0xcc
 #define LC_ES_ANIM_MOVETYPE    0xe0
 #define LC_ES_FTORSO_HEIGHT    0xe4
@@ -97,6 +96,26 @@
  * runs, so the no-lean baseline every comparison needs is always in the log. */
 #define LC_DUMP_PERIOD_MS      500u
 #define LC_DUMP_IDLE_PERIOD_MS 5000u
+
+/* ---- v2: the BLEND - see the long comment above lc_blend() -----------------------
+ * Durations: cod2x's controllerMovementTime (animation.cpp:329 / :371). */
+#define LC_BLEND_MS            250    /* stand / crouch */
+#define LC_BLEND_MS_PRONE      400    /* any transition into, out of or within prone */
+/* No committed sample for this long = no usable history (a player who just came into
+ * view on the client, a map change, a demo seek): restart from the engine's own pose,
+ * with no transition, instead of lerping from something stale. */
+#define LC_BLEND_STALE_MS      200
+/* The engine's limiter, outside a transition - same numbers, now on the game clock:
+ * cgame 0x3006b8c0 / 0x3006b7a8, game -0x14fcc / -0x14fc8(%ebx) in 0x1adb6 / 0x1ae7e. */
+#define LC_LIMIT_DEG_PER_MS    0.36f
+#define LC_LIMIT_UNITS_PER_MS  0.1f
+/* eFlags bits the engine's own controller function branches on (game 0x1a39f..0x1a7df,
+ * the same four tests in cgame): */
+#define LC_EF_DEAD             0x0001  /* 0x1a5a9: no view-yaw subtraction */
+#define LC_EF_CROUCH           0x0020  /* 0x1a7df: the lean roll multiplier */
+#define LC_EF_PRONE            0x0040  /* 0x1a489 / 0x1a5d1: the prone branch */
+#define LC_EF_TURRET           0xc000  /* 0x1a39f: all-zero buffer */
+#define LC_ANIM_TOGGLEBIT      0x0200  /* legsAnim & ~this = the animation (0x18130) */
 
 /* ============================ small read helpers ============================
  * memcpy rather than a cast through float*: same code at -O2 on both toolchains, and it
@@ -142,6 +161,229 @@ static void lc_adjust_rotation(float yaw_diff_deg, float* bone)
     const float p   = bone[0], r = bone[2];
     bone[0] = p * cp - r * sp;
     bone[2] = p * sp + r * cp;
+}
+
+/* ============================ BLEND (v2) ============================
+ *
+ * cod2x's controller transition (animation.cpp:728-807), rebuilt so that it cannot bring
+ * back what killed our first copy of it (apply_ctrl_smooth, off since 1.6.5).
+ *
+ * WHAT IT FIXES. When the movement changes (strafe left <-> right, stop, forward <-> back,
+ * stand <-> crouch), the legs/pelvis yaw (tag_origin) swings to the new direction while
+ * the three back bones counter-rotate so that the chest keeps facing the view. The
+ * engine's limiter then moves every angle at 0.36 deg/ms ON ITS OWN: the pelvis (the
+ * biggest angle) arrives last, the back bones first, and for that fraction of a second the
+ * chest - and the head, and a leaning torso - is turned off the view. That is cod2x's
+ * "weapon moving side to side when player movement changes"; with a lean it moves the
+ * head sideways on every strafe key. The engine builds the yaw chain so that it sums to
+ * the torso-vs-view angle (tag_origin = legs - view; back = 0.4/0.4/0.2 x (torso - legs);
+ * neck/head = 0.3/0.7 x (view - torso)), which our swing patches hold at 0 on both sides.
+ * Moving all the yaws by the SAME fraction keeps that sum at 0 all the way through: the
+ * hips turn, the chest does not.
+ *
+ * HOW, and how it differs from cod2x - each point is one of the old bugs, or a new one
+ * found while building this:
+ *  - The trigger is discrete, networked and identical on both sides: the legs animation
+ *    (toggle bit stripped) and the four eFlags bits the engine's controller function
+ *    itself branches on (dead, crouch, prone, turret). The LEAN IS NOT IN IT, not even as
+ *    a threshold: apply_ctrl_smooth keyed on the lean roll crossing 3 deg, so every peek
+ *    froze the model twice. movementDir is not in it either: in CoD1 it is the angle of
+ *    the VELOCITY against the view (game 0x1f60f..0x1f7bb, vectoangles of the origin
+ *    delta, clamped +-90), so it moves on almost every frame while running and turning -
+ *    as a trigger it would restart the transition continuously.
+ *  - Stand / crouch transitions time-blend the YAW slots only. The lean (the rolls, the
+ *    lateral offset) and the pitch go through the limiter below exactly as they did
+ *    through the engine's, so a peek started together with a strafe is never held back.
+ *    With cod2x's full blend the model would show a fraction of the lean for the first
+ *    ~100 ms while the camera is already out: a peeker's advantage. Prone transitions
+ *    blend everything over 400 ms, as cod2x does - the whole body is re-posed there.
+ *  - Outside a transition the engine limiter is reproduced unchanged for every slot but
+ *    the yaws, which move as ONE group (all scaled by the same factor, so that the
+ *    largest moves 0.36 deg/ms). Per-component clamping is the very thing that turns the
+ *    chest off the view; as a group they only differ from the engine when it clamps, and
+ *    the sum stays 0 even then - a flick, or a diagonal (no animation change) no longer
+ *    twists the torso either.
+ *  - It runs BEFORE the back-bone reprojection, so the reprojection is computed from the
+ *    yaws that are actually drawn / tested, not from the targets.
+ *  - It is timed on the GAME clock (cg.time / level.time), never on call counts or on the
+ *    wall clock. The server poses a player on demand (a bullet trace, a tag query - see
+ *    G_DObjCalcPose) and the engine limiter advanced by a whole frame on EVERY such call
+ *    and not at all between them; the client poses once per rendered frame, only while
+ *    the player is on screen. Here exactly one caller per side advances the state
+ *    (LC_BLEND_COMMIT): the client's pose path, and on the server pose_sync_frame(), once
+ *    per server frame for every player. Everything else only reads it (LC_BLEND_PEEK).
+ *    The result also goes into ci->control, so the engine's own pass is a no-op.
+ *  - No usable history (first sight, map change, demo seek, a hitch longer than
+ *    LC_BLEND_STALE_MS, a respawn) = the engine's own pose, no transition - never a blend
+ *    from something stale.
+ */
+typedef struct lc_blend_state_s {
+    int   valid;
+    int   type;                   /* lc_move_type() at the last committed step */
+    int   t_last;                 /* game time of the last committed step */
+    int   t_start;                /* start of the current / last transition */
+    int   len;                    /* its length, ms; 0 = none yet */
+    int   all;                    /* it blends every slot (prone), else the yaws only */
+    float from[LC_FLOATS];        /* the pose it started from */
+    float cur[LC_FLOATS];         /* the pose of the last committed step */
+} lc_blend_state_t;
+
+static lc_blend_state_t lc_bs[LC_MAX_CLIENTS];
+
+/* The yaw of every vec3 in the buffer, tag_origin's included. */
+static const int lc_yaw_slot[7] = { 1, 4, 7, 10, 13, 16, LC_TAG_ANG_YAW };
+
+#define LC_MT_DEAD    0x1
+#define LC_MT_CROUCH  0x2
+#define LC_MT_PRONE   0x4
+#define LC_MT_TURRET  0x8
+
+static int lc_move_type(const void* es)
+{
+    const int ef  = lc_ri(es, LC_ES_EFLAGS);
+    const int leg = lc_ri(es, LC_ES_LEGS_ANIM) & 0x3ff & ~LC_ANIM_TOGGLEBIT;
+    return ((ef & LC_EF_DEAD)   ? LC_MT_DEAD   : 0)
+         | ((ef & LC_EF_CROUCH) ? LC_MT_CROUCH : 0)
+         | ((ef & LC_EF_PRONE)  ? LC_MT_PRONE  : 0)
+         | ((ef & LC_EF_TURRET) ? LC_MT_TURRET : 0)
+         | (leg << 4);
+}
+
+/* the engine's BG_LerpAngles, one component (game 0x1ab82, cgame 0x30005040) */
+static float lc_limit(float target, float cur, float max_step)
+{
+    const float d = target - cur;
+    if (d > max_step)  return cur + max_step;
+    if (d < -max_step) return cur - max_step;
+    return target;
+}
+
+/* out: the engine's pose for this instant (after the lateral top-up) in, the blended
+ * pose out. Reads / advances lc_bs[] according to ctx->blend. */
+static void lc_blend(float* out, const lc_ctx_t* ctx, int sampling)
+{
+    lc_blend_state_t* s;
+    float res[LC_FLOATS];
+    int   type, dt, all, in_win, restart, new_all, i;
+    float f, max_a, max_o, max_d, k;
+    const int t  = ctx->game_time;
+    const int cn = ctx->client_num;
+
+    if (!ctx->es || cn < 0 || cn >= LC_MAX_CLIENTS) return;
+    s    = &lc_bs[cn];
+    type = lc_move_type(ctx->es);
+
+    /* No usable history: the engine's pose, and (on commit) a fresh state from it. A
+     * respawn counts as one - dead -> alive is a teleport, not a movement. */
+    if (!s->valid || t < s->t_last || t - s->t_last > LC_BLEND_STALE_MS ||
+        ((s->type & LC_MT_DEAD) && !(type & LC_MT_DEAD))) {
+        if (ctx->blend == LC_BLEND_COMMIT) {
+            s->valid  = 1;
+            s->type   = type;
+            s->t_last = t;
+            s->len    = 0;
+            memcpy(s->cur, out, sizeof(s->cur));
+        }
+        if (sampling && ctx->log) {
+            char line[160];
+            snprintf(line, sizeof(line), "LC%d %c cn=%-2d BLEND type=0x%05x reset (t=%d)",
+                     LC_VERSION, ctx->side == LC_SIDE_SERVER ? 'S' : 'C', cn, type, t);
+            ctx->log(line);
+        }
+        return;
+    }
+
+    dt      = t - s->t_last;
+    restart = (type != s->type);
+    in_win  = s->len > 0 && t - s->t_start <= s->len;
+    f       = in_win ? (float)(t - s->t_start) / (float)s->len : 1.0f;
+    all     = in_win && s->all;
+    max_a   = (float)dt * LC_LIMIT_DEG_PER_MS;
+    max_o   = (float)dt * LC_LIMIT_UNITS_PER_MS;
+
+    /* 1) THIS INSTANT UNDER THE CURRENT RULE - the running transition, or the limiter -
+     *    toward the engine's pose of this instant. */
+
+    /* everything but the yaws: the engine limiter, or the time blend in a prone window */
+    for (i = 0; i < LC_TAG_OFF; ++i)
+        res[i] = all ? s->from[i] * (1.0f - f) + out[i] * f
+                     : lc_limit(out[i], s->cur[i], max_a);
+    if (all) {
+        for (i = LC_TAG_OFF; i < LC_FLOATS; ++i)
+            res[i] = s->from[i] * (1.0f - f) + out[i] * f;
+    } else {                              /* BG_LerpOffset: the vector, not per axis */
+        const float dx = out[21] - s->cur[21], dy = out[22] - s->cur[22],
+                    dz = out[23] - s->cur[23];
+        const float l2 = dx * dx + dy * dy + dz * dz;
+        k = (l2 > 0.0f) ? max_o / sqrtf(l2) : 1.0f;
+        if (k >= 1.0f) k = 1.0f;
+        res[21] = s->cur[21] + dx * k;
+        res[22] = s->cur[22] + dy * k;
+        res[23] = s->cur[23] + dz * k;
+    }
+
+    /* the yaws: time-blended together in a window, else limited together */
+    if (in_win) {
+        for (i = 0; i < 7; ++i) {
+            const int j = lc_yaw_slot[i];
+            res[j] = s->from[j] * (1.0f - f) + out[j] * f;
+        }
+    } else {
+        max_d = 0.0f;
+        for (i = 0; i < 7; ++i) {
+            const int   j = lc_yaw_slot[i];
+            const float d = fabsf(out[j] - s->cur[j]);
+            if (d > max_d) max_d = d;
+        }
+        k = (max_d > max_a) ? max_a / max_d : 1.0f;
+        for (i = 0; i < 7; ++i) {
+            const int j = lc_yaw_slot[i];
+            res[j] = s->cur[j] + (out[j] - s->cur[j]) * k;
+        }
+    }
+
+    /* 2) A NEW MOVEMENT TYPE starts a new transition, from the pose shown at this instant.
+     *    When one was already running, that pose is where it had got to by now (1): a
+     *    quick succession of changes - an animation flickering on a threshold, strafe spam
+     *    faster than 250 ms - keeps moving at the transition's own pace. Restarting from
+     *    the last committed pose instead would not move at all on a change frame, and on
+     *    the server, which commits once per frame, a change EVERY frame would freeze the
+     *    pose outright: the old bug in a new place (test/test_ctrl_blend.c, case 5).
+     *    When none was running it is exactly the last pose, so the first instant of a
+     *    transition moves nothing whatever the frame length: that is what keeps a 50 ms
+     *    server frame and a 7 ms client frame on the same curve. */
+    new_all = ((type | s->type) & LC_MT_PRONE) != 0;
+    if (restart && !in_win) {
+        if (new_all) {
+            memcpy(res, s->cur, sizeof(res));
+        } else {
+            for (i = 0; i < 7; ++i) res[lc_yaw_slot[i]] = s->cur[lc_yaw_slot[i]];
+        }
+    }
+
+    if (ctx->blend == LC_BLEND_COMMIT) {
+        if (restart) {
+            memcpy(s->from, res, sizeof(s->from));
+            s->type    = type;
+            s->t_start = t;
+            s->all     = new_all;
+            s->len     = new_all ? LC_BLEND_MS_PRONE : LC_BLEND_MS;
+        }
+        memcpy(s->cur, res, sizeof(s->cur));
+        s->t_last = t;
+    }
+
+    if (sampling && ctx->log) {
+        char line[200];
+        snprintf(line, sizeof(line),
+                 "LC%d %c cn=%-2d BLEND type=0x%05x%s win=%s f=%.2f dt=%d t=%d "
+                 "toY %+.2f->%+.2f",
+                 LC_VERSION, ctx->side == LC_SIDE_SERVER ? 'S' : 'C', cn, type,
+                 restart ? " NEW" : "", in_win ? (s->all ? "all" : "yaw") : "-", f, dt, t,
+                 out[LC_TAG_ANG_YAW], res[LC_TAG_ANG_YAW]);
+        ctx->log(line);
+    }
+    memcpy(out, res, sizeof(res));
 }
 
 /* ============================ dump ============================ */
@@ -263,7 +505,8 @@ int lc_apply(float* out, const lc_ctx_t* ctx)
         lc_dump(out, ctx, "pre");
     }
 
-    /* PRONE: apply nothing at all, on both sides.
+    /* PRONE: no lateral top-up and no reprojection, on both sides (the blend, 2, still
+     * runs: a prone transition is the biggest pose change there is).
      * This was a live divergence until now and it was never on anyone's list: the client
      * returned before every adjustment (lean_fix.cpp:130) while the server only skipped
      * the lateral shift and still ran the back-bone reprojection (pose_sync.c `goto diag`
@@ -271,6 +514,10 @@ int lc_apply(float* out, const lc_ctx_t* ctx)
      * while the drawn one was not. Resolved in favour of what production draws today,
      * since that is the pose testers validated. */
     if (ctx->stance == LC_STANCE_PRONE) {
+        if (ctx->blend != LC_BLEND_OFF) {
+            lc_blend(out, ctx, sampling);
+            if (ctx->control) memcpy(ctx->control, out, LC_FLOATS * sizeof(float));
+        }
         if (sampling) lc_dump(out, ctx, "post");
         return sampling;
     }
@@ -293,7 +540,12 @@ int lc_apply(float* out, const lc_ctx_t* ctx)
         out[LC_TAG_OFF_Y] += -lf * (LC_LATERAL_TOTAL - ctx->engine_lateral);
     }
 
-    /* 2) BACK-BONE REPROJECTION - unconditional, like both sides do today.
+    /* 2) BLEND (v2) - see lc_blend(). Between the two, on purpose: the top-up is part of
+     * the pose being blended (the engine limiter used to see it too), and the reprojection
+     * below must work from the yaws that end up drawn / tested, not from the targets. */
+    if (ctx->blend != LC_BLEND_OFF) lc_blend(out, ctx, sampling);
+
+    /* 3) BACK-BONE REPROJECTION - unconditional, like both sides do today.
      * tag_origin yaw is read once up front; lc_adjust_rotation only writes [0] and [2],
      * so the later bones' yaw is unaffected by the earlier ones. */
     {
@@ -307,6 +559,14 @@ int lc_apply(float* out, const lc_ctx_t* ctx)
 #endif
     }
 
+    /* The engine limiter that follows compares the buffer with ci->control and moves
+     * control toward it: equal, it is a no-op, and what is drawn / tested is exactly this
+     * buffer. Our blend state keeps the pre-reprojection pose; control gets the final one,
+     * which is the only thing the engine reads it for (DObjSetControlTagAngles /
+     * DObjSetLocalTag, right after the limiter). */
+    if (ctx->blend != LC_BLEND_OFF && ctx->control)
+        memcpy(ctx->control, out, LC_FLOATS * sizeof(float));
+
     if (sampling) lc_dump(out, ctx, "post");
     return sampling;
 }
@@ -316,13 +576,14 @@ const char* lc_banner(void)
     /* Built once, on first call; the string is a pure function of the constants above, so
      * two builds from identical sources produce identical banners and two builds from
      * drifted sources do not. */
-    static char s[160];
+    static char s[240];
     if (!s[0]) {
         snprintf(s, sizeof(s),
                  "lean_controllers v%d lateral_total=%.2f roll_per_frac=%.3f eps=%.3f "
-                 "sane=%.2f diag=%d/%.2f",
+                 "sane=%.2f diag=%d/%.2f blend=%d/%dms stale=%d lim=%.2f/%.2f yawgroup",
                  LC_VERSION, LC_LATERAL_TOTAL, LC_LEAN_ROLL_PER_FRAC, LC_LEAN_EPS,
-                 LC_LEAN_SANE_MAX, LC_DIAG_BONES, LC_DIAG_K);
+                 LC_LEAN_SANE_MAX, LC_DIAG_BONES, LC_DIAG_K, LC_BLEND_MS, LC_BLEND_MS_PRONE,
+                 LC_BLEND_STALE_MS, LC_LIMIT_DEG_PER_MS, LC_LIMIT_UNITS_PER_MS);
     }
     return s;
 }

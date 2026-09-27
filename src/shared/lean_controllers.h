@@ -49,8 +49,9 @@ extern "C" {
 #endif
 
 /* Bump on ANY change to the shared arithmetic. Both sides print it; a mismatch in the
- * two logs means one repo was copied and the other was not. */
-#define LC_VERSION 1
+ * two logs means one repo was copied and the other was not.
+ * v2: the movement-transition blend (lc_ctx_t.blend, see lean_controllers.c "BLEND"). */
+#define LC_VERSION 2
 
 #define LC_SIDE_CLIENT 0
 #define LC_SIDE_SERVER 1
@@ -78,7 +79,8 @@ extern "C" {
 
 /*
  * Everything the shared code needs. The host fills it per invocation; nothing is cached
- * across calls except the dump throttle, which is keyed on client_num.
+ * across calls except the dump throttle and (v2) the blend state, both keyed on
+ * client_num.
  */
 typedef struct lc_ctx_s {
     int          side;            /* LC_SIDE_CLIENT | LC_SIDE_SERVER - dump label only */
@@ -96,12 +98,39 @@ typedef struct lc_ctx_s {
 
     unsigned int now_ms;          /* any monotonic ms clock; used only to throttle dumps */
 
-    const void*  es;              /* entityState_s* - READ-ONLY, dump only. May be NULL. */
+    const void*  es;              /* entityState_s* - READ-ONLY: the dump, and the blend's
+                                   * movement type. May be NULL when not blending. */
     const void*  ci;              /* clientInfo_t*  - READ-ONLY, dump only. May be NULL. */
 
     int          dump;            /* 0 = off, else max dump samples per client */
     void       (*log)(const char* line);   /* host sink: logger::logf / printf */
+
+    /* ---- v2: the movement-transition blend (lean_controllers.c, "BLEND") ----------
+     * blend = LC_BLEND_OFF    : v1 behaviour, bit for bit; the engine's own limiter
+     *                           runs on the buffer afterwards as it always did.
+     *         LC_BLEND_COMMIT : blend, and advance this client's blend state. Exactly
+     *                           one caller per side does this, on a fixed cadence:
+     *                           client = the pose path, once per rendered frame;
+     *                           server = pose_sync_frame(), once per server frame.
+     *         LC_BLEND_PEEK   : blend from the state as it stands, change nothing. The
+     *                           server's on-demand poses (a bullet trace, a tag query)
+     *                           use this, so HOW OFTEN the server poses a player can no
+     *                           longer change WHERE his hitbox is.
+     * es MUST be set when blending: the movement type is read from it. */
+    int          blend;
+    int          game_time;       /* the bg clock, ms: client cg.time, server level.time -
+                                   * cgame 0x300f2390 / game `bg`+0, both written from the
+                                   * frame time before any pose of that frame */
+    float*       control;         /* ci->control (24 floats at ci+0x3fc, same order as the
+                                   * buffer), or NULL. When blending, the result is written
+                                   * here too, which turns the engine limiter that follows
+                                   * (BG_Player_DoControllers) into a no-op: this file owns
+                                   * the whole smoothing, on both sides. */
 } lc_ctx_t;
+
+#define LC_BLEND_OFF    0
+#define LC_BLEND_COMMIT 1
+#define LC_BLEND_PEEK   2
 
 /* Apply our deltas to the buffer the engine just produced. No allocation, no call back
  * into the game. Dumps "pre"/"post" when ctx->dump is set and the throttle allows.

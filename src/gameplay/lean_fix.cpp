@@ -77,6 +77,12 @@ LeanFixConfig g_lean_fix_config = {
     // chopping it - and it was the last client-only stage after src/shared landed.
     /* ctrl_smooth_enable    */ false,
     /* ctrl_smooth_time      */ 250,
+    // What ctrl_smooth should have been (branch test/ctrl-blend): cod2x's 250 ms
+    // movement-transition blend, in src/shared/lean_controllers.c so the server runs the
+    // same code, triggered by the legs animation and the stance bits only - never the
+    // lean - and timed on cg.time. See lc_blend() there for every difference with the
+    // copy above and with cod2x. ON only together with a cod1plus.so from the same branch.
+    /* ctrl_blend_enable     */ true,
     /* ctrl_dump             */ 0,      // ini key `ctrl_dump`, 0 = off
 };
 
@@ -190,7 +196,11 @@ extern "C" void apply_lean_adjust(float* controllers,
     // reached from the server. That is deliberate: the two used to disagree (the server
     // still ran the back-bone reprojection on a prone player while the client did not),
     // and the shared file resolves it in favour of what production draws today.
-    if (is_prone) return;
+    // With the blend on, "nothing" still has to include the blend, or this player's pose
+    // stops being the server's: lc_apply's prone branch does exactly that and no more.
+    // (0x8000 is in fact a turret bit - the engine's prone bit is 0x40, game 0x1a489 -
+    // so today this path is taken on a mounted MG, where the engine zeroes the buffer.)
+    if (is_prone && !g_lean_fix_config.ctrl_blend_enable) return;
     if (!is_crouch && !g_lean_fix_config.apply_in_stand) return;
 
 
@@ -257,7 +267,8 @@ extern "C" void apply_lean_adjust(float* controllers,
     memset(&g_lc_ctx, 0, sizeof(g_lc_ctx));
     g_lc_ctx.side           = LC_SIDE_CLIENT;
     g_lc_ctx.client_num     = *(const int*)((const char*)entity + ENT_CLIENTNUM_OFFSET);
-    g_lc_ctx.stance         = is_crouch ? LC_STANCE_CROUCH : LC_STANCE_STAND;
+    g_lc_ctx.stance         = is_prone ? LC_STANCE_PRONE
+                            : is_crouch ? LC_STANCE_CROUCH : LC_STANCE_STAND;
     g_lc_ctx.engine_lateral = CLIENT_ENGINE_LATERAL;
     g_lc_ctx.now_ms         = (unsigned int)GetTickCount();
     g_lc_ctx.es             = entity;        // cgame passes the entityState here: this is
@@ -267,6 +278,14 @@ extern "C" void apply_lean_adjust(float* controllers,
     g_lc_ctx.ci             = client_info;
     g_lc_ctx.dump           = ctrl_dump_budget();
     g_lc_ctx.log            = lean_ctrl_log_sink;
+    // The blend: the client's pose path is its one committing caller (cgame poses a
+    // visible player once per frame; a second pose in the same frame has dt = 0 and moves
+    // nothing). The server's committing caller is pose_sync_frame(), once per server frame.
+    if (g_lean_fix_config.ctrl_blend_enable && g_cgame_base) {
+        g_lc_ctx.blend     = LC_BLEND_COMMIT;
+        g_lc_ctx.game_time = *(const int*)(g_cgame_base + CGAME_BG_TIME_RVA);
+        g_lc_ctx.control   = (float*)((char*)client_info + CI_CONTROL_OFFSET);
+    }
 
     g_lc_sampled = lc_apply(controllers, &g_lc_ctx) != 0;
 }
@@ -466,6 +485,8 @@ bool install_lean_fix(HMODULE cgame_module) {
     // If the two strings differ, one repo's copy of src/shared/lean_controllers.* was
     // updated and the other was not, and every alignment claim below it is void.
     logger::logf("  shared: %s", lc_banner());
+    logger::logf("  controller blend: %s (the server's pose_sync line must say the same)",
+                 g_lean_fix_config.ctrl_blend_enable ? "ON" : "off");
     return true;
 }
 
