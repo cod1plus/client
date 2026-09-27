@@ -50,8 +50,9 @@ extern "C" {
 
 /* Bump on ANY change to the shared arithmetic. Both sides print it; a mismatch in the
  * two logs means one repo was copied and the other was not.
- * v2: the movement-transition blend (lc_ctx_t.blend, see lean_controllers.c "BLEND"). */
-#define LC_VERSION 2
+ * v2: the movement-transition blend (lc_ctx_t.blend, see lean_controllers.c "BLEND").
+ * v3: crouch + lean right bends like crouch + lean left (x1.25, not the engine's x1.5). */
+#define LC_VERSION 3
 
 #define LC_SIDE_CLIENT 0
 #define LC_SIDE_SERVER 1

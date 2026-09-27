@@ -6,7 +6,8 @@
  * The engine function runs first on both sides; we only post-process its buffer:
  *
  *   engine BG_Player_DoControllersInternal   ->  "pre"
- *   lc_apply(): lateral top-up, [v2: the BLEND], then the back-bone reprojection -> "post"
+ *   lc_apply(): [v3: crouch-right bend], lateral top-up, [v2: the BLEND], then the
+ *               back-bone reprojection                                          -> "post"
  *   (engine BG_Player_DoControllers limiter: a no-op when the blend is on, see BLEND)
  *
  * The old client-only apply_ctrl_smooth() stage ("smooth") is dead since 1.6.5 and stays
@@ -61,6 +62,26 @@
  * it IS the identity, which is the common case. */
 #define LC_DIAG_BONES          2
 #define LC_DIAG_K              0.75f
+
+/* v3 - THE CROUCH + LEAN RIGHT BEND. The engine multiplies the lean roll of the torso and
+ * of the head by a per-side, per-stance factor before distributing it over the bones
+ * (game 0x1a7d9..0x1a8b7, cgame 0x30004cd3..0x30004d32 - same branch, same constants):
+ *     stand: left x1.25, right x0.8        crouch: left x1.25, right x1.5
+ * so a crouched player leaning right bends ~1.9x more than standing, and with the lateral
+ * shift on top it was the most exposed pose of all (head ~7 u past the camera, enzo's
+ * player_debugEyePosition screenshots, 2026-09-27). v3 brings crouch-right to x1.25, the
+ * crouch-left value. It cannot be done at the source on both sides: the server's 1.5f
+ * (.rodata 0x73d9c) has exactly the two readers of that branch, but cgame's (0x3006b6c8)
+ * is pooled with 13 readers. Measured on the real server function instead, loaded with
+ * dlopen and fed 20000 random poses (test/test_crouch_right_engine.c): with 0x73d9c
+ * patched to 1.25, the ONLY buffer slots that move are the three back-bone rolls and the
+ * head roll, each by exactly 1.25 / 1.5 - and nothing moves in any other stance or side
+ * (max difference 0). So scaling those four slots here, under the engine's own condition
+ * (eFlags crouch 0x20, not prone 0x40, fLeanFrac > 0), IS the engine with 1.25 - on both
+ * sides, before the reprojection like the engine's own multiply. Lateral shift, camera,
+ * legs, pelvis, standing and left leans: untouched. */
+#define LC_ENGINE_CROUCH_RIGHT 1.5f
+#define LC_CROUCH_RIGHT        1.25f
 
 /* ---- entityState_s / clientInfo_t fields, dump only ----------------------------
  * Names and offsets from the engine's own netfield table (CoDMP.exe file 0x180110) and
@@ -505,6 +526,21 @@ int lc_apply(float* out, const lc_ctx_t* ctx)
         lc_dump(out, ctx, "pre");
     }
 
+    /* 0) CROUCH + LEAN RIGHT BEND (v3) - see LC_CROUCH_RIGHT. The condition is the
+     * engine's own branch, read from the same eFlags it read (not ctx->stance, which each
+     * host derives its own way): crouch bit set, not in the prone branch, leaning right.
+     * lf has the engine's sign: out[20] = fLeanFrac * 3.75 is not touched by the multiply. */
+    if (ctx->es && lf > 0.0f) {
+        const int ef = lc_ri(ctx->es, LC_ES_EFLAGS);
+        if ((ef & LC_EF_CROUCH) && !(ef & LC_EF_PRONE)) {
+            const float k = LC_CROUCH_RIGHT / LC_ENGINE_CROUCH_RIGHT;
+            out[LC_BACK_LOW + 2] *= k;
+            out[LC_BACK_MID + 2] *= k;
+            out[LC_BACK_UP + 2]  *= k;
+            out[LC_HEAD + 2]     *= k;
+        }
+    }
+
     /* PRONE: no lateral top-up and no reprojection, on both sides (the blend, 2, still
      * runs: a prone transition is the biggest pose change there is).
      * This was a live divergence until now and it was never on anyone's list: the client
@@ -576,14 +612,16 @@ const char* lc_banner(void)
     /* Built once, on first call; the string is a pure function of the constants above, so
      * two builds from identical sources produce identical banners and two builds from
      * drifted sources do not. */
-    static char s[240];
+    static char s[320];
     if (!s[0]) {
         snprintf(s, sizeof(s),
                  "lean_controllers v%d lateral_total=%.2f roll_per_frac=%.3f eps=%.3f "
-                 "sane=%.2f diag=%d/%.2f blend=%d/%dms stale=%d lim=%.2f/%.2f yawgroup",
+                 "sane=%.2f diag=%d/%.2f blend=%d/%dms stale=%d lim=%.2f/%.2f yawgroup "
+                 "crouch_right=%.2f/%.2f",
                  LC_VERSION, LC_LATERAL_TOTAL, LC_LEAN_ROLL_PER_FRAC, LC_LEAN_EPS,
                  LC_LEAN_SANE_MAX, LC_DIAG_BONES, LC_DIAG_K, LC_BLEND_MS, LC_BLEND_MS_PRONE,
-                 LC_BLEND_STALE_MS, LC_LIMIT_DEG_PER_MS, LC_LIMIT_UNITS_PER_MS);
+                 LC_BLEND_STALE_MS, LC_LIMIT_DEG_PER_MS, LC_LIMIT_UNITS_PER_MS,
+                 LC_CROUCH_RIGHT, LC_ENGINE_CROUCH_RIGHT);
     }
     return s;
 }
