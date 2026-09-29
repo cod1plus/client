@@ -7,6 +7,7 @@
 #include "netcode/ruleset_fetch.h"
 #include "netcode/protocol_patch.h"   // CODMP_CVAR_GET_VA, CODMP_CVAR_COUNT_VA, CVAR_USERINFO
 #include "netcode/competitive.h"      // CODMP_CVAR_SET_VA, CODMP_CVAR_FINDVAR_VA2, cvar_t offsets, competitive_spec_has
+#include "ui/demo_seek.h"          // CODMP_CLC_DEMOPLAYING_VA
 #include "core/logger.h"
 
 #include <cstdio>
@@ -145,7 +146,11 @@ void ruleset_tick() {
     std::string base;
     int want_version = 0;
     ruleset_split_id(want, base, want_version);
-    const bool ingame = cv_int("cl_ingame", 0) != 0;
+    // A demo carries the recorded server's systeminfo (its ruleset id, its competitive.cfg)
+    // and cl_ingame is 1 while it plays: nothing to enforce offline - cl_avidemo, fixedtime,
+    // timescale belong to the player watching his demo. Playback = not in game.
+    const bool demo = *(volatile int*)CODMP_CLC_DEMOPLAYING_VA != 0;
+    const bool ingame = cv_int("cl_ingame", 0) != 0 && !demo;
     ruleset_store_tick();                                             // periodic GitHub refresh
 
     // A server whose cod1plus.so predates sv_competitive_ruleset names nothing, but it
@@ -175,7 +180,7 @@ void ruleset_tick() {
             g_engine_owned.clear();
             g_list = nullptr;
             logger::logf("ruleset: inactive (%s) -> %d lock(s) released",
-                         !ingame ? "not in game" : (!want[0] ? "server publishes no ruleset" : "ruleset id not available yet"),
+                         demo ? "demo playback" : !ingame ? "not in game" : (!want[0] ? "server publishes no ruleset" : "ruleset id not available yet"),
                          released);
             g_active = false;
         }

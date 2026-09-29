@@ -241,7 +241,31 @@ void poll_goto_cvar() {
 
 }  // namespace
 
+// Demo playback and the cheat state. CL_SystemInfoChanged (0x4176f0) skips every cvar
+// while clc.demoplaying (mov eax,[0x18ba6cc]; test; jne end), so a demo keeps the cheat
+// state of the LAST server: sv_cheats 0 after any match, and `timescale`, `cg_draw2d`,
+// `cl_avidemo`... answer "is cheat protected" - only a freshly started game (sv_cheats
+// default) lets them through. Nothing is at stake offline: while a demo plays sv_cheats
+// is forced to 1 (Cvar_Set = force, bypasses ROM), and put back when playback ends. The
+// next server's systeminfo sets it again anyway.
+int  g_demo_cheats = 0;
+char g_cheats_before[8] = "0";
+void demo_cheats_tick() {
+    const int playing = demo_playing() ? 1 : 0;
+    if (playing == g_demo_cheats) return;
+    g_demo_cheats = playing;
+    if (playing) {
+        snprintf(g_cheats_before, sizeof(g_cheats_before), "%.7s", cvar_str("sv_cheats", "0"));
+        set("sv_cheats", "1");
+        logger::logf("demo: playback -> sv_cheats 1 (was %s): timescale and the other cheat cvars usable", g_cheats_before);
+    } else {
+        set("sv_cheats", g_cheats_before);
+        logger::logf("demo: playback over -> sv_cheats %s", g_cheats_before);
+    }
+}
+
 void demo_seek_frame() {
+    demo_cheats_tick();
     poll_goto_cvar();
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
