@@ -1,6 +1,7 @@
 // cod2x aimwalk fix ported to CoD1. single hook at call site cgame+0x51d8.
 
 #include "gameplay/lean_fix.h"
+#include "features/hitbox_view.h"
 #include "core/logger.h"
 #include "core/patches.h"
 #include "video/widescreen_fix.h"
@@ -193,6 +194,8 @@ extern "C" void apply_lean_adjust(float* controllers,
         static DWORD s_pos_log[64] = {0};
         const int cn = *(const int*)((const char*)entity + ENT_CLIENTNUM_OFFSET);
         const DWORD now = GetTickCount();
+        if (cn >= 0 && cn < 64)
+            hitbox_view_note_entity(cn, (const float*)((const char*)entity + 0x18), *(const float*)((const char*)entity + 0x40));
         if (cn >= 0 && cn < 64 && now - s_pos_log[cn] > 1000) {
             const float* tb = (const float*)((const char*)entity + 0x18);
             const float* ap = (const float*)((const char*)entity + 0x3c);

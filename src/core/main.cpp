@@ -84,8 +84,10 @@ bool apply_cgame_patches(HMODULE cgame, bool fresh) {
     if (patches::g_discord_rpc_config.enable &&
         patches::g_discord_rpc_config.client_id[0] != '\0') {
         patches::engine_2d_install_hook(cgame);
-        patches::hitbox_view_install(cgame);        // server-tested hit boxes overlay (cod1x_drawhitbox)
     }
+    // server-tested hit boxes overlay (cod1x_drawhitbox): needs the 'hb' server command
+    // intercepted on EVERY cgame load, whatever else is enabled
+    patches::hitbox_view_install(cgame);
 
     const bool ok = patches::apply_to_cgame(cgame);
     logger::logf("  [%s] cgame patches applied (lean=%d)", ok ? "OK" : "RETRY",
