@@ -16,4 +16,8 @@ bool hitbox_view_install(HMODULE cgame);      // idempotent, at every cgame load
 void hitbox_view_frame();                     // cvar registration / poll, ~4/s
 bool hitbox_view_active();                    // cod1x_drawhitbox != 0 and fresh data
 void hitbox_view_draw(float vw, float vh);    // inside a 2D overlay pass
+// the client's own copy of a player's position/yaw (es.pos, es.apos) each time it poses him
+void hitbox_view_note_entity(int cn, const float* pos, float yaw);
+// the client's own rendered skeleton of one model, in WORLD (bone_probe): pelvis, back_up, neck, head
+void hitbox_view_note_skeleton(const float* pelvis, const float* backup, const float* neck, const float* head);
 }

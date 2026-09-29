@@ -10,6 +10,7 @@
 // spine2 = 24, head = 38. The matrices are in MODEL space (X forward, Y left, Z up):
 // the renderer places them with the entity record's origin and axis.
 #include "gameplay/bone_probe.h"
+#include "features/hitbox_view.h"
 #include "core/logger.h"
 #include <windows.h>
 #include <cstdint>
@@ -24,6 +25,13 @@ constexpr uintptr_t BUILDER   = 0x486d20;
 constexpr int NTRACK = 16;
 struct Track { const void* dobj; DWORD last; };
 Track g_track[NTRACK] = {};
+
+static bool readable(const void* p, size_t n) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!p || !VirtualQuery(p, &mbi, sizeof(mbi))) return false;
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_NOACCESS) || (mbi.Protect & PAGE_GUARD)) return false;
+    return (uintptr_t)p + n <= (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+}
 
 void __cdecl bone_probe(const void* dobj, const void* rent) {
     const uint8_t* d = (const uint8_t*)dobj;
@@ -42,11 +50,13 @@ void __cdecl bone_probe(const void* dobj, const void* rent) {
     if (now - g_track[slot].last < 1000) return;
     g_track[slot].last = now;
     const uint8_t* mats = base + 0x30;
-    const int idx[4] = { 1, 6, 24, 38 };
-    const char* nm[4] = { "pelvis", "back_low", "back_up", "head" };
-    char line[400];
+    // xmodelparts order of the 80-bone body (hitbox_data.h HB_BONE_NAMES): pelvis 2,
+    // back_low 7, back_up 25, neck 33, head 39 - the old 1/6/24/38 were one off
+    const int idx[7] = { 0, 1, 2, 7, 25, 33, 39 };
+    const char* nm[7] = { "tag_origin", "bip01", "pelvis", "back_low", "back_up", "neck", "head" };
+    char line[520];
     int n = snprintf(line, sizeof(line), "bone_probe: dobj %p n=%d", dobj, count);
-    for (int k = 0; k < 4; ++k) {
+    for (int k = 0; k < 7; ++k) {
         if (idx[k] >= count) break;
         const float* m = (const float*)(mats + idx[k] * 0x40);
         const float* p = m + 12;
@@ -55,6 +65,25 @@ void __cdecl bone_probe(const void* dobj, const void* rent) {
                       nm[k], p[0], p[1], p[2], m[0], m[1], m[2]);
     }
     logger::logf("%s", line);
+    /* place pelvis / back_up / neck / head in world exactly as the renderer does (origin =
+     * cent->lerpOrigin, yaw = cent->lerpAngles[1], model X forward / Y left) -> overlay */
+    if (rent) {
+        const uint8_t* cent = *(const uint8_t* const*)((const uint8_t*)rent + 0x3c);
+        if (readable(cent, 0x210)) {
+            const float* org = (const float*)(cent + 0x1f8);
+            const float yaw = *(const float*)(cent + 0x208) * 3.14159265f / 180.0f;
+            const float cy = cosf(yaw), sy = sinf(yaw);
+            float w[4][3];
+            const int pick[4] = { 2, 25, 33, 39 };
+            for (int k = 0; k < 4; ++k) {
+                const float* m = (const float*)(mats + pick[k] * 0x40) + 12;
+                w[k][0] = org[0] + cy * m[0] - sy * m[1];
+                w[k][1] = org[1] + sy * m[0] + cy * m[1];
+                w[k][2] = org[2] + m[2];
+            }
+            hitbox_view_note_skeleton(w[0], w[1], w[2], w[3]);
+        }
+    }
     /* the renderer's entity record: every dword that looks like a world coordinate or a
      * unit-axis component, with its offset - the placement (origin + axis) of the model */
     if (rent) {
@@ -66,6 +95,23 @@ void __cdecl bone_probe(const void* dobj, const void* rent) {
                 n += snprintf(line + n, sizeof(line) - n, " +%02x=%.2f", i * 4, v);
         }
         logger::logf("%s", line);
+        /* the record holds pointers (into cgame memory): follow each readable one and
+         * print the world-coordinate-looking floats behind it - one of them is the
+         * placement (origin / axis) of this model */
+        const uint32_t* dw = (const uint32_t*)rent;
+        for (int i = 0; i < 48; ++i) {
+            const uintptr_t pv = dw[i];
+            if (pv < 0x10000 || pv > 0x7fff0000u || (pv & 3)) continue;
+            if (!readable((const void*)pv, 0x80)) continue;
+            const float* g = (const float*)pv;
+            int m = 0;
+            n = snprintf(line, sizeof(line), "bone_probe:   rent+%02x -> %08x:", i * 4, (unsigned)pv);
+            for (int j = 0; j < 32 && n < (int)sizeof(line) - 24; ++j) {
+                const float v = g[j];
+                if (fabsf(v) > 50.0f && fabsf(v) < 20000.0f && v == v) { n += snprintf(line + n, sizeof(line) - n, " +%02x=%.1f", j * 4, v); m++; }
+            }
+            if (m) logger::logf("%s", line);
+        }
     }
 }
 
