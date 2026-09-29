@@ -1,0 +1,19 @@
+// hitbox_view.h - draw the SERVER's tested hit boxes over the player you look at.
+//
+// cod1plus.so (server cvar cod1x_drawhitbox 1) streams, 5 times a second, the boxes the
+// server tests for the player nearest your line of sight, posed exactly as its hit test
+// poses them: server command
+//     hb <cn> <part> <nparts> <ox> <oy> <oz> <bone> <bone> ...
+//     bone = id,px,py,pz,r00,r01,r02,r10,r11,r12,r20,r21,r22,mnx,mny,mnz,mxx,mxy,mxz
+// This intercepts it in cgame's server-command dispatcher (CG_ServerCommand, cgame+0x2f660,
+// its single call site cgame+0x2fc96) and, with the client cvar cod1x_drawhitbox 1, draws
+// every box as a wireframe projected with the game's own camera. A gap between the drawn
+// body and the boxes is the desync, on screen.
+#pragma once
+#include <windows.h>
+namespace patches {
+bool hitbox_view_install(HMODULE cgame);      // idempotent, at every cgame load
+void hitbox_view_frame();                     // cvar registration / poll, ~4/s
+bool hitbox_view_active();                    // cod1x_drawhitbox != 0 and fresh data
+void hitbox_view_draw(float vw, float vh);    // inside a 2D overlay pass
+}

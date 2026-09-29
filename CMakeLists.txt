@@ -72,10 +72,12 @@ set(COD1RELOADED_SOURCES
     src/video/gamma_fix.cpp
     src/features/avatar_overlay.cpp
     src/features/engine_2d.cpp
+    src/features/hitbox_view.cpp
     src/features/discord_rpc.cpp
     src/features/settings_menu.cpp
     src/gameplay/stance_fix.cpp
     src/gameplay/anim_clamp.cpp
+    src/gameplay/bone_probe.cpp
     src/netcode/antilag.cpp
     src/core/single_instance.cpp
     src/ui/gl_overlay.cpp

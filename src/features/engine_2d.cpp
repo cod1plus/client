@@ -70,6 +70,8 @@ qhandle_t engine_2d_register_shader(const char* name, int flags) {
     return 0;
 }
 
+EngineSyscall_t engine_2d_syscall() { return g_syscall_slot ? *g_syscall_slot : nullptr; }
+
 qhandle_t engine_2d_register_shader_via(const char* name, int flags, intptr_t syscall_id) {
     if (!g_syscall_slot || !name) return 0;
     EngineSyscall_t syscall = *g_syscall_slot;

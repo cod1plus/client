@@ -23,6 +23,8 @@ constexpr uintptr_t CGAME_R_REGSHADER_WRAP_RVA       = 0x000322a0;
 
 // engine sets via dllEntry() at cgame load
 typedef intptr_t (*EngineSyscall_t)(intptr_t syscall_id, ...);
+// the engine syscall entry cgame was given (nullptr before CG_Init) - for other modules
+EngineSyscall_t engine_2d_syscall();
 
 // idempotent; false if call site signature mismatches (different cgame build)
 bool engine_2d_install_hook(HMODULE cgame_module);

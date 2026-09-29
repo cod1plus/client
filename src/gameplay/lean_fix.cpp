@@ -189,6 +189,19 @@ extern "C" void apply_lean_adjust(float* controllers,
         }
     }
 
+    {   // DEV DIAGNOSTIC: where this client draws each player (es->pos.trBase, +0x18)
+        static DWORD s_pos_log[64] = {0};
+        const int cn = *(const int*)((const char*)entity + ENT_CLIENTNUM_OFFSET);
+        const DWORD now = GetTickCount();
+        if (cn >= 0 && cn < 64 && now - s_pos_log[cn] > 1000) {
+            const float* tb = (const float*)((const char*)entity + 0x18);
+            const float* ap = (const float*)((const char*)entity + 0x3c);
+            s_pos_log[cn] = now;
+            logger::logf("pos_log: cn=%d es.pos %.1f %.1f %.1f apos %.1f/%.1f la=%d ef=0x%x", cn,
+                         tb[0], tb[1], tb[2], ap[0], ap[1],
+                         *(const int*)((const char*)entity + 0xcc), (unsigned)*(const uint32_t*)((const char*)entity + ENT_EFLAGS_OFFSET));
+        }
+    }
     const uint32_t eflags = *(const uint32_t*)((const char*)entity + ENT_EFLAGS_OFFSET);
     const bool is_crouch = (eflags & ENT_FLAG_CROUCH) != 0;
     const bool is_prone  = (eflags & ENT_FLAG_PRONE)  != 0;
@@ -321,6 +334,19 @@ extern "C" void apply_ctrl_smooth(float* controllers,
     if (!g_lean_fix_config.ctrl_smooth_enable) return;
     if (!controllers || !entity) return;
 
+    {   // DEV DIAGNOSTIC: where this client draws each player (es->pos.trBase, +0x18)
+        static DWORD s_pos_log[64] = {0};
+        const int cn = *(const int*)((const char*)entity + ENT_CLIENTNUM_OFFSET);
+        const DWORD now = GetTickCount();
+        if (cn >= 0 && cn < 64 && now - s_pos_log[cn] > 1000) {
+            const float* tb = (const float*)((const char*)entity + 0x18);
+            const float* ap = (const float*)((const char*)entity + 0x3c);
+            s_pos_log[cn] = now;
+            logger::logf("pos_log: cn=%d es.pos %.1f %.1f %.1f apos %.1f/%.1f la=%d ef=0x%x", cn,
+                         tb[0], tb[1], tb[2], ap[0], ap[1],
+                         *(const int*)((const char*)entity + 0xcc), (unsigned)*(const uint32_t*)((const char*)entity + ENT_EFLAGS_OFFSET));
+        }
+    }
     const uint32_t eflags = *(const uint32_t*)((const char*)entity + ENT_EFLAGS_OFFSET);
     if (eflags & ENT_FLAG_PRONE) return;
     const bool is_crouch = (eflags & ENT_FLAG_CROUCH) != 0;

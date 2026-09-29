@@ -113,10 +113,41 @@ float dist3(const float a[3], const float b[3]) {
 
 }  // namespace
 
+// DEV DIAGNOSTIC (2026-09-29, "la balle passe a cote"): the rendered view direction
+// (refdef axis[0]) against the predicted playerState view angles (what the usercmds carry
+// and the server fires along), plus the camera origin against ps.origin + viewheight.
+// A constant difference here = the sight is not where the bullet goes.
+static DWORD g_aim_last = 0;
+static void aim_log(DWORD now) {
+    if (now - g_aim_last < 500) return;
+    const uintptr_t cg = cgame();
+    if (!cg) return;
+    Cam c;
+    if (!read_cam(&c)) return;
+    const char* ps = (const char*)(cg + RVA_PS);
+    float org[3], ang[3];
+    memcpy(org, ps + PS_ORIGIN, 12);
+    memcpy(ang, ps + PS_VIEWANGLES, 12);
+    const float vh = *(const float*)(ps + PS_VIEWHEIGHT);
+    if (!(vh > 1.0f && vh < 100.0f)) return;
+    g_aim_last = now;
+    const float r2d = 180.0f / 3.14159265f;
+    const float ryaw = atan2f(c.ax[1], c.ax[0]) * r2d;
+    const float rpitch = -asinf(c.ax[2] < -1 ? -1 : c.ax[2] > 1 ? 1 : c.ax[2]) * r2d;
+    float dyaw = ryaw - ang[1];
+    while (dyaw > 180) dyaw -= 360;
+    while (dyaw < -180) dyaw += 360;
+    logger::logf("aim_log: ps ang %.2f/%.2f | refdef fwd %.2f/%.2f (d pitch %+.2f yaw %+.2f) | "
+                 "ps org %.1f %.1f %.1f vh %.1f | cam %.1f %.1f %.1f | fov %.1f/%.1f",
+                 ang[0], ang[1], rpitch, ryaw, rpitch - ang[0], dyaw,
+                 org[0], org[1], org[2], vh, c.org[0], c.org[1], c.org[2], c.fovx, c.fovy);
+}
+
 void eye_debug_frame() {
     const DWORD now = GetTickCount();
     if (now - g_last_poll < 250) return;
     g_last_poll = now;
+    aim_log(now);
     if (!g_registered) {
         ((Cvar_Get_t)CODMP_CVAR_GET_VA)("player_debugEyePosition", "0", 0);
         g_registered = true;

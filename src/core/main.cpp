@@ -22,6 +22,8 @@
 #include "video/display_probe.h"
 #include "video/mode_guard.h"
 #include "input/rinput.h"
+#include "gameplay/bone_probe.h"
+#include "features/hitbox_view.h"
 #include "performance/fps_cap.h"
 #include "performance/frame_limiter.h"
 #include "performance/gpu_sync.h"
@@ -82,6 +84,7 @@ bool apply_cgame_patches(HMODULE cgame, bool fresh) {
     if (patches::g_discord_rpc_config.enable &&
         patches::g_discord_rpc_config.client_id[0] != '\0') {
         patches::engine_2d_install_hook(cgame);
+        patches::hitbox_view_install(cgame);        // server-tested hit boxes overlay (cod1x_drawhitbox)
     }
 
     const bool ok = patches::apply_to_cgame(cgame);
@@ -218,6 +221,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             patches::apply_fullscreen_patch();
 
             patches::apply_frame_limiter_patch();
+            patches::bone_probe_install();      // DEV DIAGNOSTIC: drawn bone positions (2026-09-29)
 
             // one frame in flight: glFinish after every SwapBuffers (gpu_sync = off to skip)
             patches::gpu_sync_start();
