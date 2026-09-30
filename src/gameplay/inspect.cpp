@@ -114,6 +114,11 @@ struct Skel {
     // pistol spin (mode 3): the pistol turns about the right index finger, the hand open
     int idx11 = -1, idx12 = -1;
     volatile float spin_deg = 0, open = 0, away = 0;
+    volatile float flick = 0;                 // the wrist: turn about the spin axis (deg) ...
+    V3 flick_off = { 0, 0, 0 };               // ... and move (units)
+    V3 com = { 0, 0, -1.6f };                 // the pistol's centre of mass from the finger, model space
+    V3 axis = { 0, 1, 0 };                    // the spin axis: the pistol's lateral axis
+    volatile bool spin_ready = false;         // com / axis measured on a fresh skeleton
     unsigned builds = 0;
 } g_sk;
 Limb g_R, g_L;
@@ -132,6 +137,14 @@ void* g_cv_speed = nullptr;
 void* g_cv_mag = nullptr;
 int g_mode = 0;                   // 0 = idle, 1 = inspect, 2 = full inspect (bolt + magazine), 3 = pistol spin
 LARGE_INTEGER g_t0, g_freq;
+// the pistol on the finger: one degree of freedom about its lateral axis, gravity on its centre
+// of mass, finger friction, the wrist's snap as a torque, the palm's catch as a stiff spring
+struct Spin { float th = 0, om = 0, last = 0, tc = -1, tgt = 0; } g_spin;
+constexpr float SPIN_G = 386.0f;          // in/s^2 - the view models are built in inches
+constexpr float SPIN_K2 = 3.4f * 3.4f;    // radius of gyration^2 of a pistol about its centre of mass
+constexpr float SPIN_VISC = 0.6f, SPIN_COUL = 3.5f;
+constexpr float SPIN_KICK = 420.0f;       // rad/s^2 for 70 ms: ~2.4 turns/s, 2-3 turns
+constexpr float SPIN_T_SNAP = 0.30f, SPIN_T_SNAP_END = 0.37f;
 int g_weapon = 0, g_state = 0;
 
 float now_s() {
@@ -247,7 +260,10 @@ void start(int mode, int weapon, int state, const uint8_t* ref) {
     g_sk.clip = g_sk.bolt = g_sk.flash = g_sk.gun0 = g_sk.htag = -1;
     g_sk.boltaction = g_sk.arms = g_sk.has_out = g_sk.grip = false;
     g_sk.mag = g_sk.back = g_sk.lift = g_sk.twist = g_sk.grab = 0;
-    g_sk.spin_deg = g_sk.open = g_sk.away = 0;
+    g_sk.spin_deg = g_sk.open = g_sk.away = g_sk.flick = 0;
+    g_sk.flick_off = { 0, 0, 0 };
+    g_sk.spin_ready = false;
+    g_spin = Spin();
     g_sk.idx11 = g_sk.idx12 = -1;
     g_sk.gq = { 1, 0, 0, 0 }; g_sk.gslide = { 0, 0, 0 };
     g_sk.dirs = false;
@@ -365,11 +381,46 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
 
     const float t = now_s() * cvar_f(g_cv_speed, 1, 0.05f, 20);
     if (g_mode == 3) {
-        // hand opens, two turns forward about the index finger (muzzle down first), caught
-        if (t >= 2.0f) { stop("done"); return; }
-        g_sk.open = ramp(t, 0.10f, 0.28f) * (1 - ramp(t, 1.50f, 1.68f));
-        g_sk.away = ramp(t, 0.0f, 0.30f) * (1 - ramp(t, 1.65f, 1.95f));
-        g_sk.spin_deg = 720.0f * ease((t - 0.25f) / 1.25f) - 10.0f * bump(t, 1.50f, 0.20f);
+        // the hand opens, the wrist cocks back then snaps forward (the torque that spins the
+        // pistol), the pistol turns on the finger under gravity and friction, and the palm catches
+        // it when the grip comes round slowly enough
+        const float* F = (const float*)(g_base + VIEWORG_RVA + 12);
+        const V3 g = scl({ -F[2], -F[5], -F[8] }, SPIN_G);          // world down, in view (model) axes
+        const V3 a = g_sk.axis, r0 = g_sk.com;
+        const float I = SPIN_K2 + dot(r0, r0);
+        float dt = t - g_spin.last;
+        dt = dt < 0 ? 0 : dt > 0.05f ? 0.05f : dt;
+        g_spin.last = t;
+        for (float done = 0; done < dt && g_sk.spin_ready; done += 0.001f) {
+            const float h = dt - done < 0.001f ? dt - done : 0.001f;
+            const float tt = t - dt + done;
+            float acc;
+            if (g_spin.tc < 0) {
+                const V3 r = qrot(qaxis(a, g_spin.th * 57.29578f), r0);
+                acc = dot(cross(r, g), a) / I - SPIN_VISC * g_spin.om - SPIN_COUL * tanhf(g_spin.om / 0.5f);
+                if (tt >= SPIN_T_SNAP && tt < SPIN_T_SNAP_END) acc += SPIN_KICK;
+                const float wrap = remainderf(g_spin.th, 6.2831853f);
+                if ((tt > 0.95f && fabsf(wrap) < 0.52f && g_spin.om > 0 && g_spin.om < 20.0f) || tt > 3.0f) {
+                    g_spin.tc = tt;
+                    g_spin.tgt = g_spin.th - wrap;
+                    logger::logf("inspect: caught after %.2f turn(s) at %.1f turns/s (%.2f s)", g_spin.th / 6.2831853f, g_spin.om / 6.2831853f, tt);
+                }
+            } else {
+                acc = -900.0f * (g_spin.th - g_spin.tgt) - 60.0f * g_spin.om;
+            }
+            g_spin.om += acc * h;
+            g_spin.th += g_spin.om * h;
+        }
+        const float tc = g_spin.tc;
+        if (tc >= 0 && t > tc + 0.55f) { stop("done"); return; }
+        g_sk.spin_deg = g_spin.th * 57.29578f;
+        g_sk.open = ramp(t, 0.05f, 0.20f) * (tc < 0 ? 1.0f : 1 - ramp(t, tc, tc + 0.12f));
+        g_sk.away = ramp(t, 0.0f, 0.30f) * (tc < 0 ? 1.0f : 1 - ramp(t, tc + 0.2f, tc + 0.5f));
+        // the wrist: cocked back, snapped forward, back to rest; a small give when it catches
+        const float back = ramp(t, 0.18f, SPIN_T_SNAP), snap = ramp(t, SPIN_T_SNAP, SPIN_T_SNAP_END), rest = ramp(t, SPIN_T_SNAP_END, 0.75f);
+        const float give = tc < 0 ? 0.0f : bump(t, tc, 0.30f);
+        g_sk.flick = (-14.0f * back + 24.0f * snap) * (1 - rest) + 7.0f * give;
+        g_sk.flick_off = add(scl({ 0, 0, -0.6f }, back * (1 - snap)), add(scl({ 0.5f, 0, 1.5f }, snap * (1 - rest)), scl({ 0, 0, -1.0f }, give)));
         return;
     }
     Key k[9];
@@ -556,15 +607,28 @@ void inspect_on_skeleton(const void* dobj) {
         qL = get_rot(bone(d, g_L.hand)); pL = row(bone(d, g_L.hand), 3);
     }
     if (g_mode == 3) {
-        // pistol spin: about the right index finger (in the trigger guard), around the gun's
-        // lateral axis; the other fingers open, the left hand moves out of the way
-        const V3 piv = scl(add(row(bone(d, g_sk.idx11), 3), row(bone(d, g_sk.idx12), 3)), 0.5f);
-        const Q qs = qaxis(norm(cross({ 0, 0, 1 }, g_sk.b)), g_sk.spin_deg);
-        for (int i = g_sk.gun0; i < n; ++i) spin(d, i, qs, piv);
-        if (g_sk.htag >= 0) spin(d, g_sk.htag, qs, piv);
-        if (!arms) return;
-        if (g_sk.open > 0) pose_fingers(d, g_R, g_sk.open);
-        if (g_sk.away > 0) solve_limb(d, g_L, qL, add(pL, scl({ 0, 3, -6 }, g_sk.away)), 0);
+        // pistol spin: the pistol hangs on the right index finger (in the trigger guard) and turns
+        // about its lateral axis; the hand (wrist snap, catch) moves the finger it hangs on
+        const V3 piv0 = scl(add(row(bone(d, g_sk.idx11), 3), row(bone(d, g_sk.idx12), 3)), 0.5f);
+        const V3 a = norm(cross({ 0, 0, 1 }, g_sk.b));
+        if (!g_sk.spin_ready) {
+            // centre of mass: below the finger, toward the grip (the magazine's way out), a little forward
+            g_sk.axis = a;
+            g_sk.com = add(scl(g_sk.o, 1.6f), scl(g_sk.b, 0.3f));
+            g_sk.spin_ready = true;
+            logger::logf("inspect: spin axis (%.2f %.2f %.2f), centre of mass (%.2f %.2f %.2f) from the finger",
+                         a.x, a.y, a.z, g_sk.com.x, g_sk.com.y, g_sk.com.z);
+        }
+        V3 piv = piv0;
+        if (arms) {
+            solve_limb(d, g_R, qmul(qaxis(a, g_sk.flick), qR), add(pR, g_sk.flick_off), 0);
+            if (g_sk.open > 0) pose_fingers(d, g_R, g_sk.open);
+            piv = scl(add(row(bone(d, g_sk.idx11), 3), row(bone(d, g_sk.idx12), 3)), 0.5f);
+        }
+        const Q qs = qaxis(a, g_sk.spin_deg);
+        for (int i = g_sk.gun0; i < n; ++i) { spin(d, i, qs, piv0); shift(d, i, sub(piv, piv0)); }
+        if (g_sk.htag >= 0) { spin(d, g_sk.htag, qs, piv0); shift(d, g_sk.htag, sub(piv, piv0)); }
+        if (arms && g_sk.away > 0) solve_limb(d, g_L, qL, add(pL, scl({ 0, 3, -6 }, g_sk.away)), 0);
         return;
     }
     // 1. bolt and magazine, in the gun as it rests
