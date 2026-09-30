@@ -23,6 +23,7 @@
 // drawn on the body the client draws, for everyone on screen, with no server traffic.
 #include "gameplay/bone_probe.h"
 #include "features/hitbox_view.h"
+#include "gameplay/hitbox_client.h"
 #include "core/logger.h"
 #include <windows.h>
 #include <cstdint>
@@ -91,6 +92,7 @@ __attribute__((force_align_arg_pointer)) void __cdecl bone_probe(const void* dob
     if (count < 56 || count > 130) return;
     const int cn = player_of(d);
     if (cn < 0) return;
+    hitbox_client_patch(dobj);        // this body's boxes = the server's, for the impacts the client predicts
     const uint8_t* mats = *(const uint8_t* const*)(d + 4);
     if (!mats) return;
     mats += 0x30;
