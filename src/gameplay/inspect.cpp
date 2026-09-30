@@ -456,6 +456,7 @@ void inspect_on_skeleton(const void* dobj) {
             const float* m = bone(d, g_sk.flash);
             b = norm(row(m, 0));
             if (b.x < 0) b = scl(b, -1);
+            if (b.x < 0.8f) b = { 1, 0, 0 };     // a tag_flash not laid along the barrel (seen: 0.62 0.69 0.39)
             P = row(m, 3);
         }
         V3 o = { 0, 0, -1 };
