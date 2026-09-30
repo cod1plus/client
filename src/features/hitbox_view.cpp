@@ -249,7 +249,15 @@ void hitbox_view_frame() {
         ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_drawhitbox", "0", 0);
         g_registered = true;
     }
-    const int v = cvar_int("cod1x_drawhitbox");
+    // DEVMAP ONLY: the boxes are drawn through walls, so the cvar only counts while the
+    // server runs with cheats (sv_cheats 1: devmap, or a demo being played back).
+    const int asked = cvar_int("cod1x_drawhitbox");
+    const int v = (asked && cvar_int("sv_cheats")) ? asked : 0;
+    {
+        static int s_refused = 0;
+        if (asked && !v && !s_refused) { s_refused = 1; logger::logf("hitbox_view: cod1x_drawhitbox %d ignored - needs a devmap (sv_cheats 1)", asked); }
+        if (!asked) s_refused = 0;
+    }
     {   // heartbeat while on: what is being received and drawn
         static DWORD s_hb = 0;
         if (v && now - s_hb > 5000) {
