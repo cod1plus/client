@@ -333,3 +333,23 @@ static const InspectArmBone INSPECT_ARM_L[] = {   // under bip01 l upperarm
     { "bip01 l finger4nub", "bip01 l finger42" },
 };
 static const int INSPECT_NARM_L = 25;
+static const InspectGripBone INSPECT_OPEN_R[] = {   // viewmodel_mosinnagantscoped_reloadinsert frame 66, the index left out
+    { "bip01 r finger0", "bip01 r hand", { -0.656819f, -0.084140f, -0.186254f, 0.725822f } },
+    { "bip01 r finger2", "bip01 r hand", { -0.065798f, -0.008271f, -0.034059f, 0.997217f } },
+    { "bip01 r finger3", "bip01 r hand", { -0.033204f, -0.016877f, 0.003388f, 0.999300f } },
+    { "bip01 r finger4", "bip01 r hand", { -0.004791f, -0.040559f, 0.016755f, 0.999025f } },
+    { "r hand webbing", "bip01 r hand", { -0.267953f, -0.165258f, -0.051485f, 0.947756f } },
+    { "bip01 r finger01", "bip01 r finger0", { 0.000000f, 0.000000f, -0.020600f, 0.999788f } },
+    { "bip01 r finger21", "bip01 r finger2", { -0.000000f, -0.000000f, -0.003540f, 0.999994f } },
+    { "bip01 r finger31", "bip01 r finger3", { 0.000000f, 0.000000f, 0.026856f, 0.999639f } },
+    { "bip01 r finger41", "bip01 r finger4", { 0.000000f, 0.000000f, 0.036714f, 0.999326f } },
+    { "bip01 r finger02", "bip01 r finger01", { -0.000000f, -0.000000f, 0.195349f, 0.980734f } },
+    { "bip01 r finger22", "bip01 r finger21", { 0.000000f, -0.000000f, 0.024262f, 0.999706f } },
+    { "bip01 r finger32", "bip01 r finger31", { 0.000000f, -0.000000f, 0.062105f, 0.998070f } },
+    { "bip01 r finger42", "bip01 r finger41", { 0.000000f, -0.000000f, 0.103488f, 0.994631f } },
+    { "bip01 r finger0nub", "bip01 r finger02", { 1.000000f, 0.000000f, 0.000000f, 0.000000f } },
+    { "bip01 r finger2nub", "bip01 r finger22", { 1.000000f, 0.000000f, -0.000000f, 0.000000f } },
+    { "bip01 r finger3nub", "bip01 r finger32", { 1.000000f, 0.000000f, -0.000000f, 0.000000f } },
+    { "bip01 r finger4nub", "bip01 r finger42", { 1.000000f, 0.000000f, -0.000000f, 0.000000f } },
+};
+static const int INSPECT_NOPEN_R = 17;

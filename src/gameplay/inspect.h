@@ -29,6 +29,10 @@ namespace patches {
 // DObj (hands + weapon); syscall 0xaf (dobj, name) -> bone index or -1 finds `<gun>_clip` /
 // `<gun>_bolt` / tag_flash; the render skeleton builder (bone_probe) hands every skeleton it
 // builds to inspect_on_skeleton, which moves those bones in the matrices just built.
+// `set cod1x_inspect 3` = pistol spin (Colt, Luger; anything else gets 2): the other fingers open
+// (an open hand taken from the Mosin's round insert, INSPECT_OPEN_R), the pistol makes two turns
+// forward about the right index finger in the trigger guard, around its lateral axis, and is
+// caught; the left hand moves out of the way.
 // The left hand takes the magazine: inspect_grips.h (generated from each weapon's reload
 // animation by codps3/xanim_tool/gen_inspect_grips.py) gives the way the magazine leaves the
 // gun, the hand's place on it and the finger rotations of that grip; the arm is re-solved
