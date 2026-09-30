@@ -3,12 +3,15 @@
 // CoDMP.exe 0x403d4c:  mov edx,[esi+4] ; mov eax,[esi+8] ; push edx ; call 0x486d20 ; add esp,4
 // 0x486d20 = the render skeleton builder (memory cod1-dobj-render-bone-hook): the DObj is
 // the stack argument, the part bits pointer travels in EAX, ESI = the renderer's entity
-// record (+4 = dobj, +8 = part bits) that also carries the placement of the model. After
-// the builder returns, the world matrices sit at *(uint8_t**)(dobj + 4) + 0x30, one
-// 0x40-byte matrix per bone (rows at +0/+0x10/+0x20, position at +0x30), bone count =
-// byte dobj + 0x17. For the 80-bone MP body: pelvis = 1, spine (back_low) = 6,
-// spine2 = 24, head = 38. The matrices are in MODEL space (X forward, Y left, Z up):
-// the renderer places them with the entity record's origin and axis.
+// record (+4 = dobj, +8 = part bits, +0x3c = the centity_t drawn). After the builder returns
+// the world matrices sit at *(uint8_t**)(dobj + 4) + 0x30, one 0x40-byte matrix per bone
+// (rows at +0/+0x10/+0x20 = the bone's local axes, position at +0x30), bone count = byte
+// dobj + 0x17, in MODEL space (X forward, Y left, Z up): the renderer places them with the
+// entity's lerpOrigin (cent + 0x1f8) and yaw (cent + 0x208).
+//
+// Every call (= every frame, for every player drawn) hands hitbox_view the 80 bone frames
+// in WORLD space plus the body model's name, so the tested hit boxes can be drawn on the
+// body the client draws, for every player on screen, without any server traffic.
 #include "gameplay/bone_probe.h"
 #include "features/hitbox_view.h"
 #include "core/logger.h"
@@ -22,9 +25,6 @@ namespace patches {
 namespace {
 constexpr uintptr_t CALL_SITE = 0x403d53;          // e8 c8 2f 08 00 = call 0x486d20
 constexpr uintptr_t BUILDER   = 0x486d20;
-constexpr int NTRACK = 16;
-struct Track { const void* dobj; DWORD last; };
-Track g_track[NTRACK] = {};
 
 static bool readable(const void* p, size_t n) {
     MEMORY_BASIC_INFORMATION mbi;
@@ -33,86 +33,77 @@ static bool readable(const void* p, size_t n) {
     return (uintptr_t)p + n <= (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
 }
 
+// The body model's name from the DObj: the DObj holds pointers to its XModels (body, head,
+// helmet, weapon); an XModel starts with the pointer to its name ("playerbody_..." on the
+// server's copy, memory cod1-hitbox-boxes-fix). Found by scanning the 0x5c-byte DObj for a
+// pointer whose first dword points to text containing "playerbody"; the offset is cached.
+static int g_name_off = -1;
+static const char* body_name(const uint8_t* d) {
+    auto name_at = [&](int off) -> const char* {
+        const uintptr_t p = *(const uintptr_t*)(d + off);
+        if (p < 0x10000 || (p & 3) || !readable((const void*)p, 8)) return nullptr;
+        const char* s = *(const char* const*)p;
+        if (!readable(s, 64)) return nullptr;
+        for (int i = 0; i < 64; ++i) {
+            const char c = s[i];
+            if (c == 0) return (i > 10 && strstr(s, "playerbody")) ? s : nullptr;
+            if (c < 0x20 || c > 0x7e) return nullptr;
+        }
+        return nullptr;
+    };
+    if (g_name_off >= 0) {
+        const char* s = name_at(g_name_off);
+        if (s) return s;
+    }
+    for (int off = 0; off <= 0x58; off += 4) {
+        const char* s = name_at(off);
+        if (s) { if (g_name_off != off) { g_name_off = off; logger::logf("bone_probe: body model name found at dobj+0x%x: %s", off, s); } return s; }
+    }
+    // not this DObj's model (head / weapon DObjs share the pass): scan the pointed structs one level deeper
+    for (int off = 0; off <= 0x58; off += 4) {
+        const uintptr_t p = *(const uintptr_t*)(d + off);
+        if (p < 0x10000 || (p & 3) || !readable((const void*)p, 0x40)) continue;
+        for (int k = 0; k < 0x40; k += 4) {
+            const uintptr_t q = *(const uintptr_t*)(p + k);
+            if (q < 0x10000 || (q & 3) || !readable((const void*)q, 8)) continue;
+            const char* s = *(const char* const*)q;
+            if (!readable(s, 64)) continue;
+            bool ok = false;
+            for (int i = 0; i < 64; ++i) { const char c = s[i]; if (c == 0) { ok = i > 10; break; } if (c < 0x20 || c > 0x7e) break; }
+            if (ok && strstr(s, "playerbody")) return s;
+        }
+    }
+    return nullptr;
+}
+
 void __cdecl bone_probe(const void* dobj, const void* rent) {
     const uint8_t* d = (const uint8_t*)dobj;
     const int count = d[0x17];
-    if (count < 56 || count > 130) return;
-    const uint8_t* base = *(const uint8_t* const*)(d + 4);
-    if (!base) return;
-    const DWORD now = GetTickCount();
-    int slot = -1;
-    for (int i = 0; i < NTRACK; ++i) if (g_track[i].dobj == dobj) { slot = i; break; }
-    if (slot < 0) {
-        slot = 0;
-        for (int i = 1; i < NTRACK; ++i) if (g_track[i].last < g_track[slot].last) slot = i;
-        g_track[slot].dobj = dobj; g_track[slot].last = 0;
-    }
-    if (now - g_track[slot].last < 1000) return;
-    g_track[slot].last = now;
-    const uint8_t* mats = base + 0x30;
-    // xmodelparts order of the 80-bone body (hitbox_data.h HB_BONE_NAMES): pelvis 2,
-    // back_low 7, back_up 25, neck 33, head 39 - the old 1/6/24/38 were one off
-    const int idx[7] = { 0, 1, 2, 7, 25, 33, 39 };
-    const char* nm[7] = { "tag_origin", "bip01", "pelvis", "back_low", "back_up", "neck", "head" };
-    char line[520];
-    int n = snprintf(line, sizeof(line), "bone_probe: dobj %p n=%d", dobj, count);
-    for (int k = 0; k < 7; ++k) {
-        if (idx[k] >= count) break;
-        const float* m = (const float*)(mats + idx[k] * 0x40);
-        const float* p = m + 12;
-        if (!(fabsf(p[0]) < 1e5f && fabsf(p[1]) < 1e5f && fabsf(p[2]) < 1e5f)) continue;
-        n += snprintf(line + n, sizeof(line) - n, " %s (%.1f %.1f %.1f) up(%.2f %.2f %.2f)",
-                      nm[k], p[0], p[1], p[2], m[0], m[1], m[2]);
-    }
-    logger::logf("%s", line);
-    /* place pelvis / back_up / neck / head in world exactly as the renderer does (origin =
-     * cent->lerpOrigin, yaw = cent->lerpAngles[1], model X forward / Y left) -> overlay */
-    if (rent) {
-        const uint8_t* cent = *(const uint8_t* const*)((const uint8_t*)rent + 0x3c);
-        if (readable(cent, 0x210)) {
-            const float* org = (const float*)(cent + 0x1f8);
-            const float yaw = *(const float*)(cent + 0x208) * 3.14159265f / 180.0f;
-            const float cy = cosf(yaw), sy = sinf(yaw);
-            float w[4][3];
-            const int pick[4] = { 2, 25, 33, 39 };
-            for (int k = 0; k < 4; ++k) {
-                const float* m = (const float*)(mats + pick[k] * 0x40) + 12;
-                w[k][0] = org[0] + cy * m[0] - sy * m[1];
-                w[k][1] = org[1] + sy * m[0] + cy * m[1];
-                w[k][2] = org[2] + m[2];
-            }
-            hitbox_view_note_skeleton(w[0], w[1], w[2], w[3]);
+    if (count < 56 || count > 130 || !rent) return;
+    const uint8_t* mats = *(const uint8_t* const*)(d + 4);
+    if (!mats) return;
+    mats += 0x30;
+    const uint8_t* cent = *(const uint8_t* const*)((const uint8_t*)rent + 0x3c);
+    if (!readable(cent, 0x210)) return;
+    const int cn = *(const int*)cent;                         // currentState.number
+    if (cn < 0 || cn >= 64) return;
+    const float* org = (const float*)(cent + 0x1f8);
+    const float yaw = *(const float*)(cent + 0x208) * 3.14159265f / 180.0f;
+    const float cy = cosf(yaw), sy = sinf(yaw);
+    static float frames[128][12];
+    const int n = count < 128 ? count : 128;
+    for (int b = 0; b < n; ++b) {
+        const float* m = (const float*)(mats + b * 0x40);
+        float* f = frames[b];
+        for (int r = 0; r < 3; ++r) {                        // rows = local axes -> rotate by yaw
+            const float x = m[r * 4], y = m[r * 4 + 1], z = m[r * 4 + 2];
+            f[r * 3] = cy * x - sy * y; f[r * 3 + 1] = sy * x + cy * y; f[r * 3 + 2] = z;
         }
+        f[9]  = org[0] + cy * m[12] - sy * m[13];
+        f[10] = org[1] + sy * m[12] + cy * m[13];
+        f[11] = org[2] + m[14];
     }
-    /* the renderer's entity record: every dword that looks like a world coordinate or a
-     * unit-axis component, with its offset - the placement (origin + axis) of the model */
-    if (rent) {
-        const float* f = (const float*)rent;
-        n = snprintf(line, sizeof(line), "bone_probe: rent %p", rent);
-        for (int i = 0; i < 48 && n < (int)sizeof(line) - 24; ++i) {
-            const float v = f[i];
-            if ((fabsf(v) > 50.0f && fabsf(v) < 20000.0f) || (fabsf(v) <= 1.0f && v != 0.0f && fabsf(v) > 0.001f))
-                n += snprintf(line + n, sizeof(line) - n, " +%02x=%.2f", i * 4, v);
-        }
-        logger::logf("%s", line);
-        /* the record holds pointers (into cgame memory): follow each readable one and
-         * print the world-coordinate-looking floats behind it - one of them is the
-         * placement (origin / axis) of this model */
-        const uint32_t* dw = (const uint32_t*)rent;
-        for (int i = 0; i < 48; ++i) {
-            const uintptr_t pv = dw[i];
-            if (pv < 0x10000 || pv > 0x7fff0000u || (pv & 3)) continue;
-            if (!readable((const void*)pv, 0x80)) continue;
-            const float* g = (const float*)pv;
-            int m = 0;
-            n = snprintf(line, sizeof(line), "bone_probe:   rent+%02x -> %08x:", i * 4, (unsigned)pv);
-            for (int j = 0; j < 32 && n < (int)sizeof(line) - 24; ++j) {
-                const float v = g[j];
-                if (fabsf(v) > 50.0f && fabsf(v) < 20000.0f && v == v) { n += snprintf(line + n, sizeof(line) - n, " +%02x=%.1f", j * 4, v); m++; }
-            }
-            if (m) logger::logf("%s", line);
-        }
-    }
+    hitbox_view_note_pose(cn, body_name(d), n, &frames[0][0]);
 }
 
 const void* g_builder_ptr = (const void*)BUILDER;
@@ -154,7 +145,7 @@ bool bone_probe_install() {
     memcpy(p + 1, &rel, 4);
     VirtualProtect(p, 5, old, &old);
     FlushInstructionCache(GetCurrentProcess(), p, 5);
-    logger::logf("bone_probe: render skeleton call at 0x%x -> stub %p (pelvis/back/head + placement of every drawn player, 1/s)",
+    logger::logf("bone_probe: render skeleton call at 0x%x -> stub %p (world bone frames of every drawn player -> hitbox_view)",
                  (unsigned)CALL_SITE, (void*)&stub);
     return true;
 }

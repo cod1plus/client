@@ -20,4 +20,8 @@ void hitbox_view_draw(float vw, float vh);    // inside a 2D overlay pass
 void hitbox_view_note_entity(int cn, const float* pos, float yaw);
 // the client's own rendered skeleton of one model, in WORLD (bone_probe): pelvis, back_up, neck, head
 void hitbox_view_note_skeleton(const float* pelvis, const float* backup, const float* neck, const float* head);
+// every frame, for every player drawn (bone_probe): his 80 bone frames in WORLD (12 floats
+// each: rows = bone axes, then position) and his body model name -> the tested boxes are
+// drawn on the body the client draws, instantly, for everyone on screen (cod1x_drawhitbox 1)
+void hitbox_view_note_pose(int cn, const char* model, int nbones, const float* frames);
 }

@@ -5,6 +5,7 @@
 #include "netcode/protocol_patch.h"      // CODMP_CVAR_GET_VA
 #include "ui/gl_overlay.h"
 #include "core/logger.h"
+#include "gameplay/hitbox_table.h"     // the boxes the server tests (same table as cod1plus.so)
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -35,6 +36,31 @@ struct EntNote { float pos[3]; float yaw; DWORD t; };
 EntNote g_ent[64] = {};
 struct SkelNote { float p[4][3]; DWORD t; };
 SkelNote g_skel[8] = {};
+// the client's own rendered skeleton of every player, world frames per bone (bone_probe)
+struct PoseNote { DWORD t; int nbones; const hb_set_t* set; char model[64]; float f[HB_NBONES][12]; };
+PoseNote g_pose[64] = {};
+
+const hb_set_t* set_for_model(const char* name) {
+    if (!name) return &HB_UNIVERSAL;
+    if (!_strnicmp(name, "xmodel/", 7)) name += 7;
+    for (unsigned k = 0; k < HB_NUM_LOOKUP; ++k)
+        if (!_stricmp(HB_LOOKUP[k].xmodel, name)) return &HB_SETS[HB_LOOKUP[k].set];
+    return &HB_UNIVERSAL;
+}
+// the box the server tests for bone `bi` of body `set`: the shipped one unless the set fixes it
+bool tested_box(const hb_set_t* set, int bi, float mins[3], float maxs[3]) {
+    memcpy(mins, HB_SHIPPED[bi], 12); memcpy(maxs, HB_SHIPPED[bi] + 3, 12);
+    if (set) for (unsigned k = 0; k < set->nfix; ++k)
+        if (set->fix[k].bone == bi) { memcpy(mins, set->fix[k].mins, 12); memcpy(maxs, set->fix[k].maxs, 12); break; }
+    return maxs[0] - mins[0] > 0.01f || maxs[1] - mins[1] > 0.01f || maxs[2] - mins[2] > 0.01f;
+}
+DWORD bone_color(const char* n) {
+    if (!strcmp(n, "head") || !strcmp(n, "neck")) return 0xFFFF4040;
+    if (!strncmp(n, "back_", 5)) return 0xFFFFE040;
+    if (strstr(n, "thigh") || strstr(n, "calf") || strstr(n, "foot")) return 0xFF40A0FF;
+    if (strstr(n, "finger")) return 0xFF35C7C0;
+    return 0xFF40E040;
+}
 uintptr_t g_cgame_base = 0;
 
 int cvar_int(const char* n) {
@@ -161,6 +187,16 @@ void hitbox_view_note_skeleton(const float* pelvis, const float* backup, const f
     o->t = GetTickCount();
 }
 
+void hitbox_view_note_pose(int cn, const char* model, int nbones, const float* frames) {
+    if (cn < 0 || cn >= 64 || !frames) return;
+    PoseNote& p = g_pose[cn];
+    if (model && strcmp(p.model, model)) { snprintf(p.model, sizeof(p.model), "%s", model); p.set = set_for_model(model); }
+    else if (!model && !p.set) p.set = &HB_UNIVERSAL;
+    p.nbones = nbones < HB_NBONES ? nbones : HB_NBONES;
+    memcpy(p.f, frames, sizeof(float) * 12 * (size_t)p.nbones);
+    p.t = GetTickCount();
+}
+
 void hitbox_view_note_entity(int cn, const float* pos, float yaw) {
     if (cn < 0 || cn >= 64 || !pos) return;
     memcpy(g_ent[cn].pos, pos, 12); g_ent[cn].yaw = yaw; g_ent[cn].t = GetTickCount();
@@ -205,6 +241,8 @@ void hitbox_view_frame() {
             s_hb = now;
             char line[200]; int n = snprintf(line, sizeof(line), "hitbox_view: on, %u server cmds seen (%u without syscall), %u hb rx (%u bad), targets:", g_calls, g_nosc, g_rx, g_bad);
             for (auto& t : g_t) if (t.n) n += snprintf(line + n, sizeof(line) - n, " cn%d:%d boxes %lums ago", t.cn, t.n, (unsigned long)(now - t.t));
+            int np = 0; for (auto& p : g_pose) if (p.t && now - p.t < 300) np++;
+            n += snprintf(line + n, sizeof(line) - n, " | %d player(s) drawn with client-side boxes", np);
             logger::logf("%s", line);
         }
     }
@@ -217,6 +255,7 @@ void hitbox_view_frame() {
 bool hitbox_view_active() {
     if (!g_cvar) return false;
     const DWORD now = GetTickCount();
+    for (auto& p : g_pose) if (p.t && now - p.t < 300) return true;
     for (auto& t : g_t) if (t.n && now - t.t < 1200) return true;
     return false;
 }
@@ -225,8 +264,29 @@ void hitbox_view_draw(float vw, float vh) {
     Cam c;
     if (!g_cvar || !read_cam(&c)) return;
     const DWORD now = GetTickCount();
+    // MODE 1: the tested boxes on the body the client draws, every player, every frame
+    for (int cn = 0; cn < 64; ++cn) {
+        const PoseNote& p = g_pose[cn];
+        if (!p.t || now - p.t > 300) continue;
+        for (int b = 0; b < p.nbones; ++b) {
+            const char* nm = HB_BONE_NAMES[b];
+            if (strstr(nm, "finger")) continue;                  // 30 boxes of 1-2 u: clutter
+            float mn[3], mx[3];
+            if (!tested_box(p.set, b, mn, mx)) continue;
+            const float* f = p.f[b];
+            float corner[8][3];
+            for (int k = 0; k < 8; ++k) {
+                const float lx = (k & 1) ? mx[0] : mn[0], ly = (k & 2) ? mx[1] : mn[1], lz = (k & 4) ? mx[2] : mn[2];
+                for (int a = 0; a < 3; ++a) corner[k][a] = f[9 + a] + lx * f[a] + ly * f[3 + a] + lz * f[6 + a];
+            }
+            static const int E[12][2] = { {0,1},{2,3},{4,5},{6,7},{0,2},{1,3},{4,6},{5,7},{0,4},{1,5},{2,6},{3,7} };
+            const DWORD col = bone_color(nm);
+            for (const auto& e : E) seg(c, corner[e[0]], corner[e[1]], vw, vh, col);
+        }
+    }
+    // MODE 2: the boxes the SERVER streams for the player looked at (hitbox_send), in white
     for (auto& t : g_t) {
-        if (!t.n || now - t.t > 1200) continue;
+        if (g_cvar < 2 || !t.n || now - t.t > 1200) continue;
         for (int i = 0; i < t.n; ++i) {
             const Box& b = t.b[i];
             if (now - b.t > 1200) continue;                       // this bone's group not refreshed lately
@@ -245,6 +305,7 @@ void hitbox_view_draw(float vw, float vh) {
             if (b.id == 39 || b.id == 33) col = 0xFFFF4040;      // head, neck: red
             else if (b.id == 25 || b.id == 19 || b.id == 7) col = 0xFFFFE040;   // spine: yellow
             else if (b.id == 3 || b.id == 4 || b.id == 16 || b.id == 17 || b.id == 22 || b.id == 23) col = 0xFF40A0FF;   // legs: blue
+            col = 0xFFFFFFFF;                                    // server-side boxes: white, over the client's
             static const int E[12][2] = { {0,1},{2,3},{4,5},{6,7},{0,2},{1,3},{4,6},{5,7},{0,4},{1,5},{2,6},{3,7} };
             for (const auto& e : E) seg(c, corner[e[0]], corner[e[1]], vw, vh, col);
         }
