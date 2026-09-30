@@ -27,6 +27,7 @@
 #include "video/widescreen_fix.h"
 #include "features/avatar_overlay.h"
 #include "features/discord_rpc.h"
+#include "ui/gl_overlay.h"         // overlay_set_hotkey (menu_hotkey)
 #include "features/settings_menu.h"
 #include "video/gamma_fix.h"
 #include "netcode/antilag.h"
@@ -255,6 +256,13 @@ void load_config(HMODULE self_module) {
         DWORD n = GetPrivateProfileStringA(
             "cod1reloaded", "pam_manifest_url", "", buf, sizeof(buf), ini_path);
         if (n > 0) snprintf(g_pam_install_config.manifest_url, sizeof(g_pam_install_config.manifest_url), "%s", buf);
+    }
+    {
+        char buf[64];
+        if (GetPrivateProfileStringA("cod1reloaded", "menu_hotkey", "", buf, sizeof(buf), ini_path) > 0) {
+            if (overlay_set_hotkey(buf)) logger::logf("  menu_hotkey = %s", overlay_hotkey_label());
+            else logger::logf("  menu_hotkey = \"%s\" not understood - keeping %s", buf, overlay_hotkey_label());
+        }
     }
     g_news_config.enable = read_ini_bool(ini_path, "news_enable", g_news_config.enable);
     {

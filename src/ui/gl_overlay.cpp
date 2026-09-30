@@ -41,6 +41,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <string>
@@ -59,7 +60,11 @@ SwapBuffers_t g_orig_swap = nullptr;
 // module only registers a listener - the 1.6.6 crash was two modules subclassing
 // the same window on their own and looping through each other.
 volatile long g_swap_calls = 0;       // proof the SwapBuffers hook still runs (see overlay_tick)
-DWORD  g_hotkey_wndproc_tick = 0;     // last Ctrl+M seen through the WindowProc
+// The menu hotkey: cod1reloaded.ini `menu_hotkey`, Ctrl+M unless the player set another.
+struct Hotkey { int vk; bool ctrl, shift, alt; char label[48]; };
+Hotkey g_hotkey = { 'M', true, false, false, "CTRL+M" };
+bool   g_eat_char = false;            // the WM_CHAR a hotkey press generates must not reach the console
+DWORD  g_hotkey_wndproc_tick = 0;     // last hotkey press seen through the WindowProc
 bool   g_wndproc_dead = false;        // the key poll saw a chord the WindowProc never did
 bool   g_news_visible = false;        // the main-menu news card was drawn this frame (Ctrl+N)
 
@@ -90,6 +95,68 @@ DWORD   g_last_tick = 0;
 }  // namespace
 
 const UiInput& ui_input() { return g_in; }
+
+namespace {
+bool mods_match(bool ctrl, bool shift, bool alt) {
+    return ctrl == g_hotkey.ctrl && shift == g_hotkey.shift && alt == g_hotkey.alt;
+}
+}  // namespace
+
+// "ctrl+m", "ctrl+shift+o", "alt+f1", "f10", "insert"... Modifiers ctrl / shift / alt in
+// any order, then exactly one key. Escape is refused (it closes the menu).
+bool overlay_set_hotkey(const char* spec) {
+    struct Name { const char* name; int vk; const char* label; };
+    static const Name NAMES[] = {
+        { "insert", VK_INSERT, "INSERT" }, { "ins", VK_INSERT, "INSERT" },
+        { "delete", VK_DELETE, "DELETE" }, { "del", VK_DELETE, "DELETE" },
+        { "home", VK_HOME, "HOME" }, { "end", VK_END, "END" },
+        { "pageup", VK_PRIOR, "PAGE UP" }, { "pgup", VK_PRIOR, "PAGE UP" },
+        { "pagedown", VK_NEXT, "PAGE DOWN" }, { "pgdn", VK_NEXT, "PAGE DOWN" },
+        { "pause", VK_PAUSE, "PAUSE" }, { "scrolllock", VK_SCROLL, "SCROLL LOCK" },
+        { "tab", VK_TAB, "TAB" }, { "space", VK_SPACE, "SPACE" }, { "backspace", VK_BACK, "BACKSPACE" },
+        { "up", VK_UP, "UP" }, { "down", VK_DOWN, "DOWN" }, { "left", VK_LEFT, "LEFT" }, { "right", VK_RIGHT, "RIGHT" },
+    };
+    if (!spec) return false;
+    Hotkey k = { 0, false, false, false, "" };
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s", spec);
+    int keys = 0;
+    char key_label[24] = "";
+    for (char* tok = strtok(buf, "+"); tok; tok = strtok(nullptr, "+")) {
+        while (*tok == ' ' || *tok == '\t') ++tok;
+        char* e = tok + strlen(tok);
+        while (e > tok && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r')) *--e = 0;
+        for (char* p = tok; *p; ++p) *p = (char)tolower((unsigned char)*p);
+        if (!*tok) return false;
+        if (!strcmp(tok, "ctrl") || !strcmp(tok, "control")) { k.ctrl = true; continue; }
+        if (!strcmp(tok, "shift")) { k.shift = true; continue; }
+        if (!strcmp(tok, "alt")) { k.alt = true; continue; }
+        if (++keys > 1) return false;
+        const size_t n = strlen(tok);
+        if (n == 1 && ((tok[0] >= 'a' && tok[0] <= 'z') || (tok[0] >= '0' && tok[0] <= '9'))) {
+            k.vk = toupper((unsigned char)tok[0]);
+            snprintf(key_label, sizeof(key_label), "%c", (char)k.vk);
+        } else if (tok[0] == 'f' && n >= 2 && n <= 3 && atoi(tok + 1) >= 1 && atoi(tok + 1) <= 24) {
+            k.vk = VK_F1 + atoi(tok + 1) - 1;
+            snprintf(key_label, sizeof(key_label), "F%d", atoi(tok + 1));
+        } else if ((!strncmp(tok, "kp", 2) || !strncmp(tok, "numpad", 6)) &&
+                   isdigit((unsigned char)tok[n - 1]) && (tok[n - 2] == 'p' || tok[n - 2] == 'd')) {
+            k.vk = VK_NUMPAD0 + (tok[n - 1] - '0');
+            snprintf(key_label, sizeof(key_label), "NUMPAD %c", tok[n - 1]);
+        } else {
+            for (const Name& nm : NAMES)
+                if (!strcmp(tok, nm.name)) { k.vk = nm.vk; snprintf(key_label, sizeof(key_label), "%s", nm.label); break; }
+            if (!k.vk) return false;
+        }
+    }
+    if (!k.vk) return false;
+    snprintf(k.label, sizeof(k.label), "%s%s%s%s", k.ctrl ? "CTRL+" : "", k.shift ? "SHIFT+" : "",
+             k.alt ? "ALT+" : "", key_label);
+    g_hotkey = k;
+    return true;
+}
+
+const char* overlay_hotkey_label() { return g_hotkey.label; }
 
 void ui_key_capture(bool on) { g_keycap = on; if (!on) g_in.vk = 0; }
 bool overlay_visible() { return g_mode != 0; }
@@ -194,16 +261,26 @@ bool overlay_listener(HWND w, UINT m, WPARAM wp, LPARAM lp, LRESULT* res) {
         news_open_link();
         return true;
     }
-    // Ctrl+M only (enzo, 2026-09-17): INSERT is a key players bind, and a bare key
-    // fires while aiming or typing; a chord does not
-    if (m == WM_KEYDOWN && wp == 'M' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+    // The menu hotkey (menu_hotkey in cod1reloaded.ini, Ctrl+M by default - enzo,
+    // 2026-09-17: INSERT is a key players bind, and a bare key fires while aiming or
+    // typing; a chord does not). Alt chords and F10 arrive as WM_SYSKEYDOWN. Auto-repeat
+    // (bit 30) is ignored: holding the keys must not open and close the menu in a loop.
+    if (g_eat_char && (m == WM_CHAR || m == WM_SYSCHAR)) {
+        g_eat_char = false;                          // F10, Insert... make no char: time-boxed
+        if (GetTickCount() - g_hotkey_wndproc_tick < 250) return true;
+    }
+    if ((m == WM_KEYDOWN || m == WM_SYSKEYDOWN) && (int)wp == g_hotkey.vk &&
+        mods_match((GetKeyState(VK_CONTROL) & 0x8000) != 0, (GetKeyState(VK_SHIFT) & 0x8000) != 0,
+                   (GetKeyState(VK_MENU) & 0x8000) != 0)) {
+        if (lp & 0x40000000) return true;
         // One line per press: a player who "cannot open the menu" either has this
         // line (the overlay saw the key: look at the mode transitions) or does not
         // (nothing reached our proc: a hook above us ate it, or we are not in the
         // chain - see hotkey_poll, which then takes over).
         g_hotkey_wndproc_tick = GetTickCount();
         g_wndproc_dead = false;
-        logger::logf("overlay: Ctrl+M via WindowProc (mode %d)", g_mode);
+        g_eat_char = true;
+        logger::logf("overlay: %s via WindowProc (mode %d)", g_hotkey.label, g_mode);
         if (g_mode == 0) {
             if (home_menu_is_active()) { g_home_suppress = false; set_mode(2, false); }
             else overlay_toggle(true);
@@ -294,7 +371,10 @@ void attach_window(HDC dc) {
 void hotkey_poll(HWND w) {
     static DWORD s_chord_since = 0;      // 0 = chord not down
     static bool  s_fired = false;        // once per chord
-    const bool chord = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('M') & 0x8000);
+    const bool chord = (GetAsyncKeyState(g_hotkey.vk) & 0x8000) &&
+                       mods_match((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0,
+                                  (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0,
+                                  (GetAsyncKeyState(VK_MENU) & 0x8000) != 0);
     const DWORD now = GetTickCount();
     if (!chord) { s_chord_since = 0; s_fired = false; return; }
     if (!s_chord_since) { s_chord_since = now ? now : 1; return; }
@@ -304,8 +384,8 @@ void hotkey_poll(HWND w) {
     s_fired = true;
     if (!g_wndproc_dead) {
         g_wndproc_dead = true;
-        logger::logf("overlay: Ctrl+M seen by the key poll but NOT by the WindowProc - "
-                     "another hook on the window eats it; menu driven by polling from now on");
+        logger::logf("overlay: %s seen by the key poll but NOT by the WindowProc - "
+                     "another hook on the window eats it; menu driven by polling from now on", g_hotkey.label);
     }
     if (g_mode == 0) overlay_toggle(true); else overlay_toggle(false);
 }

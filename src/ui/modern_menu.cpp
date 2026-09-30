@@ -1197,7 +1197,7 @@ void modern_menu_draw(float sw, float sh) {
     {
         float ky = sh - 96;
         float kx = 36;
-        kx += keychip(kx, ky, "CTRL+M") + 10;
+        kx += keychip(kx, ky, overlay_hotkey_label()) + 10;
         ui_text(kx, ky + 2, 12, 400, UI_HINT, "open / close");
         ky += 30;
         kx = 36;
@@ -1720,7 +1720,7 @@ void modern_menu_draw(float sw, float sh) {
         cy += 16;
         section(cx, cy, colw, "KEYS"); cy += 26;
         float kx = cx;
-        kx += keychip(kx, cy, "CTRL+M") + 10;
+        kx += keychip(kx, cy, overlay_hotkey_label()) + 10;
         ui_text(kx, cy + 2, 13, 400, UI_HINT, "open / close this panel");
         cy += 30;
         kx = cx;

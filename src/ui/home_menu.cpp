@@ -383,9 +383,9 @@ HomeAction home_menu_draw(float sw, float sh) {
         const bool over_quit = hit(fx - 8 * s, fy - 12 * s, w_quit + 16 * s, 34 * s);
         keycap(fx, fy - 6 * s, "ESC", "QUIT", s);
         if (over_quit && ui_input().clicked) g_confirm_quit = true;
-        const float w_set = ui_text_width(px(13, s), 600, "CTRL+M") + 18 * s + 10 * s + tracked_width(px(12, s), 600, "SETTINGS", 1.8f * s);
+        const float w_set = ui_text_width(px(13, s), 600, overlay_hotkey_label()) + 18 * s + 10 * s + tracked_width(px(12, s), 600, "SETTINGS", 1.8f * s);
         fx -= 32 * s + w_set;
-        keycap(fx, fy - 6 * s, "CTRL+M", "SETTINGS", s);
+        keycap(fx, fy - 6 * s, overlay_hotkey_label(), "SETTINGS", s);
     }
 
     // ---- quit confirmation

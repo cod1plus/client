@@ -32,6 +32,11 @@ void overlay_tick();           // watcher thread, ~1/s: detects a bypassed SwapB
 HWND overlay_game_window();
 bool overlay_visible();
 void overlay_toggle(bool on);
+// The key that opens / closes the menu: cod1reloaded.ini `menu_hotkey`, "ctrl+m" by
+// default. Modifiers ctrl / shift / alt + one key (letter, digit, f1-f24, insert, home,
+// numpad0...). Returns false and keeps the current hotkey when the text does not parse.
+bool overlay_set_hotkey(const char* spec);
+const char* overlay_hotkey_label();   // "CTRL+M": what the menu's key chips show
 
 // --- draw API (valid only inside the frame callback) -----------------------
 void ui_rect(float x, float y, float w, float h, DWORD rgba);
