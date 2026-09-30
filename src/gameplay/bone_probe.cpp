@@ -24,6 +24,7 @@
 #include "gameplay/bone_probe.h"
 #include "features/hitbox_view.h"
 #include "gameplay/hitbox_client.h"
+#include "gameplay/inspect.h"
 #include "core/logger.h"
 #include <windows.h>
 #include <cstdint>
@@ -87,6 +88,7 @@ uintptr_t g_cents = 0;                // cg_entities, learned from the first ren
 unsigned  g_seen[64] = {};            // log once per client and placement source
 
 __attribute__((force_align_arg_pointer)) void __cdecl bone_probe(const void* dobj, const void* esi) {
+    inspect_on_skeleton(dobj);        // weapon inspect: bolt / magazine of the view weapon (idle: one compare)
     const uint8_t* d = (const uint8_t*)dobj;
     const int count = d[0x17];
     if (count < 56 || count > 130) return;
