@@ -9,8 +9,10 @@
 // The ENTRY is detoured (not one call site), so every skeleton the client builds is seen -
 // other players AND the local player's own body in third person.
 //
-// Who is it? DObj handle table: idx = (i16)[0x8d6178 + 2 * handle], dobj = 0x8d6a88 + idx *
-// 0x5c, and for players handle = entity number = client number.
+// Who is it? CLIENT object map: idx = (i16)[0x8ef6f0 + 2 * handle], dobj = 0x8d6a88 + idx *
+// 0x5c, and for players handle = entity number = client number (read live: handles 0, 3,
+// 4, 7 = the bots, 105 bones = body 80 + head + hat; 0x8d6178 is the SERVER's map, empty
+// on a client).
 // Where is it drawn? At the usual call site (0x403d53) ESI is the renderer's entity record
 // ([esi+4] = dobj, [esi+0x3c] = the centity_t): lerpOrigin at cent + 0x1f8, yaw at + 0x208.
 // The local player is placed with the predicted playerState (cgame + 0x20af14: origin
@@ -31,7 +33,7 @@
 namespace patches {
 namespace {
 constexpr uintptr_t BUILDER     = 0x486d20;
-constexpr uintptr_t DOBJ_TABLE  = 0x8d6178;       // i16 per handle
+constexpr uintptr_t DOBJ_TABLE  = 0x8ef6f0;       // CLIENT object map, i16 per handle (0x8d6178 is the server's)
 constexpr uintptr_t DOBJ_ARRAY  = 0x8d6a88;       // stride 0x5c
 constexpr uintptr_t DOBJ_SIZE   = 0x5c;
 constexpr uintptr_t RVA_PS      = 0x20af14;       // cg.predictedPlayerState
