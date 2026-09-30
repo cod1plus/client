@@ -16,9 +16,11 @@
 //                                                (optional; e.g. com_hunkMegs 512 for a
 //                                                texture pack the default hunk cannot hold)
 // A PAM manifest is generated from the pk3s a SERVER runs, so what lands here passes
-// that server's sv_pure check byte for byte. The same holds for a texture pack in
-// main\: on a pure server the pk3 must ALSO sit on the server, or the client is
-// dropped as unpure the moment it loads a texture from it.
+// that server's sv_pure check byte for byte. The HD texture pack in main\ is different:
+// no server holds its 5.6 GB. A 1.6X server (cod1plus.so, pure_extra.c) lists the
+// pack's checksums as if it did, so its clients read the textures and pass the pure
+// check; any other pure server does not list them and the engine ignores the paks
+// there (vanilla textures, no kick).
 //
 // A pk3 is a zip the engine reads as-is: nothing to unpack, each file goes straight to
 // <game dir>\<mod>\<name>. Download to <name>.part, verify size + SHA-256, rename over.
@@ -62,6 +64,9 @@ bool pkg_install_running(PkgId id);
 // The manifest's `cvar` lines of a finished job, handed out ONCE (cleared on return) so
 // the menu can apply them on the main thread. Returns the count.
 int  pkg_install_take_cvars(PkgId id, PkgCvar* out, int max);
+// Every frame, main thread (SwapBuffers hook): applies the finished jobs' cvars and
+// serves `set cod1x_install hdtex|pam` (console / command line). features/pkg_frame.cpp
+void pkg_install_frame();
 
 // PAM shorthands (the original API, kept for the callers and the host test)
 inline void pam_install_start()                { pkg_install_start(PKG_PAM); }

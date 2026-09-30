@@ -27,6 +27,7 @@
 #include "ui/modern_menu.h"
 #include "ui/home_menu.h"
 #include "ui/demo_seek.h"
+#include "features/pam_install.h"
 #include "ui/eye_debug.h"
 #include "features/hitbox_view.h"
 #include "ui/streamer_hud.h"
@@ -417,6 +418,7 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
     InterlockedIncrement(&g_swap_calls);
     attach_window(dc);
     demo_seek_frame();                            // demo fast-forward to a kill (ui/demo_seek)
+    pkg_install_frame();                          // package cvars + cod1x_install (features/pkg_frame)
     eye_debug_frame();                            // player_debugEyePosition (ui/eye_debug)
     hitbox_view_frame();                          // cod1x_drawhitbox (features/hitbox_view)
     HWND wnd = wndhub_window();                   // this frame's window

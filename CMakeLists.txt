@@ -45,6 +45,7 @@ set(COD1RELOADED_SOURCES
     src/netcode/ruleset_parse.cpp
     src/netcode/ruleset_fetch.cpp
     src/features/pam_install.cpp
+    src/features/pkg_frame.cpp
     src/netcode/ruleset.cpp
     src/netcode/version_gate.cpp
     src/video/window_patch.cpp

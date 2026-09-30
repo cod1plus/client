@@ -22,7 +22,10 @@ PamInstallConfig g_pam_install_config = {
 };
 PamInstallConfig g_hdtex_install_config = {
     /* enable       */ true,
-    /* manifest_url */ "",     // set when the pack is published (ini: hdtex_manifest_url)
+    // zcod1..6 + zcod9_fix, 5.6 GB, on the 1.6X fastdl (zcod7 = DXT skies: the engine's cube
+    // map loader dies on them, see pure_extra.c). Plain http: what a 1.6X server accepts is
+    // pinned by checksum in cod1plus.so (pure_extra), a tampered pak is just not read there.
+    /* manifest_url */ "http://87.106.7.52:8080/fastdl/cod1/hdtex/hdtex.manifest",
 };
 
 namespace {

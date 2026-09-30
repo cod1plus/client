@@ -1587,15 +1587,7 @@ void modern_menu_draw(float sw, float sh) {
                 if (ps.state == PAM_RESTART) f = 1.f;
                 ui_rect_rounded(cx, ly + 46, bw * f, 6, 3, ps.state == PAM_RESTART ? 0xFFE0B252 : UI_ACCENT);
             }
-            // the pack's `cvar` lines, applied once the job is over (main thread = here)
-            if (ps.state == PAM_DONE || ps.state == PAM_RESTART) {
-                PkgCvar cv[PKG_MAX_CVARS];
-                const int n = pkg_install_take_cvars(id, cv, PKG_MAX_CVARS);
-                for (int i = 0; i < n; ++i) {
-                    cmdf("seta %s %s\n", cv[i].name, cv[i].value);
-                    logger::logf("menu: package cvar applied: seta %s %s", cv[i].name, cv[i].value);
-                }
-            }
+            // (the pack's `cvar` lines are applied by pkg_install_frame, menu open or not)
             ly += 68;
         };
         if (g_pam_install_config.enable)
@@ -1604,7 +1596,7 @@ void modern_menu_draw(float sw, float sh) {
                     g_pam_install_config.manifest_url[0] != 0);
         if (g_hdtex_install_config.enable)
             package(PKG_HDTEX, "HD TEXTURES  (optional texture pack, goes into main)", "INSTALL HD TEXTURES",
-                    "Downloads the HD texture pk3s into main. Servers you play on must run the same pack (sv_pure).",
+                    "5.6 GB into main, then restart. 1.6X servers accept the pack; other pure servers show the normal textures.",
                     g_hdtex_install_config.manifest_url[0] != 0);
 
         snprintf(hdr, sizeof(hdr), "CONFIGS - %d  (click to exec)", (int)g_cfgs.size());
