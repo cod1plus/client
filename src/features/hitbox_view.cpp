@@ -37,7 +37,7 @@ EntNote g_ent[64] = {};
 struct SkelNote { float p[4][3]; DWORD t; };
 SkelNote g_skel[8] = {};
 // the client's own rendered skeleton of every player, world frames per bone (bone_probe)
-struct PoseNote { DWORD t; int nbones; const hb_set_t* set; char model[64]; float f[HB_NBONES][12]; };
+struct PoseNote { DWORD t; int nbones; bool local; const hb_set_t* set; char model[64]; float f[HB_NBONES][12]; };
 PoseNote g_pose[64] = {};
 
 const hb_set_t* set_for_model(const char* name) {
@@ -187,9 +187,10 @@ void hitbox_view_note_skeleton(const float* pelvis, const float* backup, const f
     o->t = GetTickCount();
 }
 
-void hitbox_view_note_pose(int cn, const char* model, int nbones, const float* frames) {
+void hitbox_view_note_pose(int cn, const char* model, int nbones, const float* frames, bool local) {
     if (cn < 0 || cn >= 64 || !frames) return;
     PoseNote& p = g_pose[cn];
+    p.local = local;
     if (model && strcmp(p.model, model)) { snprintf(p.model, sizeof(p.model), "%s", model); p.set = set_for_model(model); }
     else if (!model && !p.set) p.set = &HB_UNIVERSAL;
     p.nbones = nbones < HB_NBONES ? nbones : HB_NBONES;
@@ -265,9 +266,11 @@ void hitbox_view_draw(float vw, float vh) {
     if (!g_cvar || !read_cam(&c)) return;
     const DWORD now = GetTickCount();
     // MODE 1: the tested boxes on the body the client draws, every player, every frame
+    const bool third = cvar_int("cg_thirdperson") != 0;       // your own body is only on screen then
     for (int cn = 0; cn < 64; ++cn) {
         const PoseNote& p = g_pose[cn];
         if (!p.t || now - p.t > 300) continue;
+        if (p.local && !third) continue;
         for (int b = 0; b < p.nbones; ++b) {
             const char* nm = HB_BONE_NAMES[b];
             if (strstr(nm, "finger")) continue;                  // 30 boxes of 1-2 u: clutter

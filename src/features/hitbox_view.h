@@ -23,5 +23,6 @@ void hitbox_view_note_skeleton(const float* pelvis, const float* backup, const f
 // every frame, for every player drawn (bone_probe): his 80 bone frames in WORLD (12 floats
 // each: rows = bone axes, then position) and his body model name -> the tested boxes are
 // drawn on the body the client draws, instantly, for everyone on screen (cod1x_drawhitbox 1)
-void hitbox_view_note_pose(int cn, const char* model, int nbones, const float* frames);
+// `local` = the viewer's own body: drawn only in third person (cg_thirdperson)
+void hitbox_view_note_pose(int cn, const char* model, int nbones, const float* frames, bool local);
 }

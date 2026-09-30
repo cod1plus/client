@@ -1,17 +1,24 @@
 // bone_probe.cpp - see bone_probe.h
 //
-// CoDMP.exe 0x403d4c:  mov edx,[esi+4] ; mov eax,[esi+8] ; push edx ; call 0x486d20 ; add esp,4
-// 0x486d20 = the render skeleton builder (memory cod1-dobj-render-bone-hook): the DObj is
-// the stack argument, the part bits pointer travels in EAX, ESI = the renderer's entity
-// record (+4 = dobj, +8 = part bits, +0x3c = the centity_t drawn). After the builder returns
-// the world matrices sit at *(uint8_t**)(dobj + 4) + 0x30, one 0x40-byte matrix per bone
-// (rows at +0/+0x10/+0x20 = the bone's local axes, position at +0x30), bone count = byte
-// dobj + 0x17, in MODEL space (X forward, Y left, Z up): the renderer places them with the
-// entity's lerpOrigin (cent + 0x1f8) and yaw (cent + 0x208).
+// CoDMP.exe 0x486d20 = the render skeleton builder (memory cod1-dobj-render-bone-hook):
+//   int build(/*eax*/ poseMask, /*[esp+4]*/ DObj* dobj), prologue 83 EC 58 53 55 (5 clean
+//   bytes), called from 8 sites. After it returns the matrices sit at
+//   *(uint8_t**)(dobj + 4) + 0x30, one 0x40-byte matrix per bone (rows at +0/+0x10/+0x20 =
+//   the bone's local axes, position at +0x30), bone count = byte dobj + 0x17, in MODEL
+//   space (X forward, Y left, Z up).
+// The ENTRY is detoured (not one call site), so every skeleton the client builds is seen -
+// other players AND the local player's own body in third person.
 //
-// Every call (= every frame, for every player drawn) hands hitbox_view the 80 bone frames
-// in WORLD space plus the body model's name, so the tested hit boxes can be drawn on the
-// body the client draws, for every player on screen, without any server traffic.
+// Who is it? DObj handle table: idx = (i16)[0x8d6178 + 2 * handle], dobj = 0x8d6a88 + idx *
+// 0x5c, and for players handle = entity number = client number.
+// Where is it drawn? At the usual call site (0x403d53) ESI is the renderer's entity record
+// ([esi+4] = dobj, [esi+0x3c] = the centity_t): lerpOrigin at cent + 0x1f8, yaw at + 0x208.
+// The local player is placed with the predicted playerState (cgame + 0x20af14: origin
+// +0x14, viewangles +0xc0, clientNum +0xac). Other call sites fall back to cg_entities
+// (base learned from the first record seen, stride 0x228).
+//
+// Every call hands hitbox_view the bone frames in WORLD space, so the tested hit boxes are
+// drawn on the body the client draws, for everyone on screen, with no server traffic.
 #include "gameplay/bone_probe.h"
 #include "features/hitbox_view.h"
 #include "core/logger.h"
@@ -23,8 +30,13 @@
 
 namespace patches {
 namespace {
-constexpr uintptr_t CALL_SITE = 0x403d53;          // e8 c8 2f 08 00 = call 0x486d20
-constexpr uintptr_t BUILDER   = 0x486d20;
+constexpr uintptr_t BUILDER     = 0x486d20;
+constexpr uintptr_t DOBJ_TABLE  = 0x8d6178;       // i16 per handle
+constexpr uintptr_t DOBJ_ARRAY  = 0x8d6a88;       // stride 0x5c
+constexpr uintptr_t DOBJ_SIZE   = 0x5c;
+constexpr uintptr_t RVA_PS      = 0x20af14;       // cg.predictedPlayerState
+constexpr int PS_ORIGIN = 0x14, PS_VIEWANGLES = 0xc0, PS_CLIENTNUM = 0xac;
+constexpr uintptr_t CENT_SIZE   = 0x228;
 
 static bool readable(const void* p, size_t n) {
     MEMORY_BASIC_INFORMATION mbi;
@@ -33,10 +45,19 @@ static bool readable(const void* p, size_t n) {
     return (uintptr_t)p + n <= (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
 }
 
-// The body model's name from the DObj: the DObj holds pointers to its XModels (body, head,
-// helmet, weapon); an XModel starts with the pointer to its name ("playerbody_..." on the
-// server's copy, memory cod1-hitbox-boxes-fix). Found by scanning the 0x5c-byte DObj for a
-// pointer whose first dword points to text containing "playerbody"; the offset is cached.
+// client number of the player this DObj belongs to, or -1 (weapons, world models...)
+static int player_of(const uint8_t* d) {
+    const uintptr_t off = (uintptr_t)d - DOBJ_ARRAY;
+    if ((uintptr_t)d < DOBJ_ARRAY || off % DOBJ_SIZE) return -1;
+    const int idx = (int)(off / DOBJ_SIZE);
+    if (idx <= 0 || idx > 0x7fff) return -1;
+    const int16_t* tab = (const int16_t*)DOBJ_TABLE;
+    for (int h = 0; h < 64; ++h) if (tab[h] == idx) return h;
+    return -1;
+}
+
+// The body model's name: scan the DObj for a pointer to a struct whose first dword points
+// to text containing "playerbody" (the XModel name). The offset is cached once found.
 static int g_name_off = -1;
 static const char* body_name(const uint8_t* d) {
     auto name_at = [&](int off) -> const char* {
@@ -51,44 +72,64 @@ static const char* body_name(const uint8_t* d) {
         }
         return nullptr;
     };
-    if (g_name_off >= 0) {
-        const char* s = name_at(g_name_off);
-        if (s) return s;
-    }
+    if (g_name_off >= 0) return name_at(g_name_off);
     for (int off = 0; off <= 0x58; off += 4) {
         const char* s = name_at(off);
-        if (s) { if (g_name_off != off) { g_name_off = off; logger::logf("bone_probe: body model name found at dobj+0x%x: %s", off, s); } return s; }
-    }
-    // not this DObj's model (head / weapon DObjs share the pass): scan the pointed structs one level deeper
-    for (int off = 0; off <= 0x58; off += 4) {
-        const uintptr_t p = *(const uintptr_t*)(d + off);
-        if (p < 0x10000 || (p & 3) || !readable((const void*)p, 0x40)) continue;
-        for (int k = 0; k < 0x40; k += 4) {
-            const uintptr_t q = *(const uintptr_t*)(p + k);
-            if (q < 0x10000 || (q & 3) || !readable((const void*)q, 8)) continue;
-            const char* s = *(const char* const*)q;
-            if (!readable(s, 64)) continue;
-            bool ok = false;
-            for (int i = 0; i < 64; ++i) { const char c = s[i]; if (c == 0) { ok = i > 10; break; } if (c < 0x20 || c > 0x7e) break; }
-            if (ok && strstr(s, "playerbody")) return s;
-        }
+        if (s) { g_name_off = off; logger::logf("bone_probe: body model name found at dobj+0x%x: %s", off, s); return s; }
     }
     return nullptr;
 }
 
-void __cdecl bone_probe(const void* dobj, const void* rent) {
+uintptr_t g_cents = 0;                // cg_entities, learned from the first renderer record
+unsigned  g_seen[64] = {};            // log once per client and placement source
+
+__attribute__((force_align_arg_pointer)) void __cdecl bone_probe(const void* dobj, const void* esi) {
     const uint8_t* d = (const uint8_t*)dobj;
     const int count = d[0x17];
-    if (count < 56 || count > 130 || !rent) return;
+    if (count < 56 || count > 130) return;
+    const int cn = player_of(d);
+    if (cn < 0) return;
     const uint8_t* mats = *(const uint8_t* const*)(d + 4);
     if (!mats) return;
     mats += 0x30;
-    const uint8_t* cent = *(const uint8_t* const*)((const uint8_t*)rent + 0x3c);
-    if (!readable(cent, 0x210)) return;
-    const int cn = *(const int*)cent;                         // currentState.number
-    if (cn < 0 || cn >= 64) return;
-    const float* org = (const float*)(cent + 0x1f8);
-    const float yaw = *(const float*)(cent + 0x208) * 3.14159265f / 180.0f;
+
+    const uintptr_t cg = (uintptr_t)GetModuleHandleA("cgame_mp_x86.dll");
+    const int local_cn = cg ? *(const int*)(cg + RVA_PS + PS_CLIENTNUM) : -1;
+    const bool local = cn == local_cn;
+    float org[3] = { 0, 0, 0 }, yawdeg = 0;
+    int src = 0;
+    // 1. the renderer's entity record of this very call
+    const uint8_t* cent = nullptr;
+    if (readable(esi, 0x40) && *(const void* const*)((const uint8_t*)esi + 4) == dobj) {
+        const uint8_t* c = *(const uint8_t* const*)((const uint8_t*)esi + 0x3c);
+        if (readable(c, 0x210) && *(const int*)c == cn) {
+            cent = c; src = 1;
+            if (!local && !g_cents) {
+                g_cents = (uintptr_t)c - (uintptr_t)cn * CENT_SIZE;
+                logger::logf("bone_probe: cg_entities at %p (from cn %d)", (void*)g_cents, cn);
+            }
+        }
+    }
+    // 2. the local player: the predicted playerState
+    if (!cent && local && cg) {
+        memcpy(org, (const void*)(cg + RVA_PS + PS_ORIGIN), 12);
+        yawdeg = *(const float*)(cg + RVA_PS + PS_VIEWANGLES + 4);
+        src = 2;
+    }
+    // 3. another call site: cg_entities[cn]
+    if (!cent && src == 0 && g_cents) {
+        const uint8_t* c = (const uint8_t*)(g_cents + (uintptr_t)cn * CENT_SIZE);
+        if (readable(c, 0x210) && *(const int*)c == cn) { cent = c; src = 3; }
+    }
+    if (cent) { memcpy(org, cent + 0x1f8, 12); yawdeg = *(const float*)(cent + 0x208); }
+    if (src == 0) return;
+    if (!(g_seen[cn] & (1u << src))) {
+        g_seen[cn] |= 1u << src;
+        logger::logf("bone_probe: cn %d%s placed by %s (origin %.1f %.1f %.1f yaw %.0f, %d bones)", cn, local ? " (you)" : "",
+                     src == 1 ? "the renderer record" : src == 2 ? "the predicted playerState" : "cg_entities",
+                     org[0], org[1], org[2], yawdeg, count);
+    }
+    const float yaw = yawdeg * 3.14159265f / 180.0f;
     const float cy = cosf(yaw), sy = sinf(yaw);
     static float frames[128][12];
     const int n = count < 128 ? count : 128;
@@ -103,27 +144,32 @@ void __cdecl bone_probe(const void* dobj, const void* rent) {
         f[10] = org[1] + sy * m[12] + cy * m[13];
         f[11] = org[2] + m[14];
     }
-    hitbox_view_note_pose(cn, body_name(d), n, &frames[0][0]);
+    hitbox_view_note_pose(cn, body_name(d), n, &frames[0][0], local);
 }
 
-const void* g_builder_ptr = (const void*)BUILDER;
+void* g_tramp = nullptr;              // stolen prologue + jmp BUILDER+5
 void (__cdecl* g_probe_ptr)(const void*, const void*) = bone_probe;
 
-// Called in place of 0x486d20: [esp] = return, [esp+4] = dobj, eax = part bits, esi =
-// the renderer's entity record (callee-saved: still intact after the builder returns).
+// In place of the builder's entry: [esp] = return, [esp+4] = dobj, eax = pose mask, esi =
+// whatever the caller holds (the renderer's entity record at the usual call site).
+// Every register and the flags are restored around the probe: the builder is called with a
+// custom convention (argument in EAX) from 8 sites, and a caller may count on registers a
+// plain cdecl callee would be free to clobber.
 __attribute__((naked)) void stub() {
     __asm__ volatile(
         "pushl 4(%%esp)\n\t"          /* dobj */
-        "call *%0\n\t"                /* original builder: eax + stack arg intact */
+        "call *%0\n\t"                /* original builder through the trampoline: eax + stack arg intact */
         "addl $4, %%esp\n\t"
-        "pushl %%eax\n\t"             /* its return value */
-        "pushl %%esi\n\t"             /* entity record */
-        "pushl 12(%%esp)\n\t"         /* dobj again ([esp+4] before the two pushes) */
+        "pushal\n\t"                  /* eax (the result) included */
+        "pushfl\n\t"
+        "pushl %%esi\n\t"
+        "pushl 44(%%esp)\n\t"         /* dobj: [esp+4] before pushal (32) + pushfl (4) + esi (4) */
         "call *%1\n\t"
         "addl $8, %%esp\n\t"
-        "popl %%eax\n\t"
+        "popfl\n\t"
+        "popal\n\t"
         "ret\n\t"
-        : : "m"(g_builder_ptr), "m"(g_probe_ptr));
+        : : "m"(g_tramp), "m"(g_probe_ptr));
 }
 }  // namespace
 
@@ -132,21 +178,29 @@ bool bone_probe_install() {
         logger::logf("bone_probe: CoDMP.exe not at 0x400000 - not installed");
         return false;
     }
-    uint8_t* p = (uint8_t*)CALL_SITE;
-    const uint8_t expect[5] = { 0xe8, 0xc8, 0x2f, 0x08, 0x00 };
+    uint8_t* p = (uint8_t*)BUILDER;
+    const uint8_t expect[5] = { 0x83, 0xec, 0x58, 0x53, 0x55 };      // sub esp,0x58; push ebx; push ebp
     if (memcmp(p, expect, 5) != 0) {
-        logger::logf("bone_probe: bytes at 0x%x are %02x %02x %02x %02x %02x, not call 0x486d20 - not installed",
-                     (unsigned)CALL_SITE, p[0], p[1], p[2], p[3], p[4]);
+        logger::logf("bone_probe: prologue at 0x%x is %02x %02x %02x %02x %02x - not installed",
+                     (unsigned)BUILDER, p[0], p[1], p[2], p[3], p[4]);
         return false;
     }
+    uint8_t* t = (uint8_t*)VirtualAlloc(nullptr, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!t) return false;
+    memcpy(t, p, 5);
+    t[5] = 0xe9;
+    const int32_t back = (int32_t)((BUILDER + 5) - ((uintptr_t)t + 10));
+    memcpy(t + 6, &back, 4);
+    g_tramp = t;
     DWORD old = 0;
     if (!VirtualProtect(p, 5, PAGE_EXECUTE_READWRITE, &old)) return false;
-    const int32_t rel = (int32_t)((uintptr_t)&stub - (CALL_SITE + 5));
+    const int32_t rel = (int32_t)((uintptr_t)&stub - (BUILDER + 5));
+    p[0] = 0xe9;
     memcpy(p + 1, &rel, 4);
     VirtualProtect(p, 5, old, &old);
     FlushInstructionCache(GetCurrentProcess(), p, 5);
-    logger::logf("bone_probe: render skeleton call at 0x%x -> stub %p (world bone frames of every drawn player -> hitbox_view)",
-                 (unsigned)CALL_SITE, (void*)&stub);
+    logger::logf("bone_probe: skeleton builder 0x%x detoured -> stub %p (every player's bone frames, your own body included, -> hitbox_view)",
+                 (unsigned)BUILDER, (void*)&stub);
     return true;
 }
 }  // namespace patches
