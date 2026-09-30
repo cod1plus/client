@@ -17,7 +17,8 @@ namespace patches {
 // is repointed at a stub that turns the refEntity first. (The memory note of 2026-07-20 had
 // 0x300177f0 as the view weapon: that one draws the crosshair.)
 // Tuning, live: cod1x_inspect_pivot "f l u" (the point turned around, from the hand origin,
-// view axes, default "14 -5 -5"), cod1x_inspect_speed (1 = 3.2 s / 6.2 s for the full one).
+// view axes, default "12 0 -3" = the middle of the gun: the view models are built centred on
+// the eye line), cod1x_inspect_speed (1 = 3.2 s / 6.2 s for the full one).
 //
 // `set cod1x_inspect 2` = the full one (6.2 s): right side with a chamber check (the bolt
 // pulled and released; a bolt action lifts its handle first), then the magazine turned to the
@@ -26,6 +27,10 @@ namespace patches {
 // DObj (hands + weapon); syscall 0xaf (dobj, name) -> bone index or -1 finds `<gun>_clip` /
 // `<gun>_bolt` / tag_flash; the render skeleton builder (bone_probe) hands every skeleton it
 // builds to inspect_on_skeleton, which moves those bones in the matrices just built.
+// The left hand takes the magazine: inspect_grips.h (generated from each weapon's reload
+// animation by codps3/xanim_tool/gen_inspect_grips.py) gives the way the magazine leaves the
+// gun, the hand's place on it and the finger rotations of that grip; the arm is re-solved
+// (two bones, the elbow kept in its bending plane) to put the hand there.
 bool inspect_install(HMODULE cgame);   // every cgame load: the call site lives in cgame
 void inspect_on_skeleton(const void* dobj);   // from bone_probe, after every skeleton build (one compare when idle)
 
