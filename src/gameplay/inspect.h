@@ -14,11 +14,13 @@ namespace patches {
 // (Q3 layout: axis at +0x1c, origin at +0x44, renderfx 0xc = first person | depth hack) and
 // hands it to 0x30038660 (ecx = that refEntity; stack: ps, &cg.predictedPlayerEntity, ps),
 // which copies it into the weapon model and submits both. Its only call site, 0x30038f41,
-// is repointed at a stub that turns the refEntity first. (The memory note of 2026-07-20 had
+// is repointed at a stub that runs the inspect clock first (the refEntity is left as it is). (The memory note of 2026-07-20 had
 // 0x300177f0 as the view weapon: that one draws the crosshair.)
-// Tuning, live: cod1x_inspect_pivot "f l u" (the point turned around, from the hand origin,
-// view axes, default "12 0 -3" = the middle of the gun: the view models are built centred on
-// the eye line), cod1x_inspect_speed (1 = 3.2 s / 6.2 s for the full one).
+// The gun turns in the hands, not the whole view model: its bones (those after the hands' in the
+// view DObj) turn about their middle, the shoulders stay where the animation put them and both
+// arms are re-solved to keep the hands on it (turning the whole model swung the left arm across
+// the screen). Tuning, live: cod1x_inspect_pivot "f l u" = offset added to the middle of the gun
+// (default "0 0 0"), cod1x_inspect_speed (1 = 3.2 s / 6.2 s for the full one).
 //
 // `set cod1x_inspect 2` = the full one (6.2 s): right side with a chamber check (the bolt
 // pulled and released; a bolt action lifts its handle first), then the magazine turned to the

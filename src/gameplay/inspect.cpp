@@ -13,12 +13,12 @@ namespace patches {
 namespace {
 constexpr uintptr_t CALL_RVA   = 0x38f41;     // CG_AddViewWeapon -> 0x30038660 (E8 rel32)
 constexpr uintptr_t TARGET_RVA = 0x38660;     // 55 8b ec 83 e4 f8
-constexpr uintptr_t VIEWAXIS_RVA = 0x20d354;  // cg.refdef.viewaxis: forward, left, up
+constexpr uintptr_t VIEWORG_RVA = 0x20d348;   // cg.refdef.vieworg, then viewaxis: forward, left, up
 constexpr uintptr_t SYSCALL_PTR_RVA = 0x76898; // the engine's syscall entry, written at cgame init
 constexpr uintptr_t WEAPONS_RVA = 0x1aa4e0;   // cg_weapons[], 0x198 each; +0 = the view DObj (hands + weapon)
 constexpr int WEAPON_STRIDE = 0x198;
 constexpr intptr_t SC_BONE_INDEX = 0xaf;      // (dobj, name) -> bone index, -1 when absent (CoDMP 0x487b90)
-constexpr int RE_AXIS = 0x1c, RE_ORIGIN = 0x44;
+constexpr int RE_ORIGIN = 0x44;
 constexpr int PS_WEAPON = 0xb0, PS_WEAPONSTATE = 0xb4, PS_ADSFRAC = 0xb8;   // the crosshair hides on ps+0xb4 = 1/2/5/10/11
 constexpr int CV_STRING = 0x04, CV_VALUE = 0x1c, CV_INT = 0x20;
 
@@ -26,19 +26,21 @@ typedef void* (__cdecl* Cvar_Get_t)(const char*, const char*, int);
 typedef void* (__cdecl* Cvar_Set_t)(const char*, const char*);
 typedef intptr_t (*Syscall_t)(intptr_t, ...);
 
-// ---- vectors and quaternions, view-local frame: x forward, y left, z up ----
+// ---- vectors and quaternions; model space of the view model = view axes: x forward, y left, z up ----
 struct V3 { float x, y, z; };
 struct Q  { float w, x, y, z; };
 V3 add(V3 a, V3 b) { return { a.x + b.x, a.y + b.y, a.z + b.z }; }
 V3 sub(V3 a, V3 b) { return { a.x - b.x, a.y - b.y, a.z - b.z }; }
 V3 scl(V3 a, float s) { return { a.x * s, a.y * s, a.z * s }; }
 float dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+float len(V3 a) { return sqrtf(dot(a, a)); }
 V3 cross(V3 a, V3 b) { return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }
-V3 norm(V3 a) { const float l = sqrtf(dot(a, a)); return l > 1e-6f ? scl(a, 1.0f / l) : V3{ 1, 0, 0 }; }
+V3 norm(V3 a) { const float l = len(a); return l > 1e-6f ? scl(a, 1.0f / l) : V3{ 1, 0, 0 }; }
 Q qmul(Q a, Q b) {
     return { a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z, a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
              a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w };
 }
+Q qconj(Q q) { return { q.w, -q.x, -q.y, -q.z }; }
 Q qaxis(V3 u, float deg) { const float h = deg * 3.14159265f / 360.0f, s = sinf(h); return { cosf(h), u.x * s, u.y * s, u.z * s }; }
 // yaw > 0 = muzzle to the left, pitch > 0 = muzzle up, roll > 0 = top of the gun to the right
 Q qeuler(float yaw, float pitch, float roll) {
@@ -69,6 +71,15 @@ Q qfrom(const float m[3][3]) {
     return q;
 }
 V3 qrot(Q q, V3 v) { float m[3][3]; qmat(q, m); return { m[0][0] * v.x + m[0][1] * v.y + m[0][2] * v.z, m[1][0] * v.x + m[1][1] * v.y + m[1][2] * v.z, m[2][0] * v.x + m[2][1] * v.y + m[2][2] * v.z }; }
+Q between(V3 a, V3 b) {
+    a = norm(a); b = norm(b);
+    const float c = dot(a, b);
+    if (c < -0.9999f) return qaxis(norm(fabsf(a.x) < 0.9f ? cross(a, { 1, 0, 0 }) : cross(a, { 0, 1, 0 })), 180.0f);
+    const V3 x = cross(a, b);
+    const Q q = { 1 + c, x.x, x.y, x.z };
+    const float l = sqrtf(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+    return { q.w / l, q.x / l, q.y / l, q.z / l };
+}
 
 float clamp01(float x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
 float ease(float x) { x = clamp01(x); return x * x * (3.0f - 2.0f * x); }
@@ -77,29 +88,32 @@ float bump(float t, float t0, float dur) { return (t < t0 || t > t0 + dur) ? 0.0
 
 struct Key { float t; Q q; V3 slide; };
 
-// ---- the bones of the view DObj that v2 moves (bone_probe hands us every skeleton built) ----
-struct Skel {
-    const uint8_t* volatile dobj = nullptr;   // non-null only while a v2 inspect runs
-    int clip = -1, bolt = -1, flash = -1;
-    bool boltaction = false;
-    volatile float mag = 0, back = 0, lift = 0, twist = 0, grab = 0;
-    volatile bool dirs = false;               // bore axis / magazine direction measured on a fresh skeleton
-    V3 b = { 1, 0, 0 }, o = { 0, 0, -1 }, P = { 0, 0, 0 };
-    V3 out_local = { 0, 0, -1 };              // the way the magazine leaves the gun (reload anim), in its bone's frame
-    bool has_out = false;
-    unsigned builds = 0;
-} g_sk;
-
-// the left arm, for the hand that takes the magazine: upper arm, forearm, hand, and every bone
-// under the upper arm (parents first) with the local rotation it has in the reload animation
-struct Arm {
-    bool ok = false;
+// ---- the view DObj (hands + weapon) and the bones the inspect moves ----
+// An arm: upper arm, forearm, hand, and every bone under the upper arm (parents first). For the
+// left one, lq = the local rotation of that bone in the grip of the reload animation.
+struct Limb {
     int up = -1, fore = -1, hand = -1, n = 0;
     int idx[40], par[40];
     Q lq[40];
-    Q gq = { 1, 0, 0, 0 };            // the hand in the magazine's frame
-    V3 gp = { 0, 0, 0 };
-} g_arm;
+    bool has_lq[40];
+};
+struct Skel {
+    const uint8_t* volatile dobj = nullptr;   // non-null only while an inspect runs
+    int clip = -1, bolt = -1, flash = -1, gun0 = -1, htag = -1;
+    bool boltaction = false, arms = false;
+    // written each frame by inspect_apply, read by the skeleton hook
+    volatile float mag = 0, back = 0, lift = 0, twist = 0, grab = 0;
+    Q gq = { 1, 0, 0, 0 };                    // the gun's turn about its middle, model space
+    V3 gslide = { 0, 0, 0 };
+    volatile bool dirs = false;               // bore axis / magazine direction measured on a fresh skeleton
+    V3 b = { 1, 0, 0 }, o = { 0, 0, -1 }, P = { 0, 0, 0 };
+    V3 out_local = { 0, 0, -1 };              // the way the magazine leaves the gun (reload anim), in its bone's frame
+    bool has_out = false, grip = false;
+    Q grip_q = { 1, 0, 0, 0 };                // the left hand in the magazine's frame
+    V3 grip_p = { 0, 0, 0 };
+    unsigned builds = 0;
+} g_sk;
+Limb g_R, g_L;
 
 const char* const CLIPS[] = { "mp44_clip", "mp40_clip", "thompson_clip", "sten_clip", "ppsh_clip", "bar_clip", "bren_clip",
                               "fg42_clip", "m1carbine_clip", "colt_clip", "luger_clip" };
@@ -126,6 +140,12 @@ float cvar_f(void* cv, float def, float lo, float hi) {
     const float v = cv ? *(const float*)((const uint8_t*)cv + CV_VALUE) : def;
     return (v >= lo && v <= hi) ? v : def;
 }
+bool readable(const void* p, size_t n) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!p || !VirtualQuery(p, &mbi, sizeof(mbi))) return false;
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_NOACCESS) || (mbi.Protect & PAGE_GUARD)) return false;
+    return (uintptr_t)p + n <= (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+}
 
 int find_bone(Syscall_t sys, const uint8_t* dobj, const char* const* names, int n, const char** found) {
     for (int i = 0; i < n; ++i) {
@@ -134,15 +154,49 @@ int find_bone(Syscall_t sys, const uint8_t* dobj, const char* const* names, int 
     }
     return -1;
 }
+// bones of the DObj's first model (the hands): the weapon's bones come after them
+// (DObj +0x1c = its models; model +4 -> [0] -> +4 = parts -> [0] -> [0] = short bone count, as CoDMP 0x4867d0 walks it)
+int first_model_bones(const uint8_t* d) {
+    const uint8_t* m = *(const uint8_t* const*)(d + 0x1c);
+    if (!readable(m, 8)) return -1;
+    const uint8_t* a = *(const uint8_t* const*)(m + 4);
+    if (!readable(a, 4)) return -1;
+    const uint8_t* b = *(const uint8_t* const*)a;
+    if (!readable(b, 8)) return -1;
+    const uint8_t* parts = *(const uint8_t* const*)(b + 4);
+    if (!readable(parts, 4)) return -1;
+    const uint8_t* hp = *(const uint8_t* const*)parts;
+    if (!readable(hp, 4)) return -1;
+    const uint8_t* hdr = *(const uint8_t* const*)hp;
+    if (!readable(hdr, 2)) return -1;
+    return *(const short*)hdr;
+}
+bool resolve_limb(Syscall_t sys, const uint8_t* dobj, Limb& L, char side, const InspectArmBone* list, int n) {
+    auto idx = [&](const char* name) { const int k = (int)sys(SC_BONE_INDEX, dobj, name); return (k >= 0 && k < dobj[0x17]) ? k : -1; };
+    char nm[32];
+    snprintf(nm, sizeof(nm), "bip01 %c upperarm", side); L.up = idx(nm);
+    snprintf(nm, sizeof(nm), "bip01 %c forearm", side);  L.fore = idx(nm);
+    snprintf(nm, sizeof(nm), "bip01 %c hand", side);     L.hand = idx(nm);
+    L.n = 0;
+    if (L.up < 0 || L.fore < 0 || L.hand < 0) return false;
+    for (int i = 0; i < n && L.n < 40; ++i) {
+        const int k = idx(list[i].name), p = idx(list[i].parent);
+        if (k < 0 || p < 0) continue;
+        L.idx[L.n] = k; L.par[L.n] = p; L.has_lq[L.n] = false;
+        ++L.n;
+    }
+    return true;
+}
 
-// the magazine turned toward the screen centre and the camera, the muzzle kept ahead
+// the magazine turned down-left, toward the middle of the screen but away from the eye (turned
+// straight at the screen centre it came at the camera, the left arm with it), the muzzle a little up
 Q present_mag() {
     const V3 b = g_sk.dirs ? g_sk.b : V3{ 1, 0, 0 };
     V3 o = g_sk.dirs ? g_sk.o : V3{ 0, 0, -1 };
     o = norm(sub(o, scl(b, dot(o, b))));
     const V3 c = cross(b, o);
-    const V3 beta = norm({ 0.93f, 0.30f, 0.20f });
-    V3 tau = norm({ -0.35f, 0.85f, 0.40f });
+    const V3 beta = norm({ 0.95f, 0.15f, 0.25f });
+    V3 tau = norm({ -0.15f, 0.55f, -0.80f });
     tau = norm(sub(tau, scl(beta, dot(tau, beta))));
     const V3 c2 = cross(beta, tau);
     const float S[3][3] = { { b.x, o.x, c.x }, { b.y, o.y, c.y }, { b.z, o.z, c.z } };          // columns b, o, c
@@ -152,119 +206,114 @@ Q present_mag() {
     return qfrom(R);
 }
 
+// the gun's turns (about its own middle; the hands stay on it, the shoulders do not move) and
+// slides (toward the middle of the screen and up), model space
 int build_keys(int mode, Key* k) {
     const Q I = { 1, 0, 0, 0 };
     if (mode == 1) {
         k[0] = { 0.00f, I, { 0, 0, 0 } };
-        k[1] = { 0.55f, qeuler(26, 8, -42), { 2, 3, 1.5f } };   // right side up to the camera
-        k[2] = { 1.40f, qeuler(21, 5, -50), { 2, 3, 1.5f } };   // slow drift
-        k[3] = { 2.00f, qeuler(-12, 18, 26), { 1, 1, 1 } };     // flip: left side and underside
-        k[4] = { 2.60f, qeuler(-8, 14, 32), { 1, 1, 1 } };
+        k[1] = { 0.55f, qeuler(20, 8, -40), { 0, 2.5f, 1.5f } };   // right side up to the camera
+        k[2] = { 1.40f, qeuler(16, 6, -48), { 0, 2.5f, 1.5f } };   // slow drift
+        k[3] = { 2.00f, qeuler(-10, 16, 30), { 0, 2, 1.5f } };     // flip: left side and underside
+        k[4] = { 2.60f, qeuler(-7, 13, 36), { 0, 2, 1.5f } };
         k[5] = { 3.20f, I, { 0, 0, 0 } };
         return 6;
     }
     const Q P = present_mag();
     k[0] = { 0.00f, I, { 0, 0, 0 } };
-    k[1] = { 0.55f, qeuler(26, 8, -42), { 2, 3, 1.5f } };       // right side: bolt / ejection port
-    k[2] = { 1.20f, qeuler(22, 6, -48), { 2, 3, 1.5f } };       // chamber check happens here
-    k[3] = { 2.10f, qeuler(20, 5, -44), { 2, 3, 1.5f } };
-    k[4] = { 2.75f, P, { 1.5f, 4, 2 } };                        // magazine to the camera
-    k[5] = { 4.25f, qmul(qeuler(3, 2, 5), P), { 1.5f, 4, 2 } }; // magazine out, looked at, back in
-    k[6] = { 4.90f, qeuler(-14, 14, 28), { 1, 1, 1 } };         // left side
-    k[7] = { 5.50f, qeuler(-10, 11, 32), { 1, 1, 1 } };
+    k[1] = { 0.55f, qeuler(20, 8, -40), { 0, 2.5f, 1.5f } };       // right side: bolt / ejection port
+    k[2] = { 1.20f, qeuler(17, 6, -46), { 0, 2.5f, 1.5f } };       // chamber check happens here
+    k[3] = { 2.10f, qeuler(15, 5, -42), { 0, 2.5f, 1.5f } };
+    k[4] = { 2.75f, P, { 0, 2, 4 } };                              // gun up, magazine shown
+    k[5] = { 4.25f, qmul(qeuler(3, 2, 5), P), { 0, 2, 4 } };       // the hand takes it out, looks at it, seats it
+    k[6] = { 4.90f, qeuler(-10, 14, 30), { 0, 2, 1.5f } };         // left side
+    k[7] = { 5.50f, qeuler(-7, 11, 34), { 0, 2, 1.5f } };
     k[8] = { 6.20f, I, { 0, 0, 0 } };
     return 9;
 }
 
-const char* resolve_arm(Syscall_t sys, const uint8_t* dobj, const InspectGrip* gr) {
-    auto idx = [&](const char* name) { const int k = (int)sys(SC_BONE_INDEX, dobj, name); return (k >= 0 && k < dobj[0x17]) ? k : -1; };
-    g_arm.up = idx("bip01 l upperarm");
-    g_arm.fore = idx("bip01 l forearm");
-    g_arm.hand = idx("bip01 l hand");
-    if (g_arm.up < 0 || g_arm.fore < 0 || g_arm.hand < 0) return "left arm bones not found";
-    g_arm.n = 0;
-    for (int i = 0; i < gr->nbones && g_arm.n < 40; ++i) {
-        const int k = idx(gr->bones[i].name), p = idx(gr->bones[i].parent);
-        if (k < 0 || p < 0) continue;
-        const float* q = gr->bones[i].q;
-        g_arm.idx[g_arm.n] = k; g_arm.par[g_arm.n] = p; g_arm.lq[g_arm.n] = { q[3], q[0], q[1], q[2] };
-        ++g_arm.n;
-    }
-    g_arm.gq = { gr->q[3], gr->q[0], gr->q[1], gr->q[2] };
-    g_arm.gp = { gr->p[0], gr->p[1], gr->p[2] };
-    g_arm.ok = true;
-    static char s_msg[64];
-    snprintf(s_msg, sizeof(s_msg), "takes it (%d arm bones)", g_arm.n);
-    return s_msg;
-}
-
 void stop(const char* why) {
-    if (g_mode == 2) logger::logf("inspect: view skeleton rebuilt %u time(s) with the bones moved", g_sk.builds);
+    if (g_mode) logger::logf("inspect: view skeleton rebuilt %u time(s) with the bones moved", g_sk.builds);
     g_sk.dobj = nullptr;
     g_mode = 0;
     logger::logf("inspect: %s", why);
 }
 
-void start(int mode, int weapon, int state) {
+void start(int mode, int weapon, int state, const uint8_t* ref) {
     g_sk.dobj = nullptr;
-    g_sk.clip = g_sk.bolt = g_sk.flash = -1;
-    g_sk.boltaction = false;
+    g_sk.clip = g_sk.bolt = g_sk.flash = g_sk.gun0 = g_sk.htag = -1;
+    g_sk.boltaction = g_sk.arms = g_sk.has_out = g_sk.grip = false;
     g_sk.mag = g_sk.back = g_sk.lift = g_sk.twist = g_sk.grab = 0;
-    g_arm.ok = false;
+    g_sk.gq = { 1, 0, 0, 0 }; g_sk.gslide = { 0, 0, 0 };
     g_sk.dirs = false;
     g_sk.builds = 0;
+    const uint8_t* dobj = (weapon > 0 && weapon < 64) ? *(const uint8_t* const*)(g_base + WEAPONS_RVA + (uintptr_t)weapon * WEAPON_STRIDE) : nullptr;
+    const Syscall_t sys = *(const Syscall_t*)(g_base + SYSCALL_PTR_RVA);
+    if (!dobj || !sys || !readable(dobj, 0x5c) || dobj[0x17] < 4 || dobj[0x17] > 128 || dobj[0x16] < 2 || dobj[0x16] > 8 || !*(void* const*)(dobj + 4)) {
+        logger::logf("inspect: weapon %d has no usable view model (DObj %p) - nothing to turn", weapon, (const void*)dobj);
+        return;
+    }
+    const char* fc = "-"; const char* fb = "-"; const char* ff = "-";
+    static const char* const FLASH[] = { "tag_flash" };
+    g_sk.flash = find_bone(sys, dobj, FLASH, 1, &ff);
+    g_sk.gun0 = first_model_bones(dobj);
+    if (g_sk.gun0 <= 0 || g_sk.gun0 >= dobj[0x17] || (g_sk.flash >= 0 && g_sk.flash < g_sk.gun0)) {
+        logger::logf("inspect: weapon %d: the weapon's bones cannot be told from the hands' (first model %d bones, tag_flash %d of %d)",
+                     weapon, g_sk.gun0, g_sk.flash, dobj[0x17]);
+        return;
+    }
+    const int ht = (int)sys(SC_BONE_INDEX, dobj, "tag_weapon");
+    g_sk.htag = (ht >= 0 && ht < g_sk.gun0) ? ht : -1;
+    g_sk.arms = resolve_limb(sys, dobj, g_R, 'r', INSPECT_ARM_R, INSPECT_NARM_R) &&
+                resolve_limb(sys, dobj, g_L, 'l', INSPECT_ARM_L, INSPECT_NARM_L);
+    const char* hand = "-";
+    if (mode == 2) {
+        g_sk.clip = find_bone(sys, dobj, CLIPS, sizeof(CLIPS) / sizeof(*CLIPS), &fc);
+        g_sk.bolt = find_bone(sys, dobj, BOLTS, sizeof(BOLTS) / sizeof(*BOLTS), &fb);
+        if (g_sk.bolt >= 0) g_sk.boltaction = true;
+        else g_sk.bolt = find_bone(sys, dobj, SLIDES, sizeof(SLIDES) / sizeof(*SLIDES), &fb);
+        hand = "no grip for this magazine";
+        if (g_sk.clip >= 0)
+            for (int i = 0; i < INSPECT_NGRIPS; ++i) {
+                const InspectGrip& gr = INSPECT_GRIPS[i];
+                if (strcmp(gr.clip, fc)) continue;
+                g_sk.out_local = { gr.out[0], gr.out[1], gr.out[2] };
+                g_sk.has_out = true;
+                if (!gr.nbones) { hand = "never takes it (not in its reload)"; continue; }
+                g_sk.grip_q = { gr.q[3], gr.q[0], gr.q[1], gr.q[2] };
+                g_sk.grip_p = { gr.p[0], gr.p[1], gr.p[2] };
+                int with = 0;
+                for (int j = 0; j < gr.nbones; ++j) {
+                    const int k = (int)sys(SC_BONE_INDEX, dobj, gr.bones[j].name);
+                    for (int e = 0; e < g_L.n; ++e)
+                        if (g_L.idx[e] == k) { const float* q = gr.bones[j].q; g_L.lq[e] = { q[3], q[0], q[1], q[2] }; g_L.has_lq[e] = true; ++with; }
+                }
+                g_sk.grip = g_sk.arms;
+                static char s_msg[64];
+                snprintf(s_msg, sizeof(s_msg), "takes it (%d finger/hand bones)", with);
+                hand = g_sk.arms ? s_msg : "arm bones not found";
+            }
+    }
+    // where the view model sits from the eye (the hip offset), for the offline previews
+    const float* org = (const float*)(ref + RE_ORIGIN);
+    const float* vo = (const float*)(g_base + VIEWORG_RVA);
+    const float* F = vo + 3; const float* Lf = vo + 6; const float* U = vo + 9;
+    const V3 dv = { org[0] - vo[0], org[1] - vo[1], org[2] - vo[2] };
+    logger::logf("inspect: start %s (weapon %d, weaponstate %d, speed %.2f) - view DObj %p (%d bones, %d models, weapon from bone %d, hands' tag_weapon %d): "
+                 "flash %s=%d, magazine %s=%d, bolt %s=%d%s, arms %s, left hand: %s; model origin %.1f %.1f %.1f (from the eye f %.1f l %.1f u %.1f)",
+                 mode == 2 ? "FULL" : "basic", weapon, state, cvar_f(g_cv_speed, 1, 0.05f, 20), (const void*)dobj, dobj[0x17], dobj[0x16],
+                 g_sk.gun0, g_sk.htag, ff, g_sk.flash, fc, g_sk.clip, fb, g_sk.bolt, g_sk.boltaction ? " (bolt action)" : "",
+                 g_sk.arms ? "found" : "NOT found (the gun turns alone)", hand, org[0], org[1], org[2],
+                 F[0] * dv.x + F[1] * dv.y + F[2] * dv.z, Lf[0] * dv.x + Lf[1] * dv.y + Lf[2] * dv.z, U[0] * dv.x + U[1] * dv.y + U[2] * dv.z);
     QueryPerformanceCounter(&g_t0);
     g_mode = mode; g_weapon = weapon; g_state = state;
-    char bones[256] = "";
-    if (mode == 2) {
-        const uint8_t* dobj = (weapon > 0 && weapon < 64) ? *(const uint8_t* const*)(g_base + WEAPONS_RVA + (uintptr_t)weapon * WEAPON_STRIDE) : nullptr;
-        const Syscall_t sys = *(const Syscall_t*)(g_base + SYSCALL_PTR_RVA);
-        if (dobj && sys && dobj[0x17] >= 4 && dobj[0x17] <= 128 && dobj[0x16] >= 1 && dobj[0x16] <= 8 && *(void* const*)(dobj + 4)) {
-            const char* fc = "-"; const char* fb = "-"; const char* ff = "-";
-            static const char* const FLASH[] = { "tag_flash" };
-            g_sk.flash = find_bone(sys, dobj, FLASH, 1, &ff);
-            g_sk.clip = find_bone(sys, dobj, CLIPS, sizeof(CLIPS) / sizeof(*CLIPS), &fc);
-            g_sk.bolt = find_bone(sys, dobj, BOLTS, sizeof(BOLTS) / sizeof(*BOLTS), &fb);
-            if (g_sk.bolt >= 0) g_sk.boltaction = true;
-            else g_sk.bolt = find_bone(sys, dobj, SLIDES, sizeof(SLIDES) / sizeof(*SLIDES), &fb);
-            const char* hand = "no grip for this magazine";
-            g_sk.has_out = false;
-            if (g_sk.clip >= 0)
-                for (int i = 0; i < INSPECT_NGRIPS; ++i)
-                    if (!strcmp(INSPECT_GRIPS[i].clip, fc)) {
-                        const InspectGrip& gr = INSPECT_GRIPS[i];
-                        g_sk.out_local = { gr.out[0], gr.out[1], gr.out[2] };
-                        g_sk.has_out = true;
-                        hand = gr.nbones ? resolve_arm(sys, dobj, &gr) : "never takes it (not in its reload)";
-                    }
-            snprintf(bones, sizeof(bones), "view DObj %p (%d bones, %d models, tag %d): flash %s=%d, magazine %s=%d, bolt %s=%d%s, left hand: %s",
-                     (const void*)dobj, dobj[0x17], dobj[0x16], dobj[0x54], ff, g_sk.flash, fc, g_sk.clip, fb, g_sk.bolt,
-                     g_sk.boltaction ? " (bolt action)" : "", hand);
-            g_sk.dobj = dobj;
-        } else {
-            snprintf(bones, sizeof(bones), "no usable view DObj (%p) - the weapon turns, no bone moves", (const void*)dobj);
-        }
-    }
-    logger::logf("inspect: start %s (weapon %d, weaponstate %d, pivot \"%s\", speed %.2f)%s%s", mode == 2 ? "FULL" : "basic",
-                 weapon, state, *(const char* const*)((const uint8_t*)g_cv_pivot + CV_STRING), cvar_f(g_cv_speed, 1, 0.05f, 20),
-                 bones[0] ? " - " : "", bones);
-}
-
-// v' = view-local rotation of a world vector
-void turn(const float* F, const float* L, const float* U, const float R[3][3], const float* v, float* out) {
-    const float x = v[0] * F[0] + v[1] * F[1] + v[2] * F[2];
-    const float y = v[0] * L[0] + v[1] * L[1] + v[2] * L[2];
-    const float z = v[0] * U[0] + v[1] * U[1] + v[2] * U[2];
-    const float a = R[0][0] * x + R[0][1] * y + R[0][2] * z;
-    const float b = R[1][0] * x + R[1][1] * y + R[1][2] * z;
-    const float c = R[2][0] * x + R[2][1] * y + R[2][2] * z;
-    for (int i = 0; i < 3; ++i) out[i] = a * F[i] + b * L[i] + c * U[i];
+    g_sk.dobj = dobj;
 }
 
 __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref, const uint8_t* ps) {
     if (!g_cv_go) {
         g_cv_go    = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect", "0", 0);
-        g_cv_pivot = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect_pivot", "12 0 -3", 0);
+        g_cv_pivot = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect_pivot", "0 0 0", 0);
         g_cv_speed = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect_speed", "1", 0);
         g_cv_mag   = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect_mag", "5", 0);
         QueryPerformanceFrequency(&g_freq);
@@ -278,7 +327,7 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
     if (asked) {
         ((Cvar_Set_t)CODMP_CVAR_SET_VA)("cod1x_inspect", "0");
         if (ads > 0.001f) logger::logf("inspect: ignored while aiming (ads %.2f)", ads);
-        else start(asked == 2 ? 2 : 1, weapon, state);
+        else start(asked == 2 ? 2 : 1, weapon, state, ref);
     }
     if (!g_mode) return;
     if (weapon != g_weapon) { stop("cut - weapon switch"); return; }
@@ -308,30 +357,15 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
         }
         if (g_sk.clip >= 0) {
             // the left hand goes to the magazine, pulls it, turns it to look at it, seats it, goes back
-            g_sk.grab = g_arm.ok ? ramp(t, 2.85f, 3.15f) * (1 - ramp(t, 4.20f, 4.50f)) : 0.0f;
+            g_sk.grab = g_sk.grip ? ramp(t, 2.85f, 3.15f) * (1 - ramp(t, 4.20f, 4.50f)) : 0.0f;
             g_sk.mag = ramp(t, 3.15f, 3.45f) * (1 - ramp(t, 4.05f, 4.17f));
             g_sk.twist = (t > 3.45f && t < 4.05f) ? 14.0f * sinf(3.14159265f * (t - 3.45f) / 0.60f) : 0.0f;
             jolt += bump(t, 4.17f, 0.16f);                      // the magazine seated
         }
         if (jolt > 0) { q = qmul(qeuler(0, 2.2f * jolt, -1.5f * jolt), q); slide.z += 0.25f * jolt; }
     }
-
-    float R[3][3];
-    qmat(q, R);
-    const float* F = (const float*)(g_base + VIEWAXIS_RVA);
-    const float* L = F + 3;
-    const float* U = F + 6;
-    float piv[3] = { 12, 0, -3 };
-    sscanf(*(const char* const*)((const uint8_t*)g_cv_pivot + CV_STRING), "%f %f %f", &piv[0], &piv[1], &piv[2]);
-
-    float* axis = (float*)(ref + RE_AXIS);
-    for (int r = 0; r < 3; ++r) { float o[3]; turn(F, L, U, R, axis + 3 * r, o); memcpy(axis + 3 * r, o, sizeof(o)); }
-    // origin' = origin + pivot - R pivot + slide   (turning about origin + pivot)
-    float pw[3], rp[3];
-    for (int j = 0; j < 3; ++j) pw[j] = piv[0] * F[j] + piv[1] * L[j] + piv[2] * U[j];
-    turn(F, L, U, R, pw, rp);
-    float* org = (float*)(ref + RE_ORIGIN);
-    for (int j = 0; j < 3; ++j) org[j] += pw[j] - rp[j] + slide.x * F[j] + slide.y * L[j] + slide.z * U[j];
+    g_sk.gq = q;
+    g_sk.gslide = slide;
 }
 void (__cdecl* g_apply_ptr)(uint8_t*, const uint8_t*) = inspect_apply;
 
@@ -358,46 +392,29 @@ void set_row(float* m, int r, V3 v) { m[4 * r] = v.x; m[4 * r + 1] = v.y; m[4 * 
 // the stored rows are the bone's axes = the columns of its rotation
 Q get_rot(const float* m) { float R[3][3]; for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) R[i][j] = m[4 * j + i]; return qfrom(R); }
 void set_rot(float* m, Q q) { float R[3][3]; qmat(q, R); for (int r = 0; r < 3; ++r) set_row(m, r, { R[0][r], R[1][r], R[2][r] }); }
-Q qconj(Q q) { return { q.w, -q.x, -q.y, -q.z }; }
-float len(V3 a) { return sqrtf(dot(a, a)); }
 // turn a bone about a point
 void spin(const uint8_t* d, int b, Q r, V3 pivot) {
     float* m = bone(d, b);
     for (int k = 0; k < 3; ++k) set_row(m, k, qrot(r, row(m, k)));
     set_row(m, 3, add(pivot, qrot(r, sub(row(m, 3), pivot))));
 }
-Q between(V3 a, V3 b) {
-    a = norm(a); b = norm(b);
-    const float c = dot(a, b);
-    if (c < -0.9999f) return qaxis(norm(fabsf(a.x) < 0.9f ? cross(a, { 1, 0, 0 }) : cross(a, { 0, 1, 0 })), 180.0f);
-    const V3 x = cross(a, b);
-    const Q q = { 1 + c, x.x, x.y, x.z };
-    const float l = sqrtf(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
-    return { q.w / l, q.x / l, q.y / l, q.z / l };
-}
-// chain entries at or under bone `root` (the chain is parents first)
-void subtree(int root, bool* in) {
-    for (int i = 0; i < g_arm.n; ++i) {
-        in[i] = g_arm.idx[i] == root || g_arm.par[i] == root;
-        for (int j = 0; j < i && !in[i]; ++j) in[i] = in[j] && g_arm.idx[j] == g_arm.par[i];
+void shift(const uint8_t* d, int b, V3 v) { float* m = bone(d, b); set_row(m, 3, add(row(m, 3), v)); }
+// limb entries at or under bone `root` (the list is parents first)
+void subtree(const Limb& L, int root, bool* in) {
+    for (int i = 0; i < L.n; ++i) {
+        in[i] = L.idx[i] == root || L.par[i] == root;
+        for (int j = 0; j < i && !in[i]; ++j) in[i] = in[j] && L.idx[j] == L.par[i];
     }
 }
 
-// Left hand onto the magazine: the grip of the reload animation placed on the magazine as it
-// is now, the arm re-solved (upper arm and forearm keep their lengths, the elbow stays in the
-// plane it bends in), then the hand's rotation and the fingers of the grip.
-void solve_arm(const uint8_t* d) {
-    const float w = g_sk.grab;
-    const float* C = bone(d, g_sk.clip);
-    const Q qc = get_rot(C);
-    const V3 pc = row(C, 3);
-    const Q qt = qmul(qc, g_arm.gq);
-    const V3 pt = add(pc, qrot(qc, g_arm.gp));
-    float* H = bone(d, g_arm.hand);
+// Puts the hand of an arm at (tp, tq): upper arm and forearm keep their lengths and the elbow
+// stays in the plane it bends in (two-bone solve from the shoulder, which does not move), then
+// the hand is turned; its fingers ride with it. fingers > 0: the left hand's fingers take the
+// local rotations of the reload grip, blended by that much.
+void solve_limb(const uint8_t* d, const Limb& L, Q tq, V3 tp, float fingers) {
+    float* H = bone(d, L.hand);
     const V3 W0 = row(H, 3);
-    const Q tq = slerp(get_rot(H), qt, w);
-    const V3 tp = add(W0, scl(sub(pt, W0), w));
-    const V3 S = row(bone(d, g_arm.up), 3), E = row(bone(d, g_arm.fore), 3);
+    const V3 S = row(bone(d, L.up), 3), E = row(bone(d, L.fore), 3);
     const float a = len(sub(E, S)), b = len(sub(W0, E));
     if (a < 0.5f || b < 0.5f) return;
     const V3 dir = norm(sub(tp, S));
@@ -412,44 +429,47 @@ void solve_arm(const uint8_t* d) {
     const V3 E2 = add(S, add(scl(dir, along), scl(norm(pole), h)));
     const V3 T2 = add(S, scl(dir, dl));
     bool in[40];
-    // 1. upper arm: the elbow to E2
-    const Q r1 = between(sub(E, S), sub(E2, S));
-    spin(d, g_arm.up, r1, S);
-    for (int i = 0; i < g_arm.n; ++i) spin(d, g_arm.idx[i], r1, S);
-    // 2. forearm: the wrist to the target
-    const Q r2 = between(sub(row(H, 3), E2), sub(T2, E2));
-    subtree(g_arm.fore, in);
-    for (int i = 0; i < g_arm.n; ++i) if (in[i]) spin(d, g_arm.idx[i], r2, E2);
-    // 3. the hand turned as it holds the magazine
-    const Q r3 = qmul(tq, qconj(get_rot(H)));
+    const Q r1 = between(sub(E, S), sub(E2, S));                 // upper arm: the elbow to E2
+    spin(d, L.up, r1, S);
+    for (int i = 0; i < L.n; ++i) spin(d, L.idx[i], r1, S);
+    const Q r2 = between(sub(row(H, 3), E2), sub(T2, E2));       // forearm: the wrist to the target
+    subtree(L, L.fore, in);
+    for (int i = 0; i < L.n; ++i) if (in[i]) spin(d, L.idx[i], r2, E2);
+    const Q r3 = qmul(tq, qconj(get_rot(H)));                    // the hand turned
     const V3 W2 = row(H, 3);
-    subtree(g_arm.hand, in);
-    for (int i = 0; i < g_arm.n; ++i) if (in[i]) spin(d, g_arm.idx[i], r3, W2);
-    // 4. fingers closed as in the reload (local rotations blended, bone lengths kept)
+    subtree(L, L.hand, in);
+    for (int i = 0; i < L.n; ++i) if (in[i]) spin(d, L.idx[i], r3, W2);
+    if (fingers <= 0) return;
     Q lcur[40]; V3 tloc[40];
-    for (int i = 0; i < g_arm.n; ++i) {
-        if (!in[i] || g_arm.idx[i] == g_arm.hand) continue;
-        const float* m = bone(d, g_arm.idx[i]);
-        const float* pm = bone(d, g_arm.par[i]);
+    for (int i = 0; i < L.n; ++i) {
+        if (!in[i] || L.idx[i] == L.hand || !L.has_lq[i]) continue;
+        const float* m = bone(d, L.idx[i]);
+        const float* pm = bone(d, L.par[i]);
         const Q pq = qconj(get_rot(pm));
         lcur[i] = qmul(pq, get_rot(m));
         tloc[i] = qrot(pq, sub(row(m, 3), row(pm, 3)));
     }
-    for (int i = 0; i < g_arm.n; ++i) {
-        if (!in[i] || g_arm.idx[i] == g_arm.hand) continue;
-        float* m = bone(d, g_arm.idx[i]);
-        const float* pm = bone(d, g_arm.par[i]);
+    for (int i = 0; i < L.n; ++i) {
+        if (!in[i] || L.idx[i] == L.hand || !L.has_lq[i]) continue;
+        float* m = bone(d, L.idx[i]);
+        const float* pm = bone(d, L.par[i]);
         const Q pq = get_rot(pm);
-        set_rot(m, qmul(pq, slerp(lcur[i], g_arm.lq[i], w)));
+        set_rot(m, qmul(pq, slerp(lcur[i], L.lq[i], fingers)));
         set_row(m, 3, add(row(pm, 3), qrot(pq, tloc[i])));
     }
 }
+bool limb_ok(const Limb& L, int n) { return L.up >= 0 && L.up < n && L.fore < n && L.hand < n; }
 }  // namespace
 
+// Every skeleton the render builder makes goes through here (bone_probe); only the view model
+// of an inspect is touched. The gun turns about its own middle, the shoulders stay where the
+// animation put them, and both arms are re-solved to keep the hands where they hold the gun -
+// or, for the left one, on the magazine.
 void inspect_on_skeleton(const void* dobj) {
     const uint8_t* d = g_sk.dobj;
     if (!d || dobj != d || !*(void* const*)(d + 4)) return;
     const int n = d[0x17];
+    if (g_sk.gun0 <= 0 || g_sk.gun0 >= n) return;
     if (!g_sk.dirs) {
         V3 b = { 1, 0, 0 }, P = { 0, 0, 0 };
         if (g_sk.flash >= 0 && g_sk.flash < n) {
@@ -476,6 +496,23 @@ void inspect_on_skeleton(const void* dobj) {
         logger::logf("inspect: bore axis (%.2f %.2f %.2f), magazine side (%.2f %.2f %.2f)", b.x, b.y, b.z, o.x, o.y, o.z);
     }
     ++g_sk.builds;
+    // the middle of the gun (its bones), before anything moves
+    V3 C = { 0, 0, 0 };
+    for (int i = g_sk.gun0; i < n; ++i) C = add(C, row(bone(d, i), 3));
+    C = scl(C, 1.0f / (float)(n - g_sk.gun0));
+    {
+        float off[3] = { 0, 0, 0 };
+        sscanf(*(const char* const*)((const uint8_t*)g_cv_pivot + CV_STRING), "%f %f %f", &off[0], &off[1], &off[2]);
+        C = add(C, { off[0], off[1], off[2] });
+    }
+    const bool arms = g_sk.arms && limb_ok(g_R, n) && limb_ok(g_L, n);
+    Q qR = { 1, 0, 0, 0 }, qL = { 1, 0, 0, 0 };
+    V3 pR = { 0, 0, 0 }, pL = { 0, 0, 0 };
+    if (arms) {
+        qR = get_rot(bone(d, g_R.hand)); pR = row(bone(d, g_R.hand), 3);
+        qL = get_rot(bone(d, g_L.hand)); pL = row(bone(d, g_L.hand), 3);
+    }
+    // 1. bolt and magazine, in the gun as it rests
     if (g_sk.bolt >= 0 && g_sk.bolt < n && (g_sk.back > 0 || g_sk.lift > 0)) {
         float* m = bone(d, g_sk.bolt);
         if (g_sk.boltaction && g_sk.lift > 0) {
@@ -491,7 +528,26 @@ void inspect_on_skeleton(const void* dobj) {
         set_row(m, 3, add(row(m, 3), scl(g_sk.o, g_sk.mag * cvar_f(g_cv_mag, 5, 0, 20))));
         if (g_sk.twist != 0) spin(d, g_sk.clip, qaxis(g_sk.o, g_sk.twist), row(m, 3));   // turned to be looked at
     }
-    if (g_arm.ok && g_sk.grab > 0 && g_arm.up < n && g_arm.fore < n && g_arm.hand < n && g_sk.clip < n) solve_arm(d);
+    // 2. the gun turns about its middle and slides
+    const Q gq = g_sk.gq;
+    const V3 gs = g_sk.gslide;
+    for (int i = g_sk.gun0; i < n; ++i) { spin(d, i, gq, C); shift(d, i, gs); }
+    if (g_sk.htag >= 0) { spin(d, g_sk.htag, gq, C); shift(d, g_sk.htag, gs); }
+    if (!arms) return;
+    // 3. the right hand stays on its grip
+    solve_limb(d, g_R, qmul(gq, qR), add(add(C, qrot(gq, sub(pR, C))), gs), 0);
+    // 4. the left hand stays on the gun, or goes to the magazine
+    Q tq = qmul(gq, qL);
+    V3 tp = add(add(C, qrot(gq, sub(pL, C))), gs);
+    const float w = g_sk.grip ? g_sk.grab : 0.0f;
+    if (w > 0 && g_sk.clip >= 0 && g_sk.clip < n) {
+        const float* cm = bone(d, g_sk.clip);
+        const Q qc = get_rot(cm);
+        const V3 pc = row(cm, 3);
+        tq = slerp(tq, qmul(qc, g_sk.grip_q), w);
+        tp = add(tp, scl(sub(add(pc, qrot(qc, g_sk.grip_p)), tp), w));
+    }
+    solve_limb(d, g_L, tq, tp, w);
 }
 
 bool inspect_install(HMODULE cgame) {
