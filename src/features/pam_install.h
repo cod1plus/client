@@ -41,7 +41,7 @@ struct PamInstallConfig {
     char manifest_url[256];   // ini: pam_manifest_url / hdtex_manifest_url
 };
 extern PamInstallConfig g_pam_install_config;     // the competitive mod
-extern PamInstallConfig g_hdtex_install_config;   // HD texture pack -> main\
+extern PamInstallConfig g_hdtex_install_config;   // HD texture pack -> the main folder
 
 enum PkgId { PKG_PAM = 0, PKG_HDTEX = 1, PKG_COUNT = 2 };
 

@@ -55,6 +55,7 @@ bool             g_lock_ready = false;
 long             g_dx = 0, g_dy = 0;      // unread device counts
 long             g_ui_dx = 0, g_ui_dy = 0; // unread counts for the menu overlay
 volatile LONG    g_ui_capture = 0;         // overlay open: route deltas to the UI
+volatile LONG    g_engine_read_tick = 0;   // GetTickCount of the engine's last mouse read
 long             g_msg_total = 0;         // WM_INPUT messages ever seen (rate readout)
 
 volatile LONG    g_active  = 0;           // hook answers raw only while this is 1
@@ -242,6 +243,29 @@ void rinput_disable() {
 // --- the hook ----------------------------------------------------------------------
 
 BOOL WINAPI hk_GetCursorPos(LPPOINT p) {
+    if (p) InterlockedExchange(&g_engine_read_tick, (LONG)GetTickCount());
+    // Menu overlay open. The engine must see no movement (the view would turn behind
+    // the panel), and the menu cursor needs the movement instead. With m_rinput 1 the
+    // raw thread already routes the counts to the UI. With m_rinput 0 there is no raw
+    // thread, and WM_MOUSEMOVE cannot drive the cursor (coalesced, overwritten by the
+    // engine's re-centre): the menu cursor was frozen for every m_rinput 0 player
+    // while the mouse turned the view. The engine reads the cursor once a frame and
+    // re-centres it right after, so what it is about to read IS this frame's movement:
+    // it goes to the menu, and the engine gets the centre.
+    if (p && InterlockedCompareExchange(&g_ui_capture, 0, 0) == 1 && *g_center_x > 0 && *g_center_y > 0) {
+        if (InterlockedCompareExchange(&g_active, 0, 0) != 1 && g_real_GetCursorPos) {
+            POINT real;
+            if (g_real_GetCursorPos(&real)) {
+                EnterCriticalSection(&g_lock);
+                g_ui_dx += real.x - *g_center_x;
+                g_ui_dy += real.y - *g_center_y;
+                LeaveCriticalSection(&g_lock);
+            }
+        }
+        p->x = *g_center_x;
+        p->y = *g_center_y;
+        return TRUE;
+    }
     if (InterlockedCompareExchange(&g_active, 0, 0) != 1 || !p)
         return g_real_GetCursorPos ? g_real_GetCursorPos(p) : FALSE;
 
@@ -422,6 +446,12 @@ void rinput_ui_take_delta(long* dx, long* dy) {
     *dx = g_ui_dx; *dy = g_ui_dy;
     g_ui_dx = 0; g_ui_dy = 0;
     LeaveCriticalSection(&g_lock);
+}
+
+bool rinput_ui_cursor_pinned() {
+    if (InterlockedCompareExchange(&g_active, 0, 0) == 1) return true;
+    const DWORD last = (DWORD)InterlockedCompareExchange(&g_engine_read_tick, 0, 0);
+    return last != 0 && GetTickCount() - last < 200;
 }
 
 void rinput_shutdown() {

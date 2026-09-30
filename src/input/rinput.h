@@ -35,12 +35,18 @@ void rinput_start();      // DllMain: hook GetCursorPos (inert until m_rinput is
 void rinput_tick();       // watcher thread: follow m_rinput, publish m_rinput_hz
 void rinput_shutdown();
 
-// UI tap for the modern menu overlay (ui/gl_overlay.cpp). While captured, raw deltas
-// feed the OVERLAY's virtual cursor instead of the engine accumulator - so the menu
-// cursor moves and the in-game view does NOT turn behind the panel. Works whatever
-// m_rinput is set to: the raw-input thread listens from DllMain either way.
+// UI tap for the modern menu overlay (ui/gl_overlay.cpp). While captured, the mouse
+// feeds the OVERLAY's virtual cursor and the engine reads no movement - the menu
+// cursor moves and the in-game view does NOT turn behind the panel. m_rinput 1: the
+// raw counts. m_rinput 0 (no raw thread): what the engine's own per-frame cursor read
+// would have returned, taken in the GetCursorPos hook.
 void rinput_ui_capture(bool on);
-void rinput_ui_take_delta(long* dx, long* dy);   // DLL_PROCESS_DETACH: stop the thread, unregister the device
+void rinput_ui_take_delta(long* dx, long* dy);
+// True while the tap above is the menu's cursor source: raw input is on, or the engine
+// is reading and re-centring the cursor (fullscreen, or windowed in game). False when
+// the engine left the cursor free (windowed menus/console): WM_MOUSEMOVE then carries
+// real positions and is the source.
+bool rinput_ui_cursor_pinned();
 
 }  // namespace patches
 

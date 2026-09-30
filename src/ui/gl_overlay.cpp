@@ -12,10 +12,10 @@
 //
 //   Input: the game window is subclassed. While the overlay is open every mouse
 //   and keyboard message is consumed, so the engine sees a frozen world. The
-//   cursor is VIRTUAL - integrated from WM_MOUSEMOVE deltas and drawn by us -
-//   because in exclusive fullscreen the engine recenters the real cursor every
-//   frame; moves that land exactly on the recenter point are ignored (that is
-//   the engine's own SetCursorPos echoing back, not the player's hand).
+//   cursor is VIRTUAL - drawn by us, moved by the tap of input/rinput.h (raw
+//   counts with m_rinput 1, the engine's own per-frame cursor read otherwise),
+//   because in fullscreen the engine re-centres the real cursor every frame.
+//   WM_MOUSEMOVE only drives it when the engine leaves the cursor free.
 //
 //   GL state: glPushAttrib(ALL)+glPushClientAttrib(ALL) around the pass. The
 //   engine is fixed-function GL1.x, so immediate mode is both safe and simplest.
@@ -81,7 +81,7 @@ bool    g_home_suppress = false;
 UiInput g_in;
 bool    g_keycap = false;           // Keys tab is waiting for the next input
 bool    g_prev_down = false;
-bool    g_saw_raw = false;   // raw tap delivered: ignore the WM_MOUSEMOVE fallback
+float   g_travel = 0;           // cursor travel while open (logged at close: 0 = no mouse)
 POINT   g_last_move = { -1, -1 };
 int     g_vw = 0, g_vh = 0;         // viewport size this frame
 float   g_dt = 0.016f;
@@ -95,8 +95,18 @@ void ui_key_capture(bool on) { g_keycap = on; if (!on) g_in.vk = 0; }
 bool overlay_visible() { return g_mode != 0; }
 HWND overlay_game_window() { return wndhub_window(); }
 
+// One line per close: a "the menu cursor does not move" report is then a log with
+// travel 0 (no mouse reached the menu) or not (it moved, the problem is elsewhere).
+static void note_close(int was) {
+    if (was == 0) return;
+    logger::logf("overlay: closed (cursor travel %.0f px, %s)", g_travel,
+                 rinput_ui_cursor_pinned() ? "engine-pinned cursor" : "free cursor, window messages");
+    g_travel = 0;
+}
+
 void overlay_toggle(bool on) {
     int was = g_mode;
+    if (!on) note_close(was);
     g_mode = on ? 1 : 0;
     g_came_from_home = false;
     g_last_move.x = -1;
@@ -116,7 +126,7 @@ void set_mode(int m, bool from_home) {
         logger::logf("overlay: mode %d -> %d (from_home=%d, suppress=%d)",
                      g_mode, m, from_home, g_home_suppress);
     if (g_mode == 0 && m != 0) rinput_ui_capture(true);
-    if (g_mode != 0 && m == 0) rinput_ui_capture(false);
+    if (g_mode != 0 && m == 0) { rinput_ui_capture(false); note_close(g_mode); }
     g_mode = m;
     g_came_from_home = from_home;
 }
@@ -223,7 +233,7 @@ bool overlay_listener(HWND w, UINT m, WPARAM wp, LPARAM lp, LRESULT* res) {
     case WM_CHAR: case WM_SYSKEYDOWN:
         return true;
     case WM_MOUSEMOVE: {
-        if (g_saw_raw) return true;            // raw input owns the cursor
+        if (rinput_ui_cursor_pinned()) return true;   // the tap owns the cursor (rinput.h)
         POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };
         RECT rc; GetClientRect(w, &rc);
         POINT centre = { rc.right / 2, rc.bottom / 2 };
@@ -239,6 +249,7 @@ bool overlay_listener(HWND w, UINT m, WPARAM wp, LPARAM lp, LRESULT* res) {
         if (g_last_move.x >= 0 && !is_recentre) {
             g_in.mx += (float)(p.x - g_last_move.x);
             g_in.my += (float)(p.y - g_last_move.y);
+            g_travel += fabsf((float)(p.x - g_last_move.x)) + fabsf((float)(p.y - g_last_move.y));
             if (g_in.mx < 0) g_in.mx = 0;
             if (g_in.my < 0) g_in.my = 0;
             if (g_vw > 0 && g_in.mx > g_vw) g_in.mx = (float)g_vw;
@@ -446,15 +457,16 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
         if (g_vw > 0 && g_vh > 0) {
             ui_begin_2d(g_vw, g_vh);
 
-            // PRIMARY cursor source: the raw-input tap. WM_MOUSEMOVE cannot do
-            // this job - Windows coalesces it to the latest position and the
-            // engine re-pins the cursor to centre ~250x/s, so the physical
-            // positions are overwritten before we ever see them (frozen cursor,
-            // 2026-08-10). Raw deltas come straight from the device.
+            // PRIMARY cursor source: the tap in input/rinput.cpp. WM_MOUSEMOVE
+            // cannot do this job while the engine pins the cursor - Windows
+            // coalesces it to the latest position and the engine re-centres ~250x/s,
+            // so the physical positions are overwritten before we ever see them
+            // (frozen cursor, 2026-08-10; and for every m_rinput 0 player until the
+            // tap also read the engine's cursor, 2026-09-30).
             long rdx = 0, rdy = 0;
             rinput_ui_take_delta(&rdx, &rdy);
             if (rdx || rdy) {
-                g_saw_raw = true;
+                g_travel += fabsf((float)rdx) + fabsf((float)rdy);
                 g_in.mx += (float)rdx;
                 g_in.my += (float)rdy;
                 if (g_in.mx < 0) g_in.mx = 0;
