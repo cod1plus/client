@@ -84,6 +84,7 @@ set(COD1RELOADED_SOURCES
     src/gameplay/anim_clamp.cpp
     src/gameplay/bone_probe.cpp
     src/gameplay/hitbox_client.cpp
+    src/gameplay/inspect.cpp
     src/netcode/antilag.cpp
     src/core/single_instance.cpp
     src/ui/gl_overlay.cpp

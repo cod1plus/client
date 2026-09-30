@@ -12,6 +12,7 @@
 #include "netcode/ruleset.h"
 #include "gameplay/viewheight_fix.h"
 #include "gameplay/lean_fix.h"
+#include "gameplay/inspect.h"
 #include "core/logger.h"
 #include "netcode/version_patch.h"
 #include "netcode/protocol_patch.h"
@@ -92,6 +93,8 @@ bool apply_cgame_patches(HMODULE cgame, bool fresh) {
     patches::hitbox_view_install(cgame);
     // render clock: the view of frames drawn between two commands (inert while cod1x_render_hz 0)
     patches::render_clock_install_cgame(cgame);
+    // weapon inspect (cod1x_inspect): the view weapon's call site, on every cgame load
+    patches::inspect_install(cgame);
 
     const bool ok = patches::apply_to_cgame(cgame);
     logger::logf("  [%s] cgame patches applied (lean=%d)", ok ? "OK" : "RETRY",
