@@ -224,7 +224,13 @@ float g_sweep[3] = { -1, -1, -1 };
 
 // ---------------------------------------------------------------------------------
 
+// The native home screen is switched OFF (enzo, 2026-09-30: not good looking, back to the
+// vanilla main menu). The engine's own "main" menu stays on screen; Ctrl+M and the
+// "1.6X SETTINGS" button still open the settings overlay. Set to true to bring it back.
+constexpr bool HOME_SCREEN_ENABLED = false;
+
 bool home_menu_is_active() {
+    if (!HOME_SCREEN_ENABLED) return false;
     static DWORD s_probe = 0;
     static bool  s_in_game = false;
     const DWORD now = GetTickCount();
