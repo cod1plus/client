@@ -11,6 +11,13 @@
 #include <cstdlib>
 #include <cstring>
 
+#if !__has_include("ui/ui_draw.h")
+// main: the overlay has no line primitive yet (it comes with the ui_draw split of the dev
+// branch). The boxes are stored but never drawn there; the client-side box table
+// (gameplay/hitbox_client) does not depend on any of this.
+namespace patches { inline void ui_line(float, float, float, float, float, DWORD) {} }
+#endif
+
 namespace patches {
 extern EngineSyscall_t* g_syscall_slot;   // engine_2d.cpp
 
