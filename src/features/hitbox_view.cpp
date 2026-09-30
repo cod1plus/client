@@ -54,6 +54,20 @@ bool tested_box(const hb_set_t* set, int bi, float mins[3], float maxs[3]) {
         if (set->fix[k].bone == bi) { memcpy(mins, set->fix[k].mins, 12); memcpy(maxs, set->fix[k].maxs, 12); break; }
     return maxs[0] - mins[0] > 0.01f || maxs[1] - mins[1] > 0.01f || maxs[2] - mins[2] > 0.01f;
 }
+// The server tests the head box on "bip01 head", the bone the head mesh is skinned to - not on
+// the controller bone "head" the shipped table names (hitbox_fix.c: the head controller turns
+// the box and not the visible head, 13 degrees measured while aim-walking).
+int frame_bone(int b) {
+    static int head = -2, bip = -2;
+    if (head == -2) {
+        head = bip = -1;
+        for (int k = 0; k < HB_NBONES; ++k) {
+            if (!strcmp(HB_BONE_NAMES[k], "head")) head = k;
+            if (!strcmp(HB_BONE_NAMES[k], "bip01 head")) bip = k;
+        }
+    }
+    return (b == head && bip >= 0) ? bip : b;
+}
 DWORD bone_color(const char* n) {
     if (!strcmp(n, "head") || !strcmp(n, "neck")) return 0xFFFF4040;
     if (!strncmp(n, "back_", 5)) return 0xFFFFE040;
@@ -276,7 +290,7 @@ void hitbox_view_draw(float vw, float vh) {
             if (strstr(nm, "finger")) continue;                  // 30 boxes of 1-2 u: clutter
             float mn[3], mx[3];
             if (!tested_box(p.set, b, mn, mx)) continue;
-            const float* f = p.f[b];
+            const float* f = p.f[frame_bone(b)];
             float corner[8][3];
             for (int k = 0; k < 8; ++k) {
                 const float lx = (k & 1) ? mx[0] : mn[0], ly = (k & 2) ? mx[1] : mn[1], lz = (k & 4) ? mx[2] : mn[2];
