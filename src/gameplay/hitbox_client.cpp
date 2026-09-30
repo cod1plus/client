@@ -20,7 +20,15 @@
 namespace patches {
 namespace {
 struct Entry { float mins[3], maxs[3], center[3], r2; };      // 40 bytes
-struct Seen  { const void* parts; Entry first; };
+// Fast path. This runs for every skeleton the engine builds - several per player per frame -
+// and the checks of the slow path are syscalls (VirtualQuery ~1 us each): 1.6.11 spent 1-2 ms
+// per frame on a full server there. A body model handled once is remembered with one box of
+// its table (a box we wrote, when we patched it): same model, same box = nothing to do, no
+// syscall. A table reloaded vanilla at the same address (map change) no longer matches that
+// box and goes through the slow path again. Every read goes through the LIVE model the
+// engine is building right now (model -> +4 -> [0] -> +4 = parts -> +8 = table), never
+// through a pointer remembered from an earlier map: nothing stale is ever dereferenced.
+struct Seen  { const void* model; const uint8_t* parts; int probe; Entry snap; };
 Seen g_seen[64];
 int  g_nseen = 0;
 bool g_verified = false, g_disabled = false;
@@ -57,6 +65,16 @@ const hb_set_t* set_for(const char* name) {
 void hitbox_client_patch(const void* dobj) {
     if (g_disabled || !dobj) return;
     const uint8_t* model = *(const uint8_t* const*)((const uint8_t*)dobj + 0x1c);     // the body XModel
+    if (model) {
+        const uint8_t* a = *(const uint8_t* const*)(model + 4);
+        const uint8_t* b = a ? *(const uint8_t* const*)a : nullptr;
+        const uint8_t* pr = b ? *(const uint8_t* const*)(b + 4) : nullptr;
+        const Entry* tbl = pr ? *(const Entry* const*)(pr + 8) : nullptr;
+        if (tbl)
+            for (int i = 0; i < g_nseen && i < 64; ++i)
+                if (g_seen[i].model == model && g_seen[i].parts == pr &&
+                    memcmp(&tbl[g_seen[i].probe], &g_seen[i].snap, sizeof(Entry)) == 0) return;
+    }
     if (!readable(model, 0x10)) return;
     const uint8_t* a = *(const uint8_t* const*)(model + 4);
     if (!readable(a, 4)) return;
@@ -66,8 +84,7 @@ void hitbox_client_patch(const void* dobj) {
     if (!readable(parts, 0x18)) return;
     Entry* e = *(Entry* const*)(parts + 8);
     if (!readable(e, sizeof(Entry))) return;
-    for (int i = 0; i < g_nseen; ++i)
-        if (g_seen[i].parts == parts && memcmp(&g_seen[i].first, &e[0], sizeof(Entry)) == 0) return;
+    int probe = 0;                          // the box remembered for the fast path
 
     const uint8_t* hp = *(const uint8_t* const*)parts;
     if (!readable(hp, 4)) return;
@@ -97,7 +114,7 @@ void hitbox_client_patch(const void* dobj) {
         const hb_set_t* set = set_for(name);
         for (unsigned k = 0; k < set->nfix; ++k) {
             const hb_fix_t* f = &set->fix[k];
-            if (f->bone < (unsigned)nbones) set_entry(&e[f->bone], f->mins, f->maxs);
+            if (f->bone < (unsigned)nbones) { set_entry(&e[f->bone], f->mins, f->maxs); probe = (int)f->bone; }
         }
         // the head box goes on the bone the head mesh rides (server: hitbox_fix.c)
         int b_head = -1, b_bip = -1;
@@ -111,6 +128,7 @@ void hitbox_client_patch(const void* dobj) {
             e[b_bip] = e[b_head];
             memset(&e[b_head], 0, sizeof(Entry));
             moved = true;
+            probe = b_bip;                  // empty in the vanilla table: a reload shows at once
         }
         logger::logf("hitbox_client: %s - %u boxes set as the server tests them (set %s)%s", name ? name : "(no name)",
                      set->nfix, set->parts, moved ? ", head box on bip01 head" : "");
@@ -118,9 +136,13 @@ void hitbox_client_patch(const void* dobj) {
         ++g_unknown;
         logger::logf("hitbox_client: 80-bone table %p is not the vanilla one (fp 0x%08x) - left alone", (void*)parts, fp);
     }
-    Seen* s = &g_seen[g_nseen < 64 ? g_nseen++ : (g_nseen++ % 64)];
-    if (g_nseen > 128) g_nseen = 64;
+    static int s_next = 0;
+    Seen* s = &g_seen[s_next];
+    s_next = (s_next + 1) % 64;
+    if (g_nseen < 64) ++g_nseen;
+    s->model = model;
     s->parts = parts;
-    s->first = e[0];
+    s->probe = probe;
+    s->snap = e[probe];
 }
 }  // namespace patches

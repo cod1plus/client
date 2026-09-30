@@ -282,6 +282,8 @@ void hitbox_view_frame() {
     }
 }
 
+bool hitbox_view_enabled() { return g_cvar != 0; }
+
 bool hitbox_view_active() {
     if (!g_cvar) return false;
     const DWORD now = GetTickCount();

@@ -14,6 +14,7 @@
 namespace patches {
 bool hitbox_view_install(HMODULE cgame);      // idempotent, at every cgame load
 void hitbox_view_frame();                     // cvar registration / poll, ~4/s
+bool hitbox_view_enabled();                   // cod1x_drawhitbox counts (devmap): cheap, every skeleton build
 bool hitbox_view_active();                    // cod1x_drawhitbox != 0, sv_cheats 1 (devmap) and fresh data
 void hitbox_view_draw(float vw, float vh);    // inside a 2D overlay pass
 // the client's own copy of a player's position/yaw (es.pos, es.apos) each time it poses him

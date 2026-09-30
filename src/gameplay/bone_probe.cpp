@@ -93,6 +93,10 @@ __attribute__((force_align_arg_pointer)) void __cdecl bone_probe(const void* dob
     const int cn = player_of(d);
     if (cn < 0) return;
     hitbox_client_patch(dobj);        // this body's boxes = the server's, for the impacts the client predicts
+    // Everything below only feeds the cod1x_drawhitbox overlay (devmap). It costs syscalls
+    // (GetModuleHandleA ~5 us, VirtualQuery ~1 us) for every skeleton built - several per
+    // player per frame: 1.6.11 did it always and lost 1-2 ms per frame on a full server.
+    if (!hitbox_view_enabled()) return;
     const uint8_t* mats = *(const uint8_t* const*)(d + 4);
     if (!mats) return;
     mats += 0x30;
