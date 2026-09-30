@@ -4,7 +4,10 @@
 
 #include "features/discord_rpc.h"
 #include "features/engine_2d.h"
+#include "features/settings_menu.h"   // CODMP_CVAR_FINDVAR_VA, CODMP_CBUF_EXECTEXT_VA
+#include "netcode/protocol_patch.h"   // CODMP_CVAR_COUNT_VA
 #include "core/logger.h"
+#include "core/iat.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -26,6 +29,340 @@ int           g_sent_state     = -1;
 long long     g_state_epoch    = 0;   // time() at state start
 DWORD         g_last_send_tick = 0;
 unsigned      g_nonce          = 0;
+
+char g_sent_details[192] = {0};   // resend when the text changes, not just the state
+char g_sent_state_txt[192] = {0};
+char g_sent_image[96] = {0};
+bool g_party_rejected = false;   // discord refused the join block: stop sending it
+
+// ---- what the client knows about the server it is on --------------------------------
+// The cvars named mapname / sv_hostname / g_gametype are NOT the answer: the binary
+// carries the server code too, so every client registers them (defaults "nomap" and
+// "CoDHost") and on a pure client they keep those defaults forever. Proven twice -
+// live, and statically: those two defaults are pushed right before their cvar names in
+// the server's own Cvar_Get block.
+//
+// The real values live in cgame, which parses them out of the CS_SERVERINFO
+// configstring. CG_ParseServerinfo @cgame 0x3002d040 (RE'd 2026-08-03) calls
+// Info_ValueForKey(ecx = info, ebx = key) @0x300404b0 and stores:
+//     gametype   [32]  RVA 0x1d5a5c   "sd"
+//     hostname   [256] RVA 0x1d5a7c   the real server name
+//     maxclients int   RVA 0x1d5b7c   the "of N" a party size would need
+//     mapname    [64]  RVA 0x1d5b80   as "maps/mp/<name>.bsp" (fmt "maps/mp/%s.bsp")
+// Each field ends exactly where the next begins, which is what confirms the layout.
+constexpr uintptr_t CGS_GAMETYPE_RVA   = 0x001d5a5c;
+constexpr uintptr_t CGS_HOSTNAME_RVA   = 0x001d5a7c;
+constexpr uintptr_t CGS_MAXCLIENTS_RVA = 0x001d5b7c;
+constexpr uintptr_t CGS_MAPNAME_RVA    = 0x001d5b80;
+
+// cgame is loaded per map and gone in the menus, so its presence doubles as "connected".
+HMODULE cgame_module() { return GetModuleHandleA("cgame_mp_x86.dll"); }
+
+void cgs_string(HMODULE cg, uintptr_t rva, size_t field_size, char* out, size_t out_size) {
+    out[0] = '\0';
+    if (!cg) return;
+    const char* p = (const char*)((uintptr_t)cg + rva);
+    size_t n = 0;
+    while (n < field_size && n + 1 < out_size && p[n]) { out[n] = p[n]; ++n; }
+    out[n] = '\0';
+}
+
+// Joueurs reellement connectes. La boucle du tableau des scores @cgame 0x3002856f
+// parcourt cgs.clientinfo par pas de 0x4b0 depuis 0x3018dc8c et teste le champ a
+// l'offset 0 : non nul = client valide. On refait exactement ce parcours.
+constexpr uintptr_t CGS_CLIENTINFO_RVA    = 0x0018dc8c;
+constexpr size_t    CGS_CLIENTINFO_STRIDE = 0x4b0;
+
+int cgs_maxclients(HMODULE cg);
+
+int cgs_players(HMODULE cg) {
+    const int max = cgs_maxclients(cg);
+    if (!cg || max <= 0) return 0;
+    int n = 0;
+    const char* p = (const char*)((uintptr_t)cg + CGS_CLIENTINFO_RVA);
+    for (int i = 0; i < max; ++i, p += CGS_CLIENTINFO_STRIDE)
+        if (*(const int*)p) ++n;
+    return (n >= 0 && n <= max) ? n : 0;
+}
+
+int cgs_maxclients(HMODULE cg) {
+    if (!cg) return 0;
+    const int n = *(const int*)((uintptr_t)cg + CGS_MAXCLIENTS_RVA);
+    return (n > 0 && n <= 64) ? n : 0;
+}
+
+// "maps/mp/mp_carentan.bsp" -> "mp_carentan"
+void bsp_to_mapname(char* s) {
+    const char* slash = strrchr(s, '/');
+    if (slash) memmove(s, slash + 1, strlen(slash + 1) + 1);
+    char* dot = strrchr(s, '.');
+    if (dot && _stricmp(dot, ".bsp") == 0) *dot = '\0';
+}
+
+const char* cvar_str(const char* name) {
+    if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000) return "";
+    if (*(volatile int*)CODMP_CVAR_COUNT_VA <= 0) return "";
+    typedef void* (__cdecl *Cvar_FindVar_t)(const char*);
+    void* cv = ((Cvar_FindVar_t)CODMP_CVAR_FINDVAR_VA)(name);
+    if (!cv) return "";
+    const char* s = *(const char**)((char*)cv + 0x04);   // cvar_t.string
+    return s ? s : "";
+}
+
+// ---- letting Discord launch a closed game -------------------------------------------
+// Clicking Join reaches a RUNNING game over the IPC pipe we already hold. For a closed
+// one, Discord has to start it, and the only way it knows how is a URI handler:
+//     HKCU\Software\Classes\discord-<client_id>
+//         (default)              "URL:Run game <client_id>"
+//         URL Protocol           ""
+//         shell\open\command     "<CoDMP.exe>" "%1"
+// Per-user, no admin, and the same shape Discord's own SDK writes. The engine ignores
+// the URI it gets handed: idTech3 only parses arguments from the first '+' onwards,
+// and the URI has none.
+
+bool reg_set(HKEY root, const char* subkey, const char* name, const char* value) {
+    HKEY k;
+    if (RegCreateKeyExA(root, subkey, 0, nullptr, 0, KEY_WRITE, nullptr, &k, nullptr)
+        != ERROR_SUCCESS) return false;
+    const LONG r = RegSetValueExA(k, name, 0, REG_SZ, (const BYTE*)value,
+                                  (DWORD)strlen(value) + 1);
+    RegCloseKey(k);
+    return r == ERROR_SUCCESS;
+}
+
+bool reg_get(HKEY root, const char* subkey, const char* name, char* out, DWORD out_size) {
+    HKEY k;
+    if (RegOpenKeyExA(root, subkey, 0, KEY_READ, &k) != ERROR_SUCCESS) return false;
+    DWORD type = 0, sz = out_size;
+    const LONG r = RegQueryValueExA(k, name, nullptr, &type, (BYTE*)out, &sz);
+    RegCloseKey(k);
+    if (r != ERROR_SUCCESS || type != REG_SZ) return false;
+    out[out_size - 1] = '\0';
+    return true;
+}
+
+// Quand Discord LANCE le jeu, il ne redemande pas ACTIVITY_JOIN par le pipe une fois
+// le client connecte : il passe le secret dans l'URI de la ligne de commande, et c'est
+// tout. Le log l'a montre - jeu demarre par Discord a la seconde du clic, abonnement
+// en place, zero evenement.
+char  g_pending_join[160] = {0};
+DWORD g_start_tick = 0;
+
+// Le moteur sait se connecter tout seul au demarrage : `+connect <ip>` est son propre
+// mecanisme, execute au bon moment de son initialisation. Le CRT construit lpCmdLine
+// en appelant GetCommandLineA, importe par l'executable - on detourne donc cet appel
+// et on lui rend une ligne augmentee. Plus fiable que d'envoyer un connect differe en
+// pariant sur le moment ou le client est pret.
+typedef LPSTR (WINAPI *GetCommandLineA_t)(void);
+GetCommandLineA_t g_real_GetCommandLineA = nullptr;
+char g_cmdline[1024] = {0};
+
+// Definis plus bas avec le reste de la reception : l'URI n'est pas plus digne de
+// confiance que le pipe, elle passe par exactement les memes controles.
+bool is_safe_address(const char* s);
+bool is_safe_password(const char* s);
+
+bool build_launch_cmdline(const char* orig, const char* addr, const char* pw) {
+    if (!is_safe_address(addr)) return false;
+    // `+set password` avant `+connect` : le mot de passe part dans le userinfo du
+    // paquet de connexion, donc il doit exister avant que celui-ci soit construit.
+    int n;
+    if (pw && pw[0] && is_safe_password(pw))
+        n = snprintf(g_cmdline, sizeof(g_cmdline),
+                     "%s +set password \"%s\" +connect %s", orig, pw, addr);
+    else
+        n = snprintf(g_cmdline, sizeof(g_cmdline), "%s +connect %s", orig, addr);
+    if (n <= 0 || (size_t)n >= sizeof(g_cmdline)) { g_cmdline[0] = 0; return false; }
+    return true;
+}
+
+LPSTR WINAPI hk_GetCommandLineA(void) {
+    LPSTR orig = g_real_GetCommandLineA ? g_real_GetCommandLineA() : nullptr;
+    return g_cmdline[0] ? g_cmdline : orig;
+}
+
+void capture_launch_uri() {
+    const char* cmd = GetCommandLineA();
+    if (!cmd) return;
+    logger::logf("discord_rpc: ligne de commande = %.400s", cmd);
+
+    char needle[96];
+    snprintf(needle, sizeof(needle), "discord-%s://", g_discord_rpc_config.client_id);
+    const char* p = strstr(cmd, needle);
+    if (!p) return;
+    p += strlen(needle);
+
+    // On ignore un eventuel segment de chemin ("join/", "spectate/"...) avant le
+    // secret : le format exact n'est pas documente et la ligne journalisee ci-dessus
+    // permettra de le figer si celui-ci ne suffit pas.
+    static const char* kSkip[] = { "join/", "spectate/", "_join/" };
+    for (const char* s : kSkip) {
+        const size_t n = strlen(s);
+        if (_strnicmp(p, s, n) == 0) { p += n; break; }
+    }
+
+    size_t i = 0;
+    while (p[i] && p[i] != '"' && p[i] != ' ' && i + 1 < sizeof(g_pending_join)) {
+        g_pending_join[i] = p[i];
+        ++i;
+    }
+    g_pending_join[i] = '\0';
+    while (i > 0 && (g_pending_join[i-1] == '/' || g_pending_join[i-1] == '\r' ||
+                     g_pending_join[i-1] == '\n')) g_pending_join[--i] = '\0';
+
+    logger::logf("discord_rpc: lancement via Discord, secret='%s'", g_pending_join);
+
+    // Decoupe "<adresse>/<motdepasse>" comme le fait la reception par le pipe.
+    char addr[96] = {0}, pw[48] = {0};
+    const char* slash = strchr(g_pending_join, '/');
+    if (slash) {
+        const size_t n = (size_t)(slash - g_pending_join);
+        if (n < sizeof(addr)) {
+            memcpy(addr, g_pending_join, n);
+            addr[n] = '\0';
+            snprintf(pw, sizeof(pw), "%s", slash + 1);
+        }
+    } else {
+        snprintf(addr, sizeof(addr), "%s", g_pending_join);
+    }
+
+    // On passe par la ligne de commande du moteur plutot que par un connect differe.
+    // Les deux s'excluent : g_pending_join est vide si le detour a pris, sinon il
+    // reste la comme filet.
+    if (build_launch_cmdline(cmd, addr, pw)) {
+        void* real = iat_hook("kernel32.dll", "GetCommandLineA", (void*)hk_GetCommandLineA);
+        if (real) {
+            g_real_GetCommandLineA = (GetCommandLineA_t)real;
+            g_pending_join[0] = 0;
+            logger::logf("discord_rpc: +connect injecte dans la ligne de commande "
+                         "(%s, mot de passe %s)", addr, pw[0] ? "fourni" : "absent");
+        } else {
+            g_cmdline[0] = 0;
+            logger::logf("discord_rpc: hook GetCommandLineA impossible -> connect "
+                         "differe a la place");
+        }
+    }
+}
+
+void register_launch_handler() {
+    if (g_discord_rpc_config.client_id[0] == '\0') return;
+
+    char base[128];
+    snprintf(base, sizeof(base), "Software\\Classes\\discord-%s",
+             g_discord_rpc_config.client_id);
+
+    if (!g_discord_rpc_config.register_launch) {
+        // The off switch removes the key instead of just skipping the write, so a
+        // player who turns it off is not left with a handler he cannot see.
+        char probe[8];
+        if (reg_get(HKEY_CURRENT_USER, base, nullptr, probe, sizeof(probe)) ||
+            RegOpenKeyExA(HKEY_CURRENT_USER, base, 0, KEY_READ, nullptr) == ERROR_SUCCESS) {
+            if (RegDeleteTreeA(HKEY_CURRENT_USER, base) == ERROR_SUCCESS)
+                logger::logf("discord_rpc: handler de lancement retire (%s)", base);
+        }
+        return;
+    }
+
+    char exe[MAX_PATH];
+    if (GetModuleFileNameA(NULL, exe, MAX_PATH) == 0) return;
+
+    // Discord starts the process with ITS OWN working directory, not the game's, and
+    // idTech3 resolves its file system from the working directory. Launched that way
+    // the engine dies on "Couldn't load default_mp.cfg. Make sure Call of Duty is run
+    // from the correct folder." - which is exactly what a player who clicked Join got.
+    // fs_basepath states the folder outright so the launch no longer depends on where
+    // it was started from.
+    char dir[MAX_PATH];
+    snprintf(dir, sizeof(dir), "%s", exe);
+    char* slash = strrchr(dir, '\\');
+    if (slash) *slash = '\0';
+
+    // "%1" comes BEFORE the +set on purpose: the engine only reads arguments from the
+    // first '+' onwards, so the URI sitting ahead of it is ignored outright. Put it
+    // after and it would be swallowed as a third argument to `set`.
+    char cmd_key[192], cmd[2 * MAX_PATH + 64], desc[160];
+    snprintf(cmd_key, sizeof(cmd_key), "%s\\shell\\open\\command", base);
+    snprintf(cmd, sizeof(cmd), "\"%s\" \"%%1\" +set fs_basepath \"%s\"", exe, dir);
+    snprintf(desc, sizeof(desc), "URL:Run game %s", g_discord_rpc_config.client_id);
+
+    // Rewriting identical values on every launch would be pointless registry churn,
+    // and would hide a real change in the logs.
+    char current[2 * MAX_PATH + 64] = {0};   // doit tenir la commande complete, sinon
+                                             // la comparaison echoue et on reecrit sans arret
+    if (reg_get(HKEY_CURRENT_USER, cmd_key, nullptr, current, sizeof(current)) &&
+        strcmp(current, cmd) == 0) return;
+
+    const bool ok = reg_set(HKEY_CURRENT_USER, base, nullptr, desc) &&
+                    reg_set(HKEY_CURRENT_USER, base, "URL Protocol", "") &&
+                    reg_set(HKEY_CURRENT_USER, cmd_key, nullptr, cmd);
+    logger::logf("discord_rpc: handler de lancement %s -> %s",
+                 ok ? "enregistre" : "ECHEC", cmd);
+}
+
+// ---- join secret --------------------------------------------------------------------
+// The secret is an opaque string Discord only carries: it leaves one player's client
+// and is handed to whoever clicks Join. We put the server address in it, and the
+// receiving mod runs `connect <secret>`.
+//
+// Which means the secret is ATTACKER-CONTROLLED TEXT arriving from another Discord
+// user, and it ends up in the console command buffer. A secret containing ';' or a
+// newline would run arbitrary console commands on the machine that clicks Join. So
+// nothing goes to Cbuf unless it looks exactly like an address and nothing else.
+bool is_safe_address(const char* s) {
+    if (!s || !*s) return false;
+    size_t n = 0, colons = 0;
+    for (; s[n]; ++n) {
+        if (n >= 64) return false;                     // no address is this long
+        const char c = s[n];
+        const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                        (c >= 'A' && c <= 'Z') || c == '.' || c == '-' || c == ':';
+        if (!ok) return false;                         // kills ; \n " / and every separator
+        if (c == ':') ++colons;
+    }
+    return n >= 7 && colons <= 1;                      // "1.2.3.4" at the very least
+}
+
+// The password rides in the secret as "<address>/<password>". '/' cannot occur in
+// either half - the address charset excludes it and so does this one - so the split is
+// never ambiguous.
+//
+// The password ends up inside `set password "..."` on the receiving machine. A quote,
+// a semicolon or a newline in it would escape that command, so the charset is
+// deliberately narrower than what CoD1 would accept as a password: anything outside it
+// simply means no password is shared, never a mangled console command.
+bool is_safe_password(const char* s) {
+    if (!s || !*s) return false;
+    for (size_t n = 0; s[n]; ++n) {
+        if (n >= 32) return false;
+        const char c = s[n];
+        const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                        (c >= 'A' && c <= 'Z') || c == '-' || c == '_' || c == '.';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+// CoD1 colour codes are '^' + one digit; they would show up literally on a profile.
+void strip_colors(const char* in, char* out, size_t out_size) {
+    size_t o = 0;
+    for (size_t i = 0; in[i] && o + 1 < out_size; ++i) {
+        if (in[i] == '^' && in[i + 1] >= '0' && in[i + 1] <= '9') { ++i; continue; }
+        out[o++] = in[i];
+    }
+    while (o > 0 && out[o - 1] == ' ') --o;    // trailing padding is common in host names
+    out[o] = '\0';
+}
+
+// "mp_carentan" -> "Carentan"; leaves anything unexpected alone, so custom maps like
+// mp_coastal read correctly too.
+void pretty_map(const char* in, char* out, size_t out_size) {
+    if (!in[0]) { out[0] = '\0'; return; }
+    // case-insensitive: the prefix comes from whatever the server put in serverinfo,
+    // and "MP_Harbor" is as valid a spelling as "mp_harbor"
+    if (_strnicmp(in, "mp_", 3) == 0) in += 3;
+    snprintf(out, out_size, "%s", in);
+    if (out[0] >= 'a' && out[0] <= 'z') out[0] = (char)(out[0] - 'a' + 'A');
+}
 
 constexpr DWORD IN_MATCH_TIMEOUT_MS = 1500;
 constexpr DWORD MIN_SEND_GAP_MS     = 4000;  // discord limits ~5 updates/20s
@@ -50,15 +387,121 @@ bool pipe_write_frame(uint32_t opcode, const char* payload) {
     return written == len + 8;
 }
 
-// drain + discard replies (READY/PONG/errors), non-blocking
+// Pull one flat JSON string value out of a frame. Enough for the two fields we care
+// about; the payloads Discord sends here have no nesting in the way and no escapes.
+bool json_str(const char* json, const char* key, char* out, size_t out_size) {
+    char needle[48];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    const char* p = strstr(json, needle);
+    if (!p) return false;
+    p += strlen(needle);
+    while (*p == ' ' || *p == ':') ++p;
+    if (*p != '"') return false;
+    ++p;
+    size_t i = 0;
+    while (*p && *p != '"' && i + 1 < out_size) out[i++] = *p++;
+    out[i] = '\0';
+    return i > 0;
+}
+
+// Read whatever Discord sent and act on ACTIVITY_JOIN. Everything else (READY, PONG,
+// command acks, errors) is still discarded - we only ever needed one event.
+// Frames are [opcode u32][len u32][json], and a frame can straddle two reads, so the
+// leftover is kept rather than parsed from a single buffer.
+char  g_rx[8192];
+size_t g_rx_len = 0;
+
+void on_join(const char* secret) {
+    char addr[96] = {0}, pw[48] = {0};
+    const char* slash = strchr(secret, '/');
+    if (slash) {
+        const size_t n = (size_t)(slash - secret);
+        if (n >= sizeof(addr)) return;
+        memcpy(addr, secret, n);
+        addr[n] = '\0';
+        snprintf(pw, sizeof(pw), "%s", slash + 1);
+    } else {
+        snprintf(addr, sizeof(addr), "%s", secret);
+    }
+
+    if (!is_safe_address(addr)) {
+        logger::logf("discord_rpc: secret de join refuse (pas une adresse) - rien "
+                     "n'est passe a la console");
+        return;
+    }
+    if (pw[0] && !is_safe_password(pw)) {
+        logger::logf("discord_rpc: mot de passe du secret refuse (caracteres interdits) "
+                     "- connexion tentee sans lui");
+        pw[0] = '\0';
+    }
+    if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000) return;
+
+    typedef void (__cdecl *Cbuf_ExecuteText_t)(int, const char*);
+    const Cbuf_ExecuteText_t Cbuf = (Cbuf_ExecuteText_t)CODMP_CBUF_EXECTEXT_VA;
+    char cmd[192];
+    if (pw[0]) snprintf(cmd, sizeof(cmd), "set password \"%s\"\nconnect %s\n", pw, addr);
+    else       snprintf(cmd, sizeof(cmd), "connect %s\n", addr);
+    Cbuf(2 /* EXEC_APPEND */, cmd);
+    logger::logf("discord_rpc: ACTIVITY_JOIN -> connect %s (mot de passe %s)",
+                 addr, pw[0] ? "fourni" : "absent");
+}
+
 void pipe_drain() {
     if (g_pipe == INVALID_HANDLE_VALUE) return;
-    char scratch[2048];
     DWORD avail = 0;
     while (PeekNamedPipe(g_pipe, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+        if (g_rx_len >= sizeof(g_rx) - 1) { g_rx_len = 0; }   // desync: start clean
+        DWORD want = (DWORD)(sizeof(g_rx) - 1 - g_rx_len);
+        if (avail < want) want = avail;
         DWORD got = 0;
-        DWORD want = avail < sizeof(scratch) ? avail : (DWORD)sizeof(scratch);
-        if (!ReadFile(g_pipe, scratch, want, &got, nullptr) || got == 0) break;
+        if (!ReadFile(g_pipe, g_rx + g_rx_len, want, &got, nullptr) || got == 0) break;
+        g_rx_len += got;
+
+        // consume every complete frame currently buffered
+        for (;;) {
+            if (g_rx_len < 8) break;
+            uint32_t len;
+            memcpy(&len, g_rx + 4, 4);
+            if (len > sizeof(g_rx) - 8) { g_rx_len = 0; break; }   // absurd: resync
+            if (g_rx_len < 8 + len) break;                          // wait for the rest
+            char body[4096];
+            const size_t n = len < sizeof(body) - 1 ? len : sizeof(body) - 1;
+            memcpy(body, g_rx + 8, n);
+            body[n] = '\0';
+            // Tout ce que Discord envoie, journalise. L'URI de lancement s'est revelee
+            // vide et l'evenement attendu n'arrive pas : sans voir les reponses reelles
+            // on ne fait que deviner une troisieme fois.
+            logger::logf("discord_rpc: <- %.220s", body);
+
+            if (strstr(body, "ACTIVITY_JOIN")) {
+                char secret[96];
+                if (json_str(body, "secret", secret, sizeof(secret))) on_join(secret);
+            }
+            // Discord answers every command. A rejected SET_ACTIVITY leaves the
+            // PREVIOUS presence in place, which looks exactly like the mod never
+            // updating - so the refusal has to be visible, with its reason.
+            if (strstr(body, "\"evt\":\"ERROR\"") || strstr(body, "\"code\":")) {
+                char msg[192];
+                if (!json_str(body, "message", msg, sizeof(msg)))
+                    snprintf(msg, sizeof(msg), "%.180s", body);
+                if (!g_party_rejected) {
+                    // Fall back to a presence without the join block rather than let a
+                    // rejected activity sit there. A refusal keeps the PREVIOUS
+                    // presence alive, so the map and server would stay stuck on
+                    // whatever was showing before - which reads as the mod being
+                    // broken, when only the newest field is at fault.
+                    g_party_rejected = true;
+                    g_sent_state = -1;          // force a resend without party/secrets
+                    logger::logf("discord_rpc: REFUS de discord -> %s "
+                                 "| join desactive pour la session, presence renvoyee "
+                                 "sans party/secrets", msg);
+                } else {
+                    logger::logf("discord_rpc: REFUS de discord -> %s", msg);
+                }
+            }
+            memmove(g_rx, g_rx + 8 + len, g_rx_len - (8 + len));
+            g_rx_len -= 8 + len;
+        }
     }
 }
 
@@ -75,7 +518,14 @@ bool pipe_connect() {
         snprintf(hs, sizeof(hs), "{\"v\":1,\"client_id\":\"%s\"}",
                  g_discord_rpc_config.client_id);
         if (!pipe_write_frame(0, hs)) { pipe_close(); continue; }
-        logger::logf("discord_rpc: connecte (%s)", name);
+        // Without this subscription Discord never tells us that someone clicked Join.
+        static const char* kSub =
+            "{\"cmd\":\"SUBSCRIBE\",\"evt\":\"ACTIVITY_JOIN\","
+            "\"args\":{},\"nonce\":\"sub-join\"}";
+        pipe_write_frame(1, kSub);
+        logger::logf("discord_rpc: -> %s", kSub);
+        g_rx_len = 0;
+        logger::logf("discord_rpc: connecte (%s), abonne a ACTIVITY_JOIN", name);
         return true;
     }
     return false;
@@ -92,7 +542,92 @@ void json_escape(const char* in, char* out, size_t out_size) {
     out[o] = '\0';
 }
 
-// false only on write failure (= discord closed)
+// Is this map declared as having an art asset? Matches whole words only, so listing
+// "mp_carentan" never accidentally covers "mp_carentan2".
+bool map_has_asset(const char* map) {
+    if (!map[0]) return false;
+    const char* list = g_discord_rpc_config.map_images;
+    if (list[0] == '*' && list[1] == '\0') return true;
+    const size_t len = strlen(map);
+    for (const char* p = list; *p; ) {
+        while (*p == ' ' || *p == ',' || *p == '\t') ++p;
+        const char* start = p;
+        while (*p && *p != ' ' && *p != ',' && *p != '\t') ++p;
+        if ((size_t)(p - start) == len && _strnicmp(start, map, len) == 0) return true;
+    }
+    return false;
+}
+
+// details = what you are playing, state = where. Falls back to the .ini strings when
+// cgame is not loaded (i.e. in the menus), so the presence is never blank.
+void compose(bool in_match, char* details, size_t details_size,
+                            char* state_txt, size_t state_size,
+                            char* image, size_t image_size,
+                            char* image_text, size_t image_text_size) {
+    details[0] = '\0';
+    state_txt[0] = '\0';
+    snprintf(image,      image_size,      "%s", g_discord_rpc_config.large_image);
+    snprintf(image_text, image_text_size, "%s", g_discord_rpc_config.large_text);
+
+    HMODULE cg = cgame_module();
+    char mapraw[80] = {0}, gt[32] = {0}, hostraw[256] = {0}, host[160] = {0};
+    if (cg) {
+        cgs_string(cg, CGS_MAPNAME_RVA,  64,  mapraw,  sizeof(mapraw));
+        cgs_string(cg, CGS_GAMETYPE_RVA, 32,  gt,      sizeof(gt));
+        cgs_string(cg, CGS_HOSTNAME_RVA, 256, hostraw, sizeof(hostraw));
+        bsp_to_mapname(mapraw);
+        strip_colors(hostraw, host, sizeof(host));
+    }
+
+    // Log what cgame really held, once and again on every map change.
+    {
+        static char last_probe_map[80] = {0};
+        static bool probed = false;
+        if (!probed || strcmp(mapraw, last_probe_map) != 0) {
+            probed = true;
+            snprintf(last_probe_map, sizeof(last_probe_map), "%s", mapraw);
+            logger::logf("discord_rpc: cgs map='%s' gametype='%s' host='%s' joueurs=%d/%d",
+                         mapraw, gt, host, cgs_players(cg), cgs_maxclients(cg));
+        }
+    }
+
+    if (in_match) {
+        char mapname[80];
+        pretty_map(mapraw, mapname, sizeof(mapname));
+
+        // Raw gametype code, uppercased: players say "sd" and "tdm", and a table of
+        // pretty names would just go stale on the first custom gametype.
+        char gtup[32];
+        size_t i = 0;
+        for (; gt[i] && i + 1 < sizeof(gtup); ++i)
+            gtup[i] = (gt[i] >= 'a' && gt[i] <= 'z') ? (char)(gt[i] - 'a' + 'A') : gt[i];
+        gtup[i] = '\0';
+
+        if (mapname[0] && gtup[0])      snprintf(details, details_size, "%s on %s", gtup, mapname);
+        else if (mapname[0])            snprintf(details, details_size, "%s", mapname);
+        if (host[0])                    snprintf(state_txt, state_size, "%s", host);
+
+        // Thumbnail = the map, when an asset for it was actually uploaded. Asset keys
+        // are lowercase on Discord's side.
+        if (map_has_asset(mapraw)) {
+            size_t k = 0;
+            for (; mapraw[k] && k + 1 < image_size; ++k)
+                image[k] = (mapraw[k] >= 'A' && mapraw[k] <= 'Z')
+                           ? (char)(mapraw[k] - 'A' + 'a') : mapraw[k];
+            image[k] = '\0';
+            if (mapname[0]) snprintf(image_text, image_text_size, "%s", mapname);
+        }
+    }
+
+    if (!details[0]) {
+        snprintf(details, details_size, "%s",
+                 in_match ? g_discord_rpc_config.details_match
+                          : g_discord_rpc_config.details_menu);
+    }
+    if (!state_txt[0] && g_discord_rpc_config.state_text[0])
+        snprintf(state_txt, state_size, "%s", g_discord_rpc_config.state_text);
+}
+
 bool update_presence(bool in_match) {
     const int state = in_match ? 1 : 0;
     if (state != g_last_state) {
@@ -100,19 +635,27 @@ bool update_presence(bool in_match) {
         g_state_epoch = (long long)time(nullptr);
     }
 
-    if (state == g_sent_state) return true;
+    // The map and the server can change without the menu/match state changing, so the
+    // resend test is on the TEXT, not just on that state.
+    char details[192], state_txt[192], image[96], image_text[160];
+    compose(in_match, details, sizeof(details), state_txt, sizeof(state_txt),
+            image, sizeof(image), image_text, sizeof(image_text));
+
+    // The thumbnail changes with the map, so it belongs in the resend test too.
+    if (state == g_sent_state &&
+        strcmp(details,   g_sent_details)   == 0 &&
+        strcmp(state_txt, g_sent_state_txt) == 0 &&
+        strcmp(image,     g_sent_image)     == 0) return true;
 
     const DWORD now = GetTickCount();
     if (g_last_send_tick != 0 && (now - g_last_send_tick) < MIN_SEND_GAP_MS)
         return true;  // throttle, resend next tick
 
     char det[160], st_esc[160], limg[96], ltxt[160];
-    json_escape(in_match ? g_discord_rpc_config.details_match
-                         : g_discord_rpc_config.details_menu,
-                det, sizeof(det));
-    json_escape(g_discord_rpc_config.state_text,   st_esc, sizeof(st_esc));
-    json_escape(g_discord_rpc_config.large_image,  limg,   sizeof(limg));
-    json_escape(g_discord_rpc_config.large_text,   ltxt,   sizeof(ltxt));
+    json_escape(details,    det,    sizeof(det));
+    json_escape(state_txt,  st_esc, sizeof(st_esc));
+    json_escape(image,      limg,   sizeof(limg));
+    json_escape(image_text, ltxt,   sizeof(ltxt));
 
     char ts[64] = "";
     if (g_discord_rpc_config.show_elapsed)
@@ -122,24 +665,126 @@ bool update_presence(bool in_match) {
     if (st_esc[0])
         snprintf(stf, sizeof(stf), ",\"state\":\"%s\"", st_esc);
 
+    // Only send an assets block when an image name is configured. large_image must be
+    // the key of an asset uploaded under Rich Presence > Art Assets - the application
+    // ICON is a different thing and is NOT reachable by name. Sending a key that does
+    // not exist gets you no image at all, whereas sending no assets block lets Discord
+    // fall back to the application icon, which is what most setups actually have.
+    char assets[300] = "";
+    if (limg[0]) {
+        snprintf(assets, sizeof(assets),
+                 ",\"assets\":{\"large_image\":\"%s\",\"large_text\":\"%s\"}", limg, ltxt);
+    }
+
+    // Join button. Discord only offers one when party.id AND secrets.join are both
+    // present. The server address serves as both: as a party id it puts everyone on
+    // the same server in the same party, and as a secret it is exactly what the other
+    // client needs to connect. Sent only while in a match and only when the address
+    // passes the same validation the receiving side applies - no point advertising a
+    // secret our own join handler would refuse.
+    char party[224] = "";
+    if (in_match && !g_party_rejected) {
+        const char* addr = cvar_str("cl_currentServerAddress");
+        static char last_logged[80] = {0};
+        if (strcmp(addr, last_logged) != 0) {
+            snprintf(last_logged, sizeof(last_logged), "%s", addr);
+            logger::logf("discord_rpc: cl_currentServerAddress='%s' -> join %s",
+                         addr, is_safe_address(addr) ? "offert" : "indisponible");
+        }
+        if (is_safe_address(addr)) {
+            char a[96];
+            json_escape(addr, a, sizeof(a));
+
+            // The password is appended so Join also works on a private server. It then
+            // travels to everyone who can see this presence, which is why it sits
+            // behind its own switch.
+            char secret[152];
+            snprintf(secret, sizeof(secret), "%s", a);
+            if (g_discord_rpc_config.share_password) {
+                const char* pw = cvar_str("password");
+                static int last_pw_state = -1;
+                const int pw_state = pw[0] ? (is_safe_password(pw) ? 1 : 2) : 0;
+                if (pw_state != last_pw_state) {
+                    last_pw_state = pw_state;
+                    logger::logf("discord_rpc: mot de passe serveur %s",
+                                 pw_state == 1 ? "JOINT au secret (visible de tous ceux "
+                                                 "qui voient ta presence)"
+                                 : pw_state == 2 ? "non joint (caracteres hors charset sur)"
+                                                 : "absent");
+                }
+                if (pw_state == 1) {
+                    char e[64];
+                    json_escape(pw, e, sizeof(e));
+                    snprintf(secret, sizeof(secret), "%s/%s", a, e);
+                }
+            }
+            // Discord rejects the whole activity with "secrets cannot match the party
+            // id" when the two are equal - and a rejected activity leaves the previous
+            // presence frozen, so this took the map and the server down with it. The
+            // party id is prefixed: it still groups everyone on one server, while the
+            // secret stays the bare address the receiving side connects to and
+            // validates.
+            // party.size est ce qui transforme "Demander a rejoindre" en "Rejoindre".
+            // Sans lui Discord ignore s'il reste de la place et bascule sur la demande
+            // d'autorisation : l'evenement ACTIVITY_JOIN n'arrive alors JAMAIS, ce que
+            // le log a confirme - abonnement en place, zero evenement.
+            HMODULE cg = cgame_module();
+            int cur = cgs_players(cg);
+            int max = cgs_maxclients(cg);
+            if (max <= 0) max = 32;
+            if (cur <= 0) cur = 1;
+            if (cur > max) cur = max;
+            snprintf(party, sizeof(party),
+                     ",\"party\":{\"id\":\"srv-%s\",\"size\":[%d,%d]}"
+                     ",\"secrets\":{\"join\":\"%s\"}",
+                     a, cur, max, secret);
+        }
+    }
+
     char payload[1024];
     snprintf(payload, sizeof(payload),
         "{\"cmd\":\"SET_ACTIVITY\",\"args\":{\"pid\":%lu,\"activity\":{"
-        "\"details\":\"%s\"%s%s,"
-        "\"assets\":{\"large_image\":\"%s\",\"large_text\":\"%s\"}"
+        "\"details\":\"%s\"%s%s%s%s"
         "}},\"nonce\":\"%u\"}",
         (unsigned long)GetCurrentProcessId(),
-        det, stf, ts, limg, ltxt, ++g_nonce);
+        det, stf, ts, assets, party, ++g_nonce);
 
     if (!pipe_write_frame(1, payload)) return false;
     g_sent_state     = state;
     g_last_send_tick = now;
+    snprintf(g_sent_details,  sizeof(g_sent_details),  "%s", details);
+    snprintf(g_sent_state_txt, sizeof(g_sent_state_txt), "%s", state_txt);
+    snprintf(g_sent_image, sizeof(g_sent_image), "%s", image);
     return true;
 }
 
+// "Am I on a server?" used to mean "the HUD drew a frame in the last 1.5 s", which
+// reported the menus while connected: the HUD does not tick during a map load, and
+// anything that stops drawing it - the ESC menu, the scoreboard, a stall - looked
+// exactly like a disconnect.
+//
+// cgame is loaded per map and unloaded on disconnect, and it only holds a map name
+// once the server info has been parsed, so the pair answers the question directly
+// instead of inferring it from a side effect. The HUD tick stays as a fallback for
+// the case where cgame is loaded but its layout differs from what we expect.
 bool in_match_now() {
+    HMODULE cg = cgame_module();
+    char m[80] = {0};
+    if (cg) cgs_string(cg, CGS_MAPNAME_RVA, 64, m, sizeof(m));
     const DWORD t = engine_2d_last_hud_tick();
-    return t != 0 && (GetTickCount() - t) < IN_MATCH_TIMEOUT_MS;
+    const bool hud = (t != 0) && (GetTickCount() - t) < IN_MATCH_TIMEOUT_MS;
+    const bool res = (cg && m[0]) || hud;
+
+    // Say out loud what the decision was made on: this test has now been wrong twice,
+    // and its inputs are the only thing that can settle which one is lying.
+    static int last = -1;
+    if ((int)res != last) {
+        last = (int)res;
+        logger::logf("discord_rpc: in_match=%d (cgame=%p mapname='%s' hud_tick=%lu ago=%lu)",
+                     (int)res, (void*)cg, m, (unsigned long)t,
+                     (unsigned long)(t ? GetTickCount() - t : 0));
+    }
+    return res;
 }
 
 DWORD WINAPI thread_main(LPVOID) {
@@ -155,6 +800,19 @@ DWORD WINAPI thread_main(LPVOID) {
             }
         } else {
             pipe_drain();
+
+            // Le connect ne peut pas partir depuis DllMain : le moteur n'existe pas
+            // encore. On attend que le systeme de cvars soit debout, plus une marge
+            // pour que le client finisse son initialisation.
+            if (g_pending_join[0] && GetTickCount() - g_start_tick > 8000 &&
+                (uintptr_t)GetModuleHandleA(NULL) == 0x400000 &&
+                *(volatile int*)CODMP_CVAR_COUNT_VA > 0) {
+                char s[160];
+                snprintf(s, sizeof(s), "%s", g_pending_join);
+                g_pending_join[0] = 0;
+                on_join(s);
+            }
+
             if (!update_presence(in_match_now())) {
                 logger::logf("discord_rpc: ecriture echouee -> deconnecte");
                 pipe_close();
@@ -180,6 +838,9 @@ void discord_rpc_start() {
                      "(voir discord_rpc_client_id dans cod1reloaded.ini)");
         return;
     }
+    register_launch_handler();   // also removes the key when the option is off
+    capture_launch_uri();        // secret passe par Discord au lancement
+    g_start_tick = GetTickCount();
     InterlockedExchange(&g_stop, 0);
     g_thread = CreateThread(nullptr, 0, thread_main, nullptr, 0, nullptr);
     logger::logf("discord_rpc: thread demarre (client_id=%s, image=%s)",
