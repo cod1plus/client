@@ -19,7 +19,7 @@ constexpr uintptr_t SYSCALL_PTR_RVA = 0x76898; // the engine's syscall entry, wr
 constexpr uintptr_t WEAPONS_RVA = 0x1aa4e0;   // cg_weapons[], 0x198 each; +0 = the view DObj (hands + weapon)
 constexpr int WEAPON_STRIDE = 0x198;
 constexpr intptr_t SC_BONE_INDEX = 0xaf;      // (dobj, name) -> bone index, -1 when absent (CoDMP 0x487b90)
-constexpr int RE_ORIGIN = 0x44;
+constexpr int RE_ORIGIN = 0x44, RE_AXIS = 0x1c;
 constexpr int PS_WEAPON = 0xb0, PS_WEAPONSTATE = 0xb4, PS_ADSFRAC = 0xb8;   // the crosshair hides on ps+0xb4 = 1/2/5/10/11
 constexpr int CV_STRING = 0x04, CV_VALUE = 0x1c, CV_INT = 0x20;
 
@@ -166,6 +166,48 @@ constexpr float SPIN_KICK = 420.0f;       // rad/s^2 for 70 ms: ~2.4 turns/s, 2-
 constexpr float SPIN_T_SNAP = 0.30f, SPIN_T_SNAP_END = 0.37f;
 int g_weapon = 0, g_state = 0;
 
+// `cod1x_inspect_dump 1`: every inspect records, 15 times a second, the built view skeleton (as the
+// inspect left it), the eye and the hand refEntity, and writes them at its end next to the exe -
+// offline, the frames the player saw are rendered from them, from the real eye
+void* g_cv_dump = nullptr;
+constexpr int DUMP_FRAMES = 120, DUMP_BONES = 128;
+struct DumpFrame { float t; float view[14]; float ref[12]; float bones[DUMP_BONES][12]; };
+DumpFrame* g_dump = nullptr;      // allocated on first use
+int g_dump_n = 0, g_dump_bones = 0;
+bool g_dump_on = false;
+float g_dump_next = 0;
+float g_ref[12];                  // the hand refEntity this frame: origin, then axis
+float g_miss[2];                  // the farthest each hand (right, left) ended from where it was sent
+char g_dump_probe[1536];
+int g_trick_at_start = 0;
+
+void dump_write() {
+    char path[MAX_PATH];
+    const DWORD len = GetModuleFileNameA(NULL, path, MAX_PATH);
+    char* slash = strrchr(path, '\\');
+    if (!len || len >= MAX_PATH || !slash) return;
+    snprintf(slash + 1, (size_t)(MAX_PATH - (slash + 1 - path)), "cod1x_inspect_dump_m%d_t%d_w%d.txt", g_mode, g_trick_at_start, g_weapon);
+    FILE* f = fopen(path, "w");
+    if (!f) { logger::logf("inspect: dump - cannot write %s", path); return; }
+    fprintf(f, "# cod1x inspect dump: mode %d trick %d weapon %d bones %d gun0 %d\nprobe %s\n",
+            g_mode, g_trick_at_start, g_weapon, g_dump_bones, g_sk.gun0, g_dump_probe);
+    for (int i = 0; i < g_dump_n; ++i) {
+        const DumpFrame& fr = g_dump[i];
+        fprintf(f, "frame %.4f\nview", fr.t);
+        for (int k = 0; k < 14; ++k) fprintf(f, " %.5f", fr.view[k]);
+        fprintf(f, "\nref");
+        for (int k = 0; k < 12; ++k) fprintf(f, " %.5f", fr.ref[k]);
+        fprintf(f, "\n");
+        for (int b = 0; b < g_dump_bones; ++b) {
+            fprintf(f, "b %d", b);
+            for (int k = 0; k < 12; ++k) fprintf(f, " %.4f", fr.bones[b][k]);
+            fprintf(f, "\n");
+        }
+    }
+    fclose(f);
+    logger::logf("inspect: dump - %d frame(s) written to %s", g_dump_n, path);
+}
+
 float now_s() {
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
@@ -268,7 +310,12 @@ int build_keys(int mode, Key* k) {
 }
 
 void stop(const char* why) {
-    if (g_mode) logger::logf("inspect: view skeleton rebuilt %u time(s) with the bones moved", g_sk.builds);
+    if (g_mode) {
+        logger::logf("inspect: view skeleton rebuilt %u time(s) with the bones moved", g_sk.builds);
+        logger::logf("inspect: the hands ended up to %.1f u (right) / %.1f u (left) from where they were sent", g_miss[0], g_miss[1]);
+        if (g_dump_on && g_dump_n) dump_write();
+    }
+    g_dump_on = false;
     g_sk.dobj = nullptr;
     g_mode = 0;
     logger::logf("inspect: %s", why);
@@ -448,6 +495,25 @@ void start(int mode, int weapon, int state, const uint8_t* ref) {
                  g_sk.gun0, g_sk.htag, ff, g_sk.flash, fc, g_sk.clip, fb, g_sk.bolt, g_sk.boltaction ? " (bolt action)" : "",
                  g_sk.arms ? "found" : "NOT found (the gun turns alone)", hand, org[0], org[1], org[2],
                  F[0] * dv.x + F[1] * dv.y + F[2] * dv.z, Lf[0] * dv.x + Lf[1] * dv.y + Lf[2] * dv.z, U[0] * dv.x + U[1] * dv.y + U[2] * dv.z);
+    g_miss[0] = g_miss[1] = 0;
+    g_dump_on = g_cv_dump && *(const int*)((const uint8_t*)g_cv_dump + CV_INT) != 0;
+    g_dump_n = 0; g_dump_next = 0;
+    g_dump_bones = dobj[0x17] < DUMP_BONES ? dobj[0x17] : DUMP_BONES;
+    g_trick_at_start = g_sk.trick;
+    if (g_dump_on) {
+        // the bones that tell which weapon this is (offline: matched against the view models)
+        static const char* const MORE[] = { "mosin_bolt_tag", "k98 clip", "m1 garand clip", "tag_flash", "tag_weapon", "tag_brass",
+                                            "bip01 l hand", "bip01 r hand", "bip01 l upperarm", "bip01 r upperarm", "bip01 l forearm", "bip01 r forearm" };
+        const char* const* lists[] = { CLIPS, SLIDES, BOLTS, MORE };
+        const int counts[] = { (int)(sizeof(CLIPS) / sizeof(*CLIPS)), (int)(sizeof(SLIDES) / sizeof(*SLIDES)), (int)(sizeof(BOLTS) / sizeof(*BOLTS)), (int)(sizeof(MORE) / sizeof(*MORE)) };
+        size_t at = 0; g_dump_probe[0] = 0;
+        for (int l = 0; l < 4; ++l)
+            for (int i = 0; i < counts[l]; ++i) {
+                const int k = (int)sys(SC_BONE_INDEX, dobj, lists[l][i]);
+                if (k < 0 || k >= dobj[0x17] || at + 48 >= sizeof(g_dump_probe)) continue;
+                at += (size_t)snprintf(g_dump_probe + at, sizeof(g_dump_probe) - at, "%s=%d;", lists[l][i], k);
+            }
+    }
     QueryPerformanceCounter(&g_t0);
     g_mode = mode; g_weapon = weapon; g_state = state;
     g_sk.dobj = dobj;
@@ -459,10 +525,13 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
         g_cv_pivot = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect_pivot", "0 0 0", 0);
         g_cv_speed = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect_speed", "1", 0);
         g_cv_mag   = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect_mag", "5", 0);
+        g_cv_dump  = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect_dump", "0", 0);
         QueryPerformanceFrequency(&g_freq);
         if (!g_cv_go || !g_cv_pivot || !g_cv_speed) return;
     }
     if (!ref || !ps) return;
+    memcpy(g_ref, ref + RE_ORIGIN, 12);
+    memcpy(g_ref + 3, ref + RE_AXIS, 36);
     const int weapon = *(const int*)(ps + PS_WEAPON);
     const int state = *(const int*)(ps + PS_WEAPONSTATE);
     const float ads = *(const float*)(ps + PS_ADSFRAC);
@@ -739,6 +808,9 @@ void solve_limb(const uint8_t* d, const Limb& L, Q tq, V3 tp, float fingers) {
     subtree(L, L.hand, in);
     for (int i = 0; i < L.n; ++i) if (in[i]) spin(d, L.idx[i], r3, W2);
     if (fingers > 0) pose_fingers(d, L, fingers);
+    const float miss = len(sub(row(H, 3), tp));                 // > 0: the target was out of the arm's reach
+    float& worst = g_miss[&L == &g_L ? 1 : 0];
+    if (miss > worst) worst = miss;
 }
 // the fingers of a hand (every bone under it that has an lq) to their lq, blended by w; bone lengths kept
 void pose_fingers(const uint8_t* d, const Limb& L, float w) {
@@ -785,7 +857,7 @@ Q frame_to(V3 lx, V3 lp, V3 fw, V3 pw) {
 // of an inspect is touched. The gun turns about its own middle, the shoulders stay where the
 // animation put them, and both arms are re-solved to keep the hands where they hold the gun -
 // or, for the left one, on the magazine.
-void inspect_on_skeleton(const void* dobj) {
+static void on_skeleton_impl(const void* dobj) {
     const uint8_t* d = g_sk.dobj;
     if (!d || dobj != d || !*(void* const*)(d + 4)) return;
     const int n = d[0x17];
@@ -994,6 +1066,27 @@ void inspect_on_skeleton(const void* dobj) {
     solve_limb(d, g_L, tq, tp, g_sk.trick == TRICK_WIPE ? 0.85f * g_sk.wipe_w : w * g_sk.lfing);
 }
 
+void inspect_on_skeleton(const void* dobj) {
+    on_skeleton_impl(dobj);
+    const uint8_t* d = g_sk.dobj;
+    if (!g_dump_on || !d || dobj != d || !*(void* const*)(d + 4)) return;
+    const float t = now_s();
+    if (t < g_dump_next || g_dump_n >= DUMP_FRAMES) return;
+    if (!g_dump) g_dump = (DumpFrame*)VirtualAlloc(nullptr, sizeof(DumpFrame) * DUMP_FRAMES, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!g_dump) { g_dump_on = false; return; }
+    g_dump_next = t + 1.0f / 15.0f;
+    DumpFrame& fr = g_dump[g_dump_n++];
+    fr.t = t;
+    const float* vo = (const float*)(g_base + VIEWORG_RVA);
+    for (int k = 0; k < 12; ++k) fr.view[k] = vo[k];            // vieworg, then forward, left, up
+    fr.view[12] = vo[-2]; fr.view[13] = vo[-1];                  // refdef fov_x, fov_y (cgame+0x20d340)
+    memcpy(fr.ref, g_ref, sizeof(g_ref));
+    for (int i = 0; i < g_dump_bones; ++i) {
+        const float* m = bone(d, i);
+        for (int r = 0; r < 4; ++r) for (int k = 0; k < 3; ++k) fr.bones[i][r * 3 + k] = m[4 * r + k];
+    }
+}
+
 bool inspect_install(HMODULE cgame) {
     if (!cgame) return false;
     const uintptr_t base = (uintptr_t)cgame;
@@ -1016,7 +1109,7 @@ bool inspect_install(HMODULE cgame) {
     *(int32_t*)(site + 1) = rel;
     VirtualProtect((void*)(site + 1), 4, old, &old);
     FlushInstructionCache(GetCurrentProcess(), (void*)site, 5);
-    logger::logf("inspect: view weapon hooked (cgame+0x%x) - `set cod1x_inspect 1` (turn), 2 (full), 3 (pistol spin), 4 (toss), 5 (the weapon's trick), 6 (sleeve wipe)", (unsigned)CALL_RVA);
+    logger::logf("inspect: view weapon hooked (cgame+0x%x) - `set cod1x_inspect 1` (turn), 2 (full), 3 (pistol spin), 4 (toss), 5 (the weapon's trick), 6 (sleeve wipe); cod1x_inspect_dump 1 records them", (unsigned)CALL_RVA);
     return true;
 }
 
