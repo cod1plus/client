@@ -598,22 +598,20 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
         const V3 gv = scl({ -F[2], -F[5], -F[8] }, SPIN_G);       // world down, model axes
         const float gm = len(gv);
         const V3 up = scl(gv, -1.0f / gm);
-        const V3 b = g_sk.dirs ? g_sk.b : V3{ 1, 0, 0 };
         const V3 o = g_sk.dirs ? g_sk.o : V3{ 0, 0, -1 };
         const Q I = { 1, 0, 0, 0 };
         float jolt = 0, TE = 2.0f;
         Q gq = I; V3 gs = { 0, 0, 0 };
         if (g_sk.trick == TRICK_MAGTOSS || g_sk.trick == TRICK_DRUM) {
-            // pull it out; wind-up (the hand dips, the wrist cocks); a flick up (uniform push over FLICK s)
-            // and the release; it flies up spinning (end over end; the drum flips like a coin) while the
-            // open hand follows through then goes under where it will land; the catch gives, it is seated
-            constexpr float DIP_U = -2.0f, DIP_F = -0.3f, REL_U = 2.5f, REL_F = -0.15f, FLICK = 0.10f, CATCH_U = 1.0f, COCK = -15.0f;
+            // pull it out; wind-up (the hand dips); a flick up (uniform push over FLICK s) and the release;
+            // it flies straight up and down - no spin (enzo: a spinning magazine looked buggy) - while the open
+            // hand follows through then goes under where it will land; the catch gives, it is slapped home
+            constexpr float DIP_U = -2.0f, DIP_F = -0.3f, REL_U = 2.5f, REL_F = -0.15f, FLICK = 0.10f, CATCH_U = 1.0f;
             constexpr float T_PULL0 = 0.62f, T_PULL1 = 0.88f, T_DIP = 1.04f, TR = T_DIP + FLICK;
             const bool drum = g_sk.trick == TRICK_DRUM;
             const float D = drum ? 4.0f : 6.0f;
             const float vu = 2.0f * (REL_U - DIP_U) / FLICK, vf = 2.0f * (REL_F - DIP_F) / FLICK;
             const float uf = (vu + sqrtf(vu * vu + 2.0f * SPIN_G * (REL_U - CATCH_U))) / SPIN_G;   // flight time
-            const float om = ((drum ? 720.0f : 360.0f) - COCK) / (FLICK / 2 + uf);               // deg/s: lands square in the hand
             const float TC = TR + uf;
             TE = TC + 1.2f;
             const float pres = ramp(t, 0.0f, 0.40f) * (1.0f - ramp(t, TE - 0.45f, TE));
@@ -621,7 +619,6 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
             gs = scl(slide_mag(), pres);
             // world up and "away from the eye", in the gun's resting frame (the magazine moves there, turned by gq after)
             const V3 ur = qrot(qconj(gq), up), fr = qrot(qconj(gq), { 1, 0, 0 });
-            const V3 axis = drum ? b : norm(cross(b, o));
             const V3 base = scl(o, D);
             auto at = [&](float u_, float f_) { return add(add(base, scl(ur, u_)), scl(fr, f_)); };
             g_sk.grab = ramp(t, 0.30f, 0.62f) * (1.0f - ramp(t, TC + 0.60f, TC + 0.90f));
@@ -631,20 +628,18 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
                 mp = scl(o, D * ramp(t, T_PULL0, T_PULL1));
             } else if (t < T_DIP) {
                 const float e = ease((t - T_PULL1) / (T_DIP - T_PULL1));
-                mp = at(DIP_U * e, DIP_F * e); mq = qaxis(axis, COCK * e);
+                mp = at(DIP_U * e, DIP_F * e);
             } else if (t < TR) {
                 const float s2 = (t - T_DIP) / FLICK * ((t - T_DIP) / FLICK);
                 mp = at(DIP_U + (REL_U - DIP_U) * s2, DIP_F + (REL_F - DIP_F) * s2);
-                mq = qaxis(axis, COCK + 0.5f * om * FLICK * s2);
             } else if (t < TC) {
                 const float u = t - TR;
                 mp = at(REL_U + vu * u - 0.5f * SPIN_G * u * u, REL_F + vf * u);
-                mq = qaxis(axis, COCK + 0.5f * om * FLICK + om * u);
             } else {
                 const V3 cat = at(CATCH_U, REL_F + vf * uf);
                 mp = add(add(cat, scl(sub(base, cat), ramp(t, TC + 0.18f, TC + 0.38f))), scl(ur, -1.2f * bump(t, TC, 0.25f)));
-                if (t > TC + 0.40f) mp = scl(mp, 1.0f - ramp(t, TC + 0.40f, TC + 0.56f));
-                jolt = bump(t, TC + 0.56f, 0.16f);                   // seated
+                if (t > TC + 0.40f) mp = scl(mp, 1.0f - ramp(t, TC + 0.40f, TC + 0.50f));   // slapped home, fast
+                jolt = 1.6f * bump(t, TC + 0.50f, 0.16f);            // and the gun takes the slap
             }
             g_sk.magq = mq; g_sk.magp = mp;
             if (t >= TR && t < TC) {
@@ -653,7 +648,7 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
                 const V3 cat = at(CATCH_U, REL_F + vf * uf);
                 const float k = ease((u - 0.12f) / fmaxf(0.05f, uf - 0.18f));
                 g_sk.handp = add(thr, scl(sub(cat, thr), k));
-                g_sk.handq = qaxis(axis, fmodf(COCK + 0.5f * om * FLICK, 360.0f) * (1.0f - ease(u / (uf - 0.04f))));
+                g_sk.handq = I;
             } else {
                 g_sk.handq = mq; g_sk.handp = mp;
             }
