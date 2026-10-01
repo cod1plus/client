@@ -114,7 +114,7 @@ struct Skel {
     V3 grip_p = { 0, 0, 0 };
     // pistol spin (mode 3): the pistol turns about the right index finger, the hand open
     int idx11 = -1, idx12 = -1;
-    volatile float spin_deg = 0, open = 0, away = 0;
+    volatile float spin_deg = 0, open = 0, away = 0;   // away: the left hand let go (spin: aside; turn / full: out of view)
     volatile float detach = 0;                // toss (mode 4): the hands have let go of the gun
     volatile float flick = 0;                 // the wrist: turn about the spin axis (deg) ...
     V3 flick_off = { 0, 0, 0 };               // ... and move (units)
@@ -265,46 +265,41 @@ bool resolve_limb(Syscall_t sys, const uint8_t* dobj, Limb& L, char side, const 
     return true;
 }
 
-// the magazine turned down-left, toward the middle of the screen but away from the eye (turned
-// straight at the screen centre it came at the camera, the left arm with it), the muzzle a little up
-Q present_mag() {
-    const V3 b = g_sk.dirs ? g_sk.b : V3{ 1, 0, 0 };
-    V3 o = g_sk.dirs ? g_sk.o : V3{ 0, 0, -1 };
-    o = norm(sub(o, scl(b, dot(o, b))));
-    const V3 c = cross(b, o);
-    const V3 beta = norm({ 0.95f, 0.15f, 0.25f });
-    V3 tau = norm({ -0.15f, 0.55f, -0.80f });
-    tau = norm(sub(tau, scl(beta, dot(tau, beta))));
-    const V3 c2 = cross(beta, tau);
-    const float S[3][3] = { { b.x, o.x, c.x }, { b.y, o.y, c.y }, { b.z, o.z, c.z } };          // columns b, o, c
-    const float T[3][3] = { { beta.x, tau.x, c2.x }, { beta.y, tau.y, c2.y }, { beta.z, tau.z, c2.z } };
-    float R[3][3];
-    for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) R[i][j] = T[i][0] * S[j][0] + T[i][1] * S[j][1] + T[i][2] * S[j][2];
-    return qfrom(R);
-}
 
 // the gun's turns (about its own middle; the hands stay on it, the shoulders do not move) and
 // slides (toward the middle of the screen and up), model space
+// The poses, judged on the game's own skeleton from the game's eye (in-game dumps, offline replay):
+// the left shoulder sits just under the eye, so the left hand must not rise nor come near - the gun
+// is shown low, from its right side, both hands on it; for its left side the LEFT HAND LETS GO and
+// drops out of view (g_sk.away), as real inspect animations do, then takes the foregrip back.
+Q pose_right()  { return qeuler(16, 2, -46); }   // right side up, low
+Q pose_right2() { return qeuler(12, 1, -52); }
+Q pose_left()   { return qeuler(-16, 0, 30); }   // left flank (the left hand away)
+Q pose_left2()  { return qeuler(-12, -2, 36); }
+Q pose_mag()    { return qeuler(10, 0, 55); }    // rolled top to the right: the magazine hangs out to the left, in view
+const V3 SLIDE_RIGHT = { 0, 2.0f, 0.8f }, SLIDE_LEFT = { 0, 0.5f, 0 }, SLIDE_MAG = { 3.0f, 1.5f, 1.0f };
+const V3 LEFT_AWAY = { -3.0f, 2.0f, -7.0f };       // the left hand let go: back, left, down (out of view)
+
 int build_keys(int mode, Key* k) {
     const Q I = { 1, 0, 0, 0 };
     if (mode == 1) {
         k[0] = { 0.00f, I, { 0, 0, 0 } };
-        k[1] = { 0.55f, qeuler(20, 8, -40), { 0, 2.5f, 1.5f } };   // right side up to the camera
-        k[2] = { 1.40f, qeuler(16, 6, -48), { 0, 2.5f, 1.5f } };   // slow drift
-        k[3] = { 2.00f, qeuler(-10, 16, 30), { 0, 2, 1.5f } };     // flip: left side and underside
-        k[4] = { 2.60f, qeuler(-7, 13, 36), { 0, 2, 1.5f } };
-        k[5] = { 3.20f, I, { 0, 0, 0 } };
+        k[1] = { 0.55f, pose_right(), SLIDE_RIGHT };
+        k[2] = { 1.35f, pose_right2(), SLIDE_RIGHT };
+        k[3] = { 2.05f, pose_left(), SLIDE_LEFT };
+        k[4] = { 2.75f, pose_left2(), SLIDE_LEFT };
+        k[5] = { 3.35f, I, { 0, 0, 0 } };
         return 6;
     }
-    const Q P = present_mag();
+    const Q P = pose_mag();
     k[0] = { 0.00f, I, { 0, 0, 0 } };
-    k[1] = { 0.55f, qeuler(20, 8, -40), { 0, 2.5f, 1.5f } };       // right side: bolt / ejection port
-    k[2] = { 1.20f, qeuler(17, 6, -46), { 0, 2.5f, 1.5f } };       // chamber check happens here
-    k[3] = { 2.10f, qeuler(15, 5, -42), { 0, 2.5f, 1.5f } };
-    k[4] = { 2.75f, P, { 0, 2, 4 } };                              // gun up, magazine shown
-    k[5] = { 4.25f, qmul(qeuler(3, 2, 5), P), { 0, 2, 4 } };       // the hand takes it out, looks at it, seats it
-    k[6] = { 4.90f, qeuler(-10, 14, 30), { 0, 2, 1.5f } };         // left side
-    k[7] = { 5.50f, qeuler(-7, 11, 34), { 0, 2, 1.5f } };
+    k[1] = { 0.55f, pose_right(), SLIDE_RIGHT };                   // right side: bolt / ejection port
+    k[2] = { 1.20f, pose_right2(), SLIDE_RIGHT };                  // chamber check happens here
+    k[3] = { 2.05f, pose_right(), SLIDE_RIGHT };
+    k[4] = { 2.70f, P, SLIDE_MAG };                                // magazine side shown
+    k[5] = { 4.20f, qmul(qeuler(2, 0, -6), P), SLIDE_MAG };        // the hand takes it out, looks at it, seats it
+    k[6] = { 4.90f, pose_left(), SLIDE_LEFT };                     // left side, the left hand away
+    k[7] = { 5.55f, pose_left2(), SLIDE_LEFT };
     k[8] = { 6.20f, I, { 0, 0, 0 } };
     return 9;
 }
@@ -330,7 +325,7 @@ void start(int mode, int weapon, int state, const uint8_t* ref) {
     g_sk.trick = TRICK_NONE; g_sk.mag_free = false; g_sk.frozen = false; g_sk.lfing = 1;
     g_sk.magq = { 1, 0, 0, 0 }; g_sk.magp = { 0, 0, 0 }; g_sk.mag_mid = 4.5f;
     g_sk.bolt_entry = g_sk.bolt_root = -1; g_sk.bolt_np = g_sk.rf_n = 0; g_sk.bolt_frame = -1; g_sk.rhand_w = 0;
-    g_sk.wipe_w = g_sk.wipe_s = g_sk.jug_w = 0;
+    g_sk.wipe_w = g_sk.wipe_s = g_sk.jug_w = g_sk.away = 0;
     g_sk.flick_off = { 0, 0, 0 };
     g_sk.spin_ready = false;
     g_spin = Spin();
@@ -604,15 +599,15 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
             // pull the magazine, flick it up spinning (end over end; the drum flips like a coin),
             // the hand waits where it let go, catches it, slaps it home
             const bool drum = g_sk.trick == TRICK_DRUM;
-            const float V = drum ? 76.0f : 68.0f, TR = 0.92f, tf = 2.0f * V / gm, TC = TR + tf, D = 10.0f;
-            TE = TC + 0.95f;
-            const float pres = ramp(t, 0.0f, 0.35f) * (1.0f - ramp(t, TE - 0.45f, TE));
-            gq = slerp(I, present_mag(), 0.6f * pres);
-            gs = { 0, 2.0f * pres, 3.0f * pres };
-            g_sk.grab = ramp(t, 0.35f, 0.60f) * (1.0f - ramp(t, TC + 0.35f, TC + 0.6f));
+            const float V = drum ? 62.0f : 58.0f, TR = 0.95f, tf = 2.0f * V / gm, TC = TR + tf, D = 7.0f;
+            TE = TC + 1.0f;
+            const float pres = ramp(t, 0.0f, 0.40f) * (1.0f - ramp(t, TE - 0.45f, TE));
+            gq = slerp(I, pose_mag(), pres);
+            gs = scl(SLIDE_MAG, pres);
+            g_sk.grab = ramp(t, 0.30f, 0.62f) * (1.0f - ramp(t, TC + 0.40f, TC + 0.70f));
             g_sk.mag_free = true; g_sk.freeze_d = D;                  // pulled all the way: it flies clear of the gun
             if (t < TR) {
-                g_sk.magq = I; g_sk.magp = scl(o, D * ramp(t, 0.62f, 0.88f));
+                g_sk.magq = I; g_sk.magp = scl(o, D * ramp(t, 0.62f, 0.90f));
             } else if (t < TC) {
                 const float u = t - TR;
                 const V3 axis = drum ? b : norm(cross(b, o));
@@ -620,36 +615,36 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
                 // (the magazine moves in the gun's resting frame, turned by gq after: up taken back into it)
                 g_sk.magp = add(scl(o, D), scl(qrot(qconj(gq), up), V * u - 0.5f * gm * u * u));
             } else {
-                g_sk.magq = I; g_sk.magp = scl(o, D * (1.0f - ramp(t, TC + 0.12f, TC + 0.28f)));
-                jolt = bump(t, TC + 0.28f, 0.16f);                   // slapped home
+                g_sk.magq = I; g_sk.magp = scl(o, D * (1.0f - ramp(t, TC + 0.14f, TC + 0.30f)));
+                jolt = bump(t, TC + 0.30f, 0.16f);                   // slapped home
             }
             g_sk.frozen = t >= TR && t < TC;
             g_sk.lfing = 1.0f - 0.75f * ramp(t, TR - 0.02f, TR + 0.06f) * (1.0f - ramp(t, TC - 0.08f, TC));
         } else if (g_sk.trick == TRICK_BOLT) {
             // the rifle's own rechamber stroke (hand, bolt parts, fingers), twice, half as fast again
             const InspectBolt& bo = INSPECT_BOLTS[g_sk.bolt_entry];
-            const float k = 1.5f, fs = bo.fps * k, t0 = 0.3f;
+            const float k = 1.5f, fs = bo.fps * k, t0 = 0.35f;
             const float Tc = (bo.nframes - 1) / fs, Ts = Tc + BOLT_WRAP / fs, t1 = t0 + Ts + Tc;   // stroke, stroke + way back, end
             TE = t1 + 0.5f;
             const float pres = ramp(t, 0.0f, 0.3f) * (1.0f - ramp(t, TE - 0.35f, TE));
-            gq = slerp(I, qeuler(14, 5, -32), pres);
-            gs = { 0, 1.5f * pres, 1.5f * pres };
+            gq = slerp(I, pose_right(), pres);
+            gs = scl(SLIDE_RIGHT, pres);
             g_sk.bolt_frame = (t >= t0 && t < t1) ? fmodf(t - t0, Ts) * fs : -1.0f;
             g_sk.rhand_w = ramp(t, t0 - 0.12f, t0 + 0.02f) * (1.0f - ramp(t, t1 - 0.02f, t1 + 0.16f));
             jolt = bump(t, t0 + 0.74f * Tc, 0.12f) + bump(t, t0 + Ts + 0.74f * Tc, 0.12f);   // the bolt slammed home
         } else if (g_sk.trick == TRICK_WIPE) {
-            // the left forearm polishes the top of the gun, two strokes
-            TE = 2.3f;
-            const float pres = ramp(t, 0.0f, 0.3f) * (1.0f - ramp(t, TE - 0.35f, TE));
-            gq = slerp(I, qeuler(8, 6, -18), pres);
-            gs = { 0, 2.0f * pres, 2.0f * pres };
-            g_sk.wipe_w = ramp(t, 0.25f, 0.45f) * (1.0f - ramp(t, 1.75f, 1.95f));
-            g_sk.wipe_s = 1.5f + 2.5f * sinf(6.2831853f * (t - 0.45f) / 0.6f) * ramp(t, 0.40f, 0.55f);   // forward of the middle: never toward the eye
+            // the left flank shown low; the left palm rubs it forward of the foregrip (away from the eye)
+            TE = 2.4f;
+            const float pres = ramp(t, 0.0f, 0.35f) * (1.0f - ramp(t, TE - 0.40f, TE));
+            gq = slerp(I, pose_left(), pres);
+            gs = scl(SLIDE_LEFT, pres);
+            g_sk.wipe_w = ramp(t, 0.30f, 0.50f) * (1.0f - ramp(t, 1.85f, 2.05f));
+            g_sk.wipe_s = 2.0f - 2.0f * cosf(6.2831853f * (t - 0.50f) / 0.55f) * ramp(t, 0.45f, 0.60f);
         } else if (g_sk.trick == TRICK_JUGGLE) {
-            // right hand -> left hand with a flip, held, back with a flip, a final twirl
-            const float T1 = 0.35f, T = 0.36f, C1 = T1 + T, R2 = C1 + 0.38f, C2 = R2 + T, W0 = C2 + 0.08f, W1 = W0 + 0.4f;
+            // right hand -> left hand, low, with a flip; the left hand shows its flank; back; a flick of the wrist
+            const float T1 = 0.35f, T = 0.32f, C1 = T1 + T, R2 = C1 + 0.50f, C2 = R2 + T, W0 = C2 + 0.08f, W1 = W0 + 0.4f;
             TE = W1 + 0.35f;
-            const V3 P1 = { 5.0f, 5.0f, -0.5f };                     // where the left hand holds it (ahead, toward the middle)
+            const V3 P1 = { -1.0f, 6.0f, -1.5f };                    // where the left hand holds it (left of the rest, low)
             auto arc = [&](V3 a, V3 bb, float u) {                   // ballistic a -> bb in T under gravity
                 const V3 v = sub(scl(sub(bb, a), 1.0f / T), scl(gv, 0.5f * T));
                 return add(add(a, scl(v, u)), scl(gv, 0.5f * u * u));
@@ -657,12 +652,12 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
             const V3 lat = { 0, 1, 0 };
             if (t < T1) { gs = { 0, 0, 0 }; }
             else if (t < C1) { const float u = t - T1; gs = arc({ 0, 0, 0 }, P1, u); gq = qaxis(lat, 360.0f * u / T); }
-            else if (t < R2) { gs = P1; }
+            else if (t < R2) { gs = P1; const float e = bump(t, C1 + 0.04f, R2 - C1 - 0.08f); gq = qeuler(-25.0f * e, 5.0f * e, 45.0f * e); }
             else if (t < C2) { const float u = t - R2; gs = arc(P1, { 0, 0, 0 }, u); gq = qaxis(lat, 360.0f * u / T); }
-            else if (t < W1) { const float e = bump(t, W0, W1 - W0); gq = qmul(qeuler(0, -10.0f * e, 0), qaxis(b, -55.0f * e)); gs = { 0, 0, 1.0f * e }; }
+            else if (t < W1) { const float e = bump(t, W0, W1 - W0); gq = qeuler(0, 18.0f * e, 0); gs = { 0, 0, 0.6f * e }; }
             g_sk.detach = ramp(t, T1 - 0.02f, T1 + 0.05f) * (1.0f - ramp(t, C2 - 0.08f, C2));
             g_sk.open = g_sk.detach;
-            g_sk.jug_w = ramp(t, C1 - 0.12f, C1) * (1.0f - ramp(t, R2 - 0.02f, R2 + 0.08f));
+            g_sk.jug_w = ramp(t, C1 - 0.10f, C1) * (1.0f - ramp(t, R2 - 0.02f, R2 + 0.08f));
         }
         if (t >= TE) { stop("done"); return; }
         if (jolt > 0) { gq = qmul(qeuler(0, 2.5f * jolt, -1.5f * jolt), gq); gs.z += 0.3f * jolt; }
@@ -731,6 +726,7 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
         }
         if (jolt > 0) { q = qmul(qeuler(0, 2.2f * jolt, -1.5f * jolt), q); slide.z += 0.25f * jolt; }
     }
+    g_sk.away = g_mode == 1 ? ramp(t, 1.45f, 1.85f) * (1 - ramp(t, 2.85f, 3.25f)) : ramp(t, 4.35f, 4.70f) * (1 - ramp(t, 5.65f, 6.05f));
     g_sk.gq = q;
     g_sk.gslide = slide;
 }
@@ -1046,11 +1042,11 @@ static void on_skeleton_impl(const void* dobj) {
         tp = add(tp, scl(sub(add(pc, qrot(qc, g_sk.grip_p)), tp), w));
     }
     if (g_sk.wipe_w > 0) {
-        // palm down on the top of the gun, fingers along the bore, sliding back and forth
-        // (the forearm across the receiver: fingers forward-right, the sleeve on the gun)
-        const V3 bb = norm(qrot(gq, g_sk.b)), top = norm(qrot(gq, { 0, 0, 1 })), right = norm(cross(bb, top));
-        const V3 wp = add(add(add(add(C, scl(bb, g_sk.wipe_s)), scl(top, 2.4f)), scl(right, -1.0f)), gs);
-        tq = slerp(tq, frame_to({ 1, 0, 0 }, { 0, 1, 0 }, add(bb, scl(right, 0.7f)), scl(top, -1.0f)), g_sk.wipe_w);
+        // flat palm on the left flank, fingers forward, sliding along the bore from the foregrip
+        const V3 bb = norm(qrot(gq, g_sk.b)), top = norm(qrot(gq, { 0, 0, 1 })), left = norm(cross(top, bb));
+        const V3 fore = add(add(C, qrot(gq, sub(pL, C))), gs);    // where the left hand holds the gun now
+        const V3 wp = add(add(add(fore, scl(bb, g_sk.wipe_s)), scl(top, 1.2f)), scl(left, 0.8f));
+        tq = slerp(tq, frame_to({ 1, 0, 0 }, { 0, 1, 0 }, bb, scl(left, -1.0f)), g_sk.wipe_w);
         tp = add(tp, scl(sub(wp, tp), g_sk.wipe_w));
     }
     if (g_sk.jug_w > 0) {
@@ -1063,6 +1059,7 @@ static void on_skeleton_impl(const void* dobj) {
         tq = slerp(tq, qmul(gq, qm), g_sk.jug_w);
         tp = add(tp, scl(sub(add(add(C, qrot(gq, sub(pm, C))), gs), tp), g_sk.jug_w));
     }
+    if (g_sk.away > 0) { tq = slerp(tq, qL, g_sk.away); tp = add(tp, scl(sub(add(pL, LEFT_AWAY), tp), g_sk.away)); }
     solve_limb(d, g_L, tq, tp, g_sk.trick == TRICK_WIPE ? 0.85f * g_sk.wipe_w : w * g_sk.lfing);
 }
 
