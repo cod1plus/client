@@ -278,10 +278,11 @@ Q pose_right()  { return qeuler(16, 2, -46); }   // right side up, low
 Q pose_right2() { return qeuler(12, 1, -52); }
 Q pose_left()   { return qeuler(-16, 0, 30); }   // left flank (the left hand away)
 Q pose_left2()  { return qeuler(-12, -2, 36); }
-// rolled top to the right: the magazine hangs out to the left, in view (the PPSh drum, big and close: less
-// rolled, farther away, pulled out less - it then flies up mid-screen)
-Q pose_mag()    { return g_sk.drum ? qeuler(8, 0, 30) : qeuler(10, 0, 55); }
-V3 slide_mag()  { return g_sk.drum ? V3{ 5.0f, 1.5f, 1.0f } : V3{ 3.0f, 1.5f, 1.0f }; }
+// the magazine side shown: rolled a little top to the right, the gun pushed away from the eye and kept low, so
+// the magazine flies up right beside it and the left arm stays small (MP40 / BAR dumps: a 55 deg roll put the
+// left forearm across the screen); the PPSh drum, big and close: a bit more roll, pulled out less
+Q pose_mag()    { return g_sk.drum ? qeuler(8, 0, 30) : qeuler(6, -4, 20); }
+V3 slide_mag()  { return g_sk.drum ? V3{ 5.0f, 1.5f, 1.0f } : V3{ 6.0f, 1.5f, 0.0f }; }
 const V3 SLIDE_RIGHT = { 0, 2.0f, 0.8f }, SLIDE_LEFT = { 0, 0.5f, 0 };
 const V3 LEFT_AWAY = { -3.0f, 2.0f, -7.0f };       // the left hand let go: back, left, down (out of view)
 
@@ -609,7 +610,7 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
             constexpr float DIP_U = -2.0f, DIP_F = -0.3f, REL_U = 2.5f, REL_F = -0.15f, FLICK = 0.10f, CATCH_U = 1.0f;
             constexpr float T_PULL0 = 0.62f, T_PULL1 = 0.88f, T_DIP = 1.04f, TR = T_DIP + FLICK;
             const bool drum = g_sk.trick == TRICK_DRUM;
-            const float D = drum ? 4.0f : 6.0f;
+            const float D = drum ? 4.0f : 5.0f;
             const float vu = 2.0f * (REL_U - DIP_U) / FLICK, vf = 2.0f * (REL_F - DIP_F) / FLICK;
             const float uf = (vu + sqrtf(vu * vu + 2.0f * SPIN_G * (REL_U - CATCH_U))) / SPIN_G;   // flight time
             const float TC = TR + uf;
