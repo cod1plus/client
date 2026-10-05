@@ -2,6 +2,7 @@
 #include "netcode/ruleset_eval.h"    // rule_ok / rule_fix: the one place value semantics live
 #include "netcode/protocol_patch.h"   // CODMP_CVAR_GET_VA
 #include "core/logger.h"
+#include "ui/demo_seek.h"          // CODMP_CLC_DEMOPLAYING_VA
 
 #include <cstdio>
 #include <cstring>
@@ -269,6 +270,22 @@ void competitive_force_cvars() {
     static char  s_applied[SPEC_JOINED_MAX] = "";   // last spec we acted on (detect changes)
     static DWORD s_last = 0;
     const  DWORD now = GetTickCount();
+
+    // A demo carries the systeminfo of the server it was recorded on, spec included
+    // (timescale=1, cl_avidemo=0...), and read_spec() reads it back during playback - the
+    // spec was re-applied every 100 ms and `timescale` snapped back to 1 (players: "timescale
+    // still impossible" with 1.6.12, whose sv_cheats fix only removed "cheat protected").
+    // Playback is offline: its cvars belong to the player watching (slow motion, video
+    // capture). Release our locks once and enforce nothing until the demo ends.
+    if (*(volatile int*)CODMP_CLC_DEMOPLAYING_VA != 0) {
+        if (g_locked_count || s_applied[0]) {
+            unlock_all();
+            s_applied[0] = 0;
+            g_spec_name_count = 0;
+            logger::logf("  competitive: demo playback -> the recorded server spec is not applied, cvars unlocked");
+        }
+        return;
+    }
 
     const char* spec = read_spec();
 
