@@ -526,9 +526,10 @@ bool apply_to_cgame(HMODULE cgame_module) {
     settings_menu_apply_to_cgame(cgame_module);  // unlock cg_fov (before CG_Init proceeds)
     apply_swing_fix(cgame_module);
     apply_stance_fix(cgame_module);  // sync model stance blend with 1st person
-    // apply_anim_clamp(cgame_module);  // REVERTED 2026-07-24: the `xor esi,esi` patch
-    //   clobbers a register the CALLER still needs (the old path called Com_Error and
-    //   never returned, so clobbering was harmless there) -> camera/mouse glitches.
+    // out-of-range animation index -> animation 0 instead of a drop to the menu (watching a demo
+    // recorded on a modded server). The 2026-07 version was reverted (it clobbered the caller's
+    // esi -> camera/mouse glitches); this one touches no register the callers rely on.
+    apply_anim_clamp(cgame_module);
     if (!g_lean_fix_config.enable) {
         logger::logf("  lean hook NOT installed (disabled)");
         return true;

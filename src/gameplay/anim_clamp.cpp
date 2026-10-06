@@ -1,14 +1,36 @@
-// anim_clamp.cpp - clamp BG_GetAnimationForIndex out-of-range instead of kicking.
-// See anim_clamp.h. Mirror of the server patch in cod1plushookserver/src/anim_clamp.c.
+// anim_clamp.cpp - out-of-range player animation indices fall back to animation 0 instead of
+// dropping the player to the main menu. See anim_clamp.h. Mirror of the server patch in
+// cod1plushookserver/src/anim_clamp.c.
 //
-// Target: Main/cgame_mp_x86.dll (the MP cgame). BG_GetAnimationForIndex bounds check:
-//   cgame+0x3585  mov eax,[0x300f0fbc]           ; animation table
-//   cgame+0x3585  cmp esi,[eax+0xb800]           ; index (esi) vs animCount (~251)
-//   cgame+0x358b  jb  0x359c                     ; in-range -> OK
-//   cgame+0x358d  push 0x3006aabc; push 1; call Com_Error; add esp,8   ; <-- error path
-//   cgame+0x359c  mov ecx,[..]; mov eax,esi; imul eax,0x5c; add; ret   ; OK path uses esi
-// Patch @+0x358d: replace the 15-byte error block with `xor esi,esi` + NOPs, so the
-// OK path runs with esi=0 -> returns animation[0] (valid default pose), no kick.
+// Where it bites: an index the client's animation table does not have. Live, when client and
+// server register a slightly different count (modded PAM servers); and WATCHING A DEMO from the
+// main menu: the demo carries the recorded server's indices (its mod's playeranim.script) while
+// the client plays it with its own, shorter table -> "BG_GetAnimationForIndex: index out of
+// bounds" -> back to the menu.
+//
+// Main/cgame_mp_x86.dll (md5 075e2af1) has FIVE such checks, each followed by its error block:
+//   +0x3870  the lerp-frame animation setter (CG_SetLerpFrameAnimation): the entity's new
+//            animation (ebx, toggle bit off) vs the count at [0x300fdda0] ->
+//            "Player animation index out of range (%i): %i" (the 2026-07 report), error block
+//            +0x38d6, 17 bytes. ebx and its stack copy [esp+0x3c] become 0: the setter's own
+//            "animation 0" path (lerp animation = none), which the game takes for index 0
+//            anyway; lf->animationNumber keeps the raw value, so the same out-of-range index
+//            is not re-set every frame. THE one an entity's state reaches - demos included -
+//            and it calls the two inlined flag readers below with the old and the new index;
+//   +0x3580  BG_GetAnimationForIndex (no caller in this cgame: patched for completeness)
+//            index in esi = the CALLER's register (not saved here)
+//            mov eax,[0x300f0fbc]; cmp esi,[eax+0xb800]; jb ok; <error +0x358d, 15 bytes>
+//            ok: mov ecx,[0x300f0fbc]; mov eax,esi; imul eax,0x5c; add eax,ecx; ret
+//   +0x37e0, +0x3820  two copies of it inlined in flag readers: push esi; mov esi,eax; ...;
+//            <error +0x37f8 / +0x3838, 15 bytes>; ok: imul esi,0x5c; read the entry; pop esi
+//   +0x3430  BG_GetAnimString (no caller either): same shape, <error +0x343d, 13 bytes>
+// The 2026-07 version wrote `xor esi,esi` over the first block and was REVERTED (camera / mouse
+// glitches): esi there belongs to the caller, which still uses it (the old path never returned,
+// so it never mattered). Now:
+//   - first and last: the error block becomes `ret`. eax already holds the table pointer,
+//     i.e. &animation[0] - exactly what the OK path returns for index 0 - and no register the
+//     caller relies on is touched;
+//   - the two inlined copies: `xor esi,esi` is safe THERE (esi is their own, pushed/popped).
 
 #include "gameplay/anim_clamp.h"
 #include "core/logger.h"
@@ -20,49 +42,58 @@ namespace patches {
 
 namespace {
 
-constexpr uintptr_t CGAME_ANIMCHECK_RVA = 0x358d;   // start of the error block
-constexpr int       PATCH_LEN           = 15;       // 0x359c - 0x358d
-
-// original: push 0x3006aabc ; push 1 ; call rel32 ; add esp,8  (rel32 is position-
-// relative -> stable across ASLR loads, safe to match exactly)
-const uint8_t ORIG[PATCH_LEN] = {
-    0x68, 0xbc, 0xaa, 0x06, 0x30,  // push 0x3006aabc
-    0x6a, 0x01,                    // push 1
-    0xe8, 0x77, 0xe5, 0x01, 0x00,  // call Com_Error
-    0x83, 0xc4, 0x08               // add esp, 8
+struct Site {
+    uintptr_t rva;
+    int len;
+    uint8_t orig[17];     // error block (the call rel32s are position-relative: stable across loads)
+    uint8_t patch[17];
 };
-// replacement: xor esi,esi (clamp index to 0) + NOP padding
-const uint8_t PATCH[PATCH_LEN] = {
-    0x31, 0xf6,                                            // xor esi, esi
-    0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,        // nop x13
-    0x90, 0x90, 0x90
+const Site SITES[] = {
+    { 0x38d6, 17, { 0x53, 0x50, 0x68, 0x8c, 0xaa, 0x06, 0x30, 0x6a, 0x01, 0xe8, 0x2c, 0xe2, 0x01, 0x00, 0x83, 0xc4, 0x10 },
+                  { 0x31, 0xdb, 0x89, 0x5c, 0x24, 0x3c, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 } },   // xor ebx,ebx; mov [esp+0x3c],ebx
+    { 0x358d, 15, { 0x68, 0xbc, 0xaa, 0x06, 0x30, 0x6a, 0x01, 0xe8, 0x77, 0xe5, 0x01, 0x00, 0x83, 0xc4, 0x08 },
+                  { 0xc3, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 } },   // ret
+    { 0x37f8, 15, { 0x68, 0xbc, 0xaa, 0x06, 0x30, 0x6a, 0x01, 0xe8, 0x0c, 0xe3, 0x01, 0x00, 0x83, 0xc4, 0x08 },
+                  { 0x31, 0xf6, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 } },   // xor esi,esi
+    { 0x3838, 15, { 0x68, 0xbc, 0xaa, 0x06, 0x30, 0x6a, 0x01, 0xe8, 0xcc, 0xe2, 0x01, 0x00, 0x83, 0xc4, 0x08 },
+                  { 0x31, 0xf6, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 } },   // xor esi,esi
+    { 0x343d, 13, { 0x68, 0xec, 0xaa, 0x06, 0x30, 0xe8, 0xd9, 0xdd, 0xff, 0xff, 0x83, 0xc4, 0x04 },
+                  { 0xc3, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 } },               // ret
 };
+constexpr int NSITES = sizeof(SITES) / sizeof(SITES[0]);
 
 }  // namespace
 
 bool apply_anim_clamp(HMODULE cgame_module) {
     if (!cgame_module) return false;
-    uint8_t* site = (uint8_t*)((uintptr_t)cgame_module + CGAME_ANIMCHECK_RVA);
-
-    if (memcmp(site, PATCH, PATCH_LEN) == 0) return true;    // already patched
-    if (memcmp(site, ORIG, PATCH_LEN) != 0) {                // different cgame build
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            logger::logf("  anim_clamp: cgame+0x%x = %02x %02x %02x (expected 68 bc aa) "
-                         "- different cgame build, skip",
-                         (unsigned)CGAME_ANIMCHECK_RVA, site[0], site[1], site[2]);
+    const uintptr_t base = (uintptr_t)cgame_module;
+    // all or nothing: a different cgame build leaves every site untouched
+    int already = 0;
+    for (int i = 0; i < NSITES; ++i) {
+        const uint8_t* site = (const uint8_t*)(base + SITES[i].rva);
+        if (memcmp(site, SITES[i].patch, SITES[i].len) == 0) { ++already; continue; }
+        if (memcmp(site, SITES[i].orig, SITES[i].len) != 0) {
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                logger::logf("  anim_clamp: cgame+0x%x = %02x %02x %02x (not the expected error block) - different cgame build, skip",
+                             (unsigned)SITES[i].rva, site[0], site[1], site[2]);
+            }
+            return false;
         }
-        return false;
     }
-
-    DWORD old = 0;
-    if (!VirtualProtect(site, PATCH_LEN, PAGE_EXECUTE_READWRITE, &old)) return false;
-    memcpy(site, PATCH, PATCH_LEN);
-    VirtualProtect(site, PATCH_LEN, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), site, PATCH_LEN);
-    logger::logf("  anim_clamp: BG_GetAnimationForIndex out-of-range clamps to 0 "
-                 "(no more animation-index kick)");
+    if (already == NSITES) return true;
+    for (int i = 0; i < NSITES; ++i) {
+        uint8_t* site = (uint8_t*)(base + SITES[i].rva);
+        if (memcmp(site, SITES[i].patch, SITES[i].len) == 0) continue;
+        DWORD old = 0;
+        if (!VirtualProtect(site, SITES[i].len, PAGE_EXECUTE_READWRITE, &old)) return false;
+        memcpy(site, SITES[i].patch, SITES[i].len);
+        VirtualProtect(site, SITES[i].len, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), site, SITES[i].len);
+    }
+    logger::logf("  anim_clamp: out-of-range player animation indices fall back to animation 0 "
+                 "(5 cgame checks; no more drop to the menu, e.g. watching a demo recorded on a modded server)");
     return true;
 }
 
