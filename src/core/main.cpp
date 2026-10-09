@@ -31,6 +31,7 @@
 #include "core/ini_lock.h"
 #include "netcode/net_diag.h"
 #include "ui/demo_seek.h"
+#include "ui/demo_mod.h"
 #include "features/updater.h"
 #include "features/demo_upload.h"
 #include "core/toast.h"
@@ -211,6 +212,8 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             patches::enforce_ini_fullscreen();
             // a crash in the middle of a demo fast-forward left mss_volume 0 in config_mp.cfg
             patches::demo_seek_startup_recover();
+            // `demo <name>` switches to the demo's mod when its map lives there (rPAM map packs)
+            patches::demo_mod_install();
             // refresh_rate = max: a custom res the driver lists below the panel's max Hz
             // is swapped for the res that has it (4:3 stretch emulated by the mod)
             patches::enforce_max_hz_native();

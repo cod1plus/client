@@ -40,6 +40,7 @@ struct DemoInfo {
     bool ok = false;
     std::string error;                   // why it stopped, when !ok (kills up to there are kept)
     std::string map, hostname, gametype; // map = the FIRST one (the one playback loads first)
+    std::string fs_game;                 // the server's mod at the first gamestate ("" = Main)
     std::vector<std::string> maps;       // one per gamestate: a map change inside the demo adds one
     int  recorder = -1;                  // clientNum from the gamestate (who recorded)
     std::string recorder_name;
@@ -56,6 +57,10 @@ bool demo_index_file(const char* path, DemoInfo* out);
 
 // Same, from memory.
 bool demo_index_buffer(const unsigned char* data, size_t size, DemoInfo* out);
+
+// Only the head of the file (the gamestate is the first message): map + fs_game, fast.
+// True when a gamestate was read.
+bool demo_index_head(const char* path, DemoInfo* out, size_t max_bytes = 262144);
 
 // Display name of a weapon file name ("kar98k_sniper_mp" -> "Kar98k Sniper").
 std::string demo_weapon_label(const char* weapon_file);

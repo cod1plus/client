@@ -509,6 +509,8 @@ struct Parser {
         if (out->gamestates == 1) {
             out->hostname = info_value(cs[0], "sv_hostname");
             out->gametype = info_value(cs[0], "g_gametype");
+            out->fs_game = info_value(cs[1], "fs_game");          // systeminfo
+            if (out->fs_game.empty()) out->fs_game = info_value(cs[0], "fs_game");
         }
         weapons.clear();
         {
@@ -770,6 +772,17 @@ bool demo_index_file(const char* path, DemoInfo* out) {
     const size_t rd = fread(buf.data(), 1, (size_t)sz, f);
     fclose(f);
     return demo_index_buffer(buf.data(), rd, out);
+}
+
+bool demo_index_head(const char* path, DemoInfo* out, size_t max_bytes) {
+    *out = DemoInfo();
+    FILE* f = fopen(path, "rb");
+    if (!f) { out->error = "cannot open"; return false; }
+    std::vector<unsigned char> buf(max_bytes);
+    const size_t rd = fread(buf.data(), 1, max_bytes, f);
+    fclose(f);
+    demo_index_buffer(buf.data(), rd, out);     // a message cut at the end just stops the loop
+    return out->gamestates > 0;
 }
 
 }  // namespace patches

@@ -61,6 +61,7 @@ set(COD1RELOADED_SOURCES
     src/features/demo_index.cpp
     src/ui/demo_library.cpp
     src/ui/demo_seek.cpp
+    src/ui/demo_mod.cpp
     src/ui/eye_debug.cpp
     src/features/updater.cpp
     src/features/demo_upload.cpp
