@@ -3,6 +3,7 @@
 #include "ui/demo_seek.h"                 // demo_map_installed, demo_maps_forget
 #include "features/demo_index.h"          // demo_index_head
 #include "features/settings_menu.h"       // CODMP_CVAR_FINDVAR_VA, CODMP_CBUF_EXECTEXT_VA
+#include "netcode/competitive.h"          // CODMP_CVAR_SET_VA (force set)
 #include "core/logger.h"
 
 #include <windows.h>
@@ -24,6 +25,7 @@ constexpr int EXEC_APPEND = 2;
 
 typedef void  (__cdecl* PlayDemo_t)();
 typedef void* (__cdecl* Cvar_FindVar_t)(const char*);
+typedef void* (__cdecl* Cvar_SetForce_t)(const char*, const char*);
 typedef void  (__cdecl* Cbuf_ExecuteText_t)(int, const char*);
 
 PlayDemo_t g_orig = nullptr;
@@ -186,11 +188,8 @@ __attribute__((force_align_arg_pointer)) void __cdecl hk_playdemo() {
             if (!mod.empty() && !(key == g_last_switch && now - g_last_switch_at < 30000)) {
                 g_last_switch = key;
                 g_last_switch_at = now;
-                demo_maps_forget();                       // the search path is about to change
-                char c[512];
-                snprintf(c, sizeof(c), "seta fs_game %s\nvid_restart\ndemo %s\n", mod.c_str(), arg);
-                logger::logf("demo_mod: demo %s - %s -> fs_game %s + vid_restart first", arg, why.c_str(), mod.c_str());
-                ((Cbuf_ExecuteText_t)CODMP_CBUF_EXECTEXT_VA)(EXEC_APPEND, c);
+                logger::logf("demo_mod: demo %s - %s", arg, why.c_str());
+                demo_play_in(mod, arg);
                 return;
             }
             logger::logf("demo_mod: demo %s - %s", arg, why.c_str());
@@ -200,6 +199,26 @@ __attribute__((force_align_arg_pointer)) void __cdecl hk_playdemo() {
 }
 
 }  // namespace
+
+void demo_play_in(const std::string& dir, const std::string& name) {
+    const std::string want = _stricmp(dir.c_str(), "Main") == 0 ? std::string() : dir;
+    const std::string active = cvar_str("fs_game");
+    char c[512];
+    if (_stricmp(want.c_str(), active.c_str()) == 0) {
+        snprintf(c, sizeof(c), "demo %s\n", name.c_str());
+        ((Cbuf_ExecuteText_t)CODMP_CBUF_EXECTEXT_VA)(EXEC_APPEND, c);
+        return;
+    }
+    // `seta fs_game` is refused ("fs_game is write protected", CVAR_INIT 0x10): the engine's
+    // own Cvar_Set (force, what the Mods menu uses) sets it and marks it modified, and
+    // vid_restart restarts the file system when fs_game is modified (CL_Vid_Restart_f 0x41095d)
+    demo_maps_forget();                                   // the search path is about to change
+    ((Cvar_SetForce_t)CODMP_CVAR_SET_VA)("fs_game", want.c_str());
+    snprintf(c, sizeof(c), "vid_restart\ndemo %s\n", name.c_str());
+    ((Cbuf_ExecuteText_t)CODMP_CBUF_EXECTEXT_VA)(EXEC_APPEND, c);
+    logger::logf("demo_mod: fs_game '%s' -> '%s' (reads back '%s') + vid_restart, then demo %s",
+                 active.c_str(), want.c_str(), cvar_str("fs_game").c_str(), name.c_str());
+}
 
 void demo_mod_install() {
     uint8_t* site = (uint8_t*)VA_PLAYDEMO;

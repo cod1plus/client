@@ -28,6 +28,7 @@
 #include "video/display_probe.h"
 #include "ui/demo_library.h"
 #include "ui/demo_seek.h"
+#include "ui/demo_mod.h"
 #include "features/demo_index.h"
 
 #include <cstdio>
@@ -1648,7 +1649,6 @@ void modern_menu_draw(float sw, float sh) {
             int maxoff = (int)v.size() - vis; if (maxoff < 0) maxoff = 0;
             if (scroll < 0) scroll = 0;
             if (scroll > maxoff) scroll = (float)maxoff;
-            const char* fsg = cv_str("fs_game", "");
             for (int i = 0; i < vis && i + (int)scroll < (int)v.size(); ++i) {
                 int idx = i + (int)scroll;
                 float ry = ly + i * rh;
@@ -1665,13 +1665,7 @@ void modern_menu_draw(float sw, float sh) {
                 if (over && ui_input().clicked) {
                     std::string nm = v[idx].name;
                     size_t p = nm.rfind('.'); if (p != std::string::npos) nm.resize(p);
-                    bool sw = _stricmp(v[idx].dir.c_str(), "Main") != 0 &&
-                              _stricmp(v[idx].dir.c_str(), fsg) != 0;
-                    if (sw)
-                        cmdf("seta fs_game %s\nvid_restart\ndemo %s\n",
-                             v[idx].dir.c_str(), nm.c_str());
-                    else
-                        cmdf("demo %s\n", nm.c_str());
+                    demo_play_in(v[idx].dir, nm);    // into the demo's folder (mod or Main) first
                     overlay_toggle(false);
                 }
             }

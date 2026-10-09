@@ -9,12 +9,18 @@
 // in __rPAMv115b5. CL_PlayDemo_f (0x40f810, registered at 0x413bc7) is entered first here:
 // when the demo's first map is not reachable in the active mod, the demo's own fs_game
 // (its recorded systeminfo) - or else the mod folder whose pk3s hold that map - is switched
-// to with `seta fs_game <mod>; vid_restart; demo <name>`, the engine's own mod idiom, the
-// same the Demos tab used. Otherwise the engine's command runs untouched.
+// to first (demo_play_in). Otherwise the engine's command runs untouched.
+
+#include <string>
 
 namespace patches {
 
 void demo_mod_install();      // DLL start (main thread, before the first frame)
+
+// Plays demos/<name> of game folder <dir> ("Main" or a mod). When <dir> is not the active
+// mod, fs_game is force-set (the console's `seta fs_game` is refused: write protected) and
+// vid_restart restarts the file system before `demo <name>`. Main thread.
+void demo_play_in(const std::string& dir, const std::string& name);
 
 }  // namespace patches
 

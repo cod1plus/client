@@ -1,5 +1,6 @@
 // demo_seek.cpp - see demo_seek.h
 #include "ui/demo_seek.h"
+#include "ui/demo_mod.h"                  // demo_play_in
 #include "ui/gl_overlay.h"
 #include "core/logger.h"
 #include "features/settings_menu.h"   // CODMP_CVAR_FINDVAR_VA, CODMP_CBUF_EXECTEXT_VA
@@ -53,7 +54,6 @@ const char* cvar_str(const char* n, const char* fb) {
     void* c = find(n);
     return c ? *(const char**)((char*)c + CV_STRING) : fb;
 }
-void cmd(const char* s) { ((Cbuf_ExecuteText_t)CODMP_CBUF_EXECTEXT_VA)(EXEC_APPEND, s); }
 
 bool demo_playing() { return *(volatile int*)CODMP_CLC_DEMOPLAYING_VA != 0; }
 bool snap_valid()   { return *(volatile int*)CODMP_CL_SNAP_VALID_VA != 0; }
@@ -157,13 +157,7 @@ void demo_seek_play(const std::string& dir, const std::string& name_noext,
     g.target = target_server_time;
     g.first = first_server_time;
     g.t_start = GetTickCount();
-    const char* fsg = cvar_str("fs_game", "");
-    char c[512];
-    if (_stricmp(dir.c_str(), "Main") != 0 && _stricmp(dir.c_str(), fsg) != 0)
-        snprintf(c, sizeof(c), "seta fs_game %s\nvid_restart\ndemo %s\n", dir.c_str(), name_noext.c_str());
-    else
-        snprintf(c, sizeof(c), "demo %s\n", name_noext.c_str());
-    cmd(c);
+    demo_play_in(dir, name_noext);                 // switches fs_game first when needed
     g.state = target_server_time > 0 ? WAIT_PLAY : IDLE;
     logger::logf("demo_seek: play %s/%s%s", dir.c_str(), name_noext.c_str(),
                  target_server_time > 0 ? " and fast-forward" : "");
