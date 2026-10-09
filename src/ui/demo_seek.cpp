@@ -255,6 +255,7 @@ void demo_cheats_tick() {
     } else {
         set("sv_cheats", g_cheats_before);
         logger::logf("demo: playback over -> sv_cheats %s", g_cheats_before);
+        demo_pure_release();                       // every pk3 searched again (demo_mod.cpp)
     }
 }
 

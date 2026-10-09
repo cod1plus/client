@@ -59,6 +59,7 @@ set(COD1RELOADED_SOURCES
     src/core/ini_lock.cpp
     src/netcode/net_diag.cpp
     src/features/demo_index.cpp
+    src/features/pak_checksum.cpp
     src/ui/demo_library.cpp
     src/ui/demo_seek.cpp
     src/ui/demo_mod.cpp

@@ -4,12 +4,15 @@
 #include "features/demo_index.h"          // demo_index_head
 #include "features/settings_menu.h"       // CODMP_CVAR_FINDVAR_VA, CODMP_CBUF_EXECTEXT_VA
 #include "netcode/competitive.h"          // CODMP_CVAR_SET_VA (force set)
+#include "features/pak_checksum.h"
 #include "core/logger.h"
 
 #include <windows.h>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -198,7 +201,163 @@ __attribute__((force_align_arg_pointer)) void __cdecl hk_playdemo() {
     g_orig();
 }
 
+// --- the recorded server's pure list during playback -------------------------------------------
+// CL_SystemInfoChanged (0x4176f0) returns early while clc.demoplaying (0x41774b), skipping
+// FS_PureServerSetLoadedPaks too: a demo was played with EVERY pk3 of the install, also those the
+// pure server never allowed. demo0080 (FPSChallenge, rPAM): the server's player animation script
+// was zz_smgstrafe's, the playback took zzzzz_rPAM_n01_client_v9.pk3's ("LEANFIX_V5") -> players
+// animated wrongly. CL_ParseGamestate's call to it (0x417a78) now also sets, for a demo, the list
+// the recorded server sent - once every pak it referenced is here with the same checksum (else
+// nothing changes: without its map pak the demo could not load at all).
+constexpr uintptr_t VA_SYSINFO_CALL       = 0x00417a78;   // CL_ParseGamestate: call CL_SystemInfoChanged
+constexpr uintptr_t VA_SYSINFO_CHANGED    = 0x004176f0;
+constexpr uintptr_t VA_CS_OFFSET_SYSINFO  = 0x0148dcc0;   // cl.gameState.stringOffsets[CS_SYSTEMINFO]
+constexpr uintptr_t VA_CS_STRINGDATA      = 0x0148fcbc;   // cl.gameState.stringData
+constexpr uintptr_t VA_PURE_SET           = 0x0043f010;   // FS_PureServerSetLoadedPaks(sums, names)
+constexpr uintptr_t VA_NUM_SERVER_PAKS    = 0x01904e44;   // fs_numServerPaks
+// CL_SystemInfoChanged +0x18: mov esi,[0x148dcc0]; lea esi,[esi+0x148fcbc] - the two addresses above
+constexpr uintptr_t VA_SYSINFO_SIG = 0x00417708;
+const uint8_t SYSINFO_SIG[12] = { 0x8b, 0x35, 0xc0, 0xdc, 0x48, 0x01, 0x8d, 0xb6, 0xbc, 0xfc, 0x48, 0x01 };
+
+typedef void (__cdecl* Void_t)();
+typedef void (__cdecl* PureSet_t)(const char*, const char*);
+
+bool g_pure_applied = false;
+struct PakSum { DWORD size; FILETIME mtime; int32_t sum; bool ok; };
+std::map<std::string, PakSum> g_sums;                    // path -> checksum, recomputed on change
+
+std::string info_get(const char* info, const char* key) {
+    const char* p = info;
+    while (p && *p == '\\') {
+        const char* k = p + 1;
+        const char* ke = strchr(k, '\\');
+        if (!ke) break;
+        const char* v = ke + 1;
+        const char* ve = strchr(v, '\\');
+        if (!ve) ve = v + strlen(v);
+        if ((size_t)(ke - k) == strlen(key) && _strnicmp(k, key, ke - k) == 0) return std::string(v, ve);
+        p = ve;
+    }
+    return "";
+}
+
+std::vector<std::string> words(const std::string& s) {
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (i < s.size()) {
+        while (i < s.size() && s[i] == ' ') ++i;
+        size_t j = i;
+        while (j < s.size() && s[j] != ' ') ++j;
+        if (j > i) out.push_back(s.substr(i, j - i));
+        i = j;
+    }
+    return out;
+}
+
+// checksum -> "dir/file.pk3" of the pk3s the engine searches: Main and the active mod
+std::map<int32_t, std::string> local_paks() {
+    std::map<int32_t, std::string> out;
+    const std::string root = exe_dir();
+    std::vector<std::string> dirs = { "Main" };
+    const std::string mod = cvar_str("fs_game");
+    if (!mod.empty()) dirs.push_back(mod);
+    for (const std::string& dir : dirs) {
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA((root + dir + "\\*.pk3").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            const std::string path = root + dir + "\\" + fd.cFileName;
+            PakSum& c = g_sums[lower(path)];
+            if (!c.ok || c.size != fd.nFileSizeLow || CompareFileTime(&c.mtime, &fd.ftLastWriteTime) != 0) {
+                c.size = fd.nFileSizeLow;
+                c.mtime = fd.ftLastWriteTime;
+                c.ok = pak_checksum(path.c_str(), &c.sum);
+            }
+            if (c.ok) out.emplace(c.sum, dir + "/" + fd.cFileName);
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    return out;
+}
+
+void apply_demo_pure() {
+    const int off = *(volatile int*)VA_CS_OFFSET_SYSINFO;
+    if (off <= 0) return;
+    const char* si = (const char*)(VA_CS_STRINGDATA + off);
+    const std::string sums = info_get(si, "sv_paks"), names = info_get(si, "sv_pakNames");
+    const std::vector<std::string> ref_sums = words(info_get(si, "sv_referencedPaks"));
+    const std::vector<std::string> ref_names = words(info_get(si, "sv_referencedPakNames"));
+    const std::vector<std::string> sum_list = words(sums);
+    if (sum_list.empty()) {                              // not a pure server: no list, as live
+        if (*(volatile int*)VA_NUM_SERVER_PAKS != 0) {
+            ((PureSet_t)VA_PURE_SET)("", "");
+            logger::logf("demo_mod: demo of a non-pure server - pure list cleared");
+        }
+        g_pure_applied = false;
+        return;
+    }
+    const DWORD t0 = GetTickCount();
+    const std::map<int32_t, std::string> local = local_paks();
+    std::string missing;
+    int nmissing = 0;
+    for (size_t i = 0; i < ref_sums.size(); ++i) {
+        if (local.count((int32_t)strtol(ref_sums[i].c_str(), nullptr, 10))) continue;
+        ++nmissing;
+        if (missing.size() < 400) missing += " " + (i < ref_names.size() ? ref_names[i] : ref_sums[i]);
+    }
+    if (nmissing) {
+        logger::logf("demo_mod: recorded server's pure list NOT applied - %d of the %d paks it used are missing or "
+                     "different here:%s (every pk3 of the install is searched, animations may not match)",
+                     nmissing, (int)ref_sums.size(), missing.c_str());
+        return;
+    }
+    std::map<int32_t, bool> allowed;
+    for (const std::string& s : sum_list) allowed[(int32_t)strtol(s.c_str(), nullptr, 10)] = true;
+    std::string left_out;
+    int nleft = 0;
+    for (const auto& kv : local) {
+        if (allowed.count(kv.first)) continue;
+        ++nleft;
+        if (left_out.size() < 600) left_out += " " + kv.second;
+    }
+    ((PureSet_t)VA_PURE_SET)(sums.c_str(), names.c_str());
+    g_pure_applied = true;
+    logger::logf("demo_mod: recorded server's pure list applied (%d paks, the %d it used all here, %lu ms) - "
+                 "%d local pk3(s) left out for this demo, as when connected:%s",
+                 (int)sum_list.size(), (int)ref_sums.size(), (unsigned long)(GetTickCount() - t0), nleft, left_out.c_str());
+}
+
+// replaces CL_ParseGamestate's call to CL_SystemInfoChanged (no argument, no register in or out)
+__attribute__((force_align_arg_pointer)) void __cdecl hk_sysinfo() {
+    ((Void_t)VA_SYSINFO_CHANGED)();
+    if (*(volatile int*)CODMP_CLC_DEMOPLAYING_VA != 0) apply_demo_pure();
+}
+
+void install_demo_pure() {
+    uint8_t* call = (uint8_t*)VA_SYSINFO_CALL;
+    const int32_t rel = (int32_t)(VA_SYSINFO_CHANGED - (VA_SYSINFO_CALL + 5));
+    if (call[0] != 0xE8 || memcmp(call + 1, &rel, 4) != 0 ||
+        memcmp((const void*)VA_SYSINFO_SIG, SYSINFO_SIG, sizeof(SYSINFO_SIG)) != 0) {
+        logger::logf("demo_mod: CL_ParseGamestate / CL_SystemInfoChanged not 1.5's - demo pure list not installed");
+        return;
+    }
+    const int32_t nrel = (int32_t)((uintptr_t)&hk_sysinfo - (VA_SYSINFO_CALL + 5));
+    DWORD old = 0;
+    if (!VirtualProtect(call, 5, PAGE_EXECUTE_READWRITE, &old)) return;
+    memcpy(call + 1, &nrel, 4);
+    VirtualProtect(call, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), call, 5);
+    logger::logf("demo_mod: demos are played with the recorded server's pure pk3 list (when its paks are all here)");
+}
+
 }  // namespace
+
+void demo_pure_release() {
+    if (!g_pure_applied) return;
+    g_pure_applied = false;
+    ((PureSet_t)VA_PURE_SET)("", "");
+    logger::logf("demo_mod: playback over - the recorded server's pure list removed");
+}
 
 void demo_play_in(const std::string& dir, const std::string& name) {
     const std::string want = _stricmp(dir.c_str(), "Main") == 0 ? std::string() : dir;
@@ -242,6 +401,7 @@ void demo_mod_install() {
     VirtualProtect(site, 6, old, &old);
     FlushInstructionCache(GetCurrentProcess(), site, 6);
     logger::logf("demo_mod: `demo` plays in the demo's mod (fs_game switch when its map is elsewhere)");
+    install_demo_pure();
 }
 
 }  // namespace patches

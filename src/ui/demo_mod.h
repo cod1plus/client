@@ -10,6 +10,12 @@
 // when the demo's first map is not reachable in the active mod, the demo's own fs_game
 // (its recorded systeminfo) - or else the mod folder whose pk3s hold that map - is switched
 // to first (demo_play_in). Otherwise the engine's command runs untouched.
+//
+// The engine also skips the pure pk3 list for a demo: every pk3 of the install was searched,
+// also those the recorded server never allowed (rPAM's own "LEANFIX" playeranim.script over the
+// server's -> players animated wrongly). The recorded server's sv_paks is now applied for the
+// demo, as when connected, when every pak it used is here with the same checksum; removed when
+// playback ends (demo_pure_release).
 
 #include <string>
 
@@ -21,6 +27,10 @@ void demo_mod_install();      // DLL start (main thread, before the first frame)
 // mod, fs_game is force-set (the console's `seta fs_game` is refused: write protected) and
 // vid_restart restarts the file system before `demo <name>`. Main thread.
 void demo_play_in(const std::string& dir, const std::string& name);
+
+// Playback over: the recorded server's pure list (if one was applied) is removed, so the menu
+// and the next game search every pk3 again. Main thread.
+void demo_pure_release();
 
 }  // namespace patches
 
