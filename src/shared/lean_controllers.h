@@ -52,8 +52,11 @@ extern "C" {
  * two logs means one repo was copied and the other was not.
  * v2: the movement-transition blend (lc_ctx_t.blend, see lean_controllers.c "BLEND").
  * v3: crouch + lean right bends like crouch + lean left (x1.25, not the engine's x1.5).
- * v4: crouch + lean right bends like STAND + lean right (x0.8) - enzo, in game. */
-#define LC_VERSION 4
+ * v4: crouch + lean right bends like STAND + lean right (x0.8) - enzo, in game.
+ * v5: the lateral body shift is per SIDE (and stance): standing 3.0 left / 7.5 right, crouch
+ *     provisional = standing. The head bone lands on the eye on both sides, which is what
+ *     CoD2's own table achieves for CoD2's symmetric roll (lean_controllers.c, the table). */
+#define LC_VERSION 5
 
 #define LC_SIDE_CLIENT 0
 #define LC_SIDE_SERVER 1
@@ -94,7 +97,7 @@ typedef struct lc_ctx_s {
      *              patched without corrupting four unrelated computations)
      * server: 7.5 (game .rodata 0x73d5c, retuned in place by COD1RELOADED_LEAN_CONST;
      *              GCC did not pool - that literal has exactly one reader)
-     * lc_apply() tops each side up to the same LC_LATERAL_TOTAL, so the invariant that
+     * lc_apply() tops each side up to the same lc_lateral_total(), so the invariant that
      * used to be a comment in two files is now one subtraction in one file. */
     float        engine_lateral;
 
@@ -139,6 +142,11 @@ typedef struct lc_ctx_s {
  * Returns non-zero when it emitted a sample, so a host with a further stage of its own
  * can dump that stage in the same sample instead of on its own schedule. */
 int lc_apply(float* out, const lc_ctx_t* ctx);
+
+/* The shared lateral target (units at fLeanFrac = 1) for this stance and side - the sign of
+ * lean_frac picks the side (< 0 = left). The table is in lean_controllers.c; tests and
+ * diagnostics read it from here instead of carrying a copy. */
+float lc_lateral_total(int stance, float lean_frac);
 
 /* Emit one labelled sample of the buffer. Exposed separately so the client can also dump
  * AFTER its controller smoothing (a client-only stage the server has no counterpart for -
