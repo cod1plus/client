@@ -81,6 +81,9 @@ LONGLONG g_next = 0;                     // next render instant (QPC), 0 = not s
 LONGLONG g_frame_qpc = 0;                // the last command frame: when ...
 int      g_frame_st = 0;                 // ... and its cl.serverTime
 bool     g_between = false;              // the view hook acts only on frames drawn between
+LONGLONG g_draw_qpc = 0;                 // the instant the current draw shows (QPC)
+int      g_last_st = 0;                  // cl.serverTime of the last draw: never shown backwards
+long     g_st_held = 0;                  // draws whose engine time was behind the last one shown
 LONGLONG g_cost = 0;                     // moving average of one draw (QPC ticks)
 long     g_st_in_frame = 0, g_st_between = 0, g_st_skipped = 0;
 int      g_axis_checks = 0;              // first in-frame draws: our AnglesToAxis vs the engine's
@@ -113,23 +116,29 @@ void draw(LONGLONG now, bool between) {
     const LONGLONG slot = g_next ? g_next : now;
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
-    int saved = 0;
+    // The cgame's clock is whole milliseconds and the engine nudges cl.serverTime by a
+    // millisecond now and then (CL_SetCGameTime's drift correction): a frame drawn between
+    // two commands at base + 3 can be followed by a command frame at base + 2. Shown as is,
+    // everything driven by that clock (the other players, animated / scrolling textures)
+    // steps back a millisecond, several times a second - a visible shiver. The time a draw
+    // shows therefore never goes below the last one shown.
+    const int saved = cl_server_time();
+    int show = saved;
     if (between) {
-        // the instant to show, on the cgame's whole-millisecond clock, never reaching the next
-        // command frame's time (cl.serverTime must not run backwards when it comes)
         LONGLONG add = (now - g_frame_qpc) * 1000 / g_freq.QuadPart;
         const LONG msec = g_msec;
         if (add > msec - 1) add = msec - 1;
         if (add < 0) add = 0;
-        saved = cl_server_time();
-        cl_server_time() = g_frame_st + (int)add;
-        g_between = true;
+        show = g_frame_st + (int)add;
     }
+    if (g_last_st && show < g_last_st && g_last_st - show < 50) { show = g_last_st; ++g_st_held; }
+    g_last_st = show;
+    cl_server_time() = show;
+    g_between = between;
+    g_draw_qpc = now;
     ((VoidFn_t)VA_SCR_UPDATESCREEN)();
-    if (between) {
-        cl_server_time() = saved;
-        g_between = false;
-    }
+    cl_server_time() = saved;
+    g_between = false;
     QueryPerformanceCounter(&t1);
     const LONGLONG c = t1.QuadPart - t0.QuadPart;
     g_cost = g_cost ? (g_cost * 7 + c) / 8 : c;
@@ -141,6 +150,7 @@ void draw(LONGLONG now, bool between) {
 extern "C" void __cdecl render_gate() {
     if (g_hz <= 0 || !in_game()) {
         g_next = 0;
+        g_last_st = 0;
         ((VoidFn_t)VA_SCR_UPDATESCREEN)();
         return;
     }
@@ -162,12 +172,18 @@ void adjust_view() {
     if (*(const int*)(cg + RVA_CG_SPECIALVIEW)) return;
     const char* ps = cg + RVA_PS;
     const int dt = *(const int*)(cg + RVA_CG_TIME) - *(const int*)(ps + PS_CMDTIME);
-    if (dt <= 0 || dt > MAX_EXTRAP_MS) return;
+    if (dt < 0 || dt > MAX_EXTRAP_MS) return;            // following / spectating: not ours
 
-    // where the predicted motion has carried the eye since the last command
+    // where the predicted motion has carried the eye since the last command - over the REAL
+    // time since that command frame (QPC), not the cgame's whole-millisecond clock: at 320 Hz
+    // the latter steps 3, 3, 3, 3, 3, 3, 3 then 4 ms and the eye would advance unevenly
+    // (0.2 u at 190 u/s, enough to make near walls shiver while moving)
+    double secs = (double)(g_draw_qpc - g_frame_qpc) / (double)g_freq.QuadPart;
+    if (secs < 0) secs = 0;
+    if (secs > MAX_EXTRAP_MS * 0.001) secs = MAX_EXTRAP_MS * 0.001;
     float* org = (float*)(cg + RVA_REF_ORG);
     const float* vel = (const float*)(ps + PS_VELOCITY);
-    const float s = (float)dt * 0.001f;
+    const float s = (float)secs;
     org[0] += vel[0] * s; org[1] += vel[1] * s; org[2] += vel[2] * s;
 
     // the mouse movement the next command will carry, turned exactly like CL_MouseMove will
@@ -284,10 +300,10 @@ void render_clock_tick() {
     if (hz && now - last_log >= 10000) {
         if (last_log && (g_st_in_frame || g_st_between))
             logger::logf("render_clock: last 10 s - %ld drawn with a command, %ld between commands, "
-                         "%ld command frames without a draw; draw %.2f ms",
-                         g_st_in_frame, g_st_between, g_st_skipped,
+                         "%ld command frames without a draw, %ld engine times held; draw %.2f ms",
+                         g_st_in_frame, g_st_between, g_st_skipped, g_st_held,
                          g_freq.QuadPart ? (double)g_cost * 1000.0 / (double)g_freq.QuadPart : 0.0);
-        g_st_in_frame = g_st_between = g_st_skipped = 0;
+        g_st_in_frame = g_st_between = g_st_skipped = g_st_held = 0;
         last_log = now;
     }
 }
