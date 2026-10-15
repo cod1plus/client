@@ -60,6 +60,7 @@
 #include "performance/frame_limiter.h"
 #include "performance/pacing_stats.h"
 #include "performance/render_clock.h"
+#include "performance/process_priority.h"
 #include "core/logger.h"
 #include "netcode/version_patch.h" // CODMP_PREFERRED_BASE
 
@@ -262,6 +263,7 @@ void frame_limiter_reset() {
 int frame_wait(const FrameLimiterEngine& e) {
     if (g_qpc_freq.QuadPart == 0) {
         QueryPerformanceFrequency(&g_qpc_freq);
+        process_priority_mmcss_join();   // the game thread, out of DllMain: the first wait
     }
 
     LARGE_INTEGER now;

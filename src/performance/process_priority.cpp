@@ -1,12 +1,15 @@
 #include "performance/process_priority.h"
 #include "core/logger.h"
 
+#include <cstdlib>
+
 namespace patches {
 
 ProcessPriorityConfig g_process_priority_config = {
     /* process_priority         */ ProcessPriorityLevel::High,
     /* main_thread_priority     */ ThreadPriorityLevel::Highest,
     /* disable_power_throttling */ true,
+    /* mmcss_games              */ true,
 };
 
 namespace {
@@ -100,6 +103,36 @@ void disable_power_throttling_impl() {
 }
 
 }  // namespace
+
+void process_priority_mmcss_join() {
+    static bool s_done = false;
+    if (s_done) return;
+    s_done = true;
+    if (!g_process_priority_config.mmcss_games) return;
+    const char* e = getenv("COD1RELOADED_MMCSS");
+    if (e && e[0] == '0' && e[1] == 0) {
+        logger::logf("process_priority: MMCSS off (COD1RELOADED_MMCSS=0)");
+        return;
+    }
+    typedef HANDLE (WINAPI *AvSetMmThreadCharacteristicsW_t)(LPCWSTR, LPDWORD);
+    HMODULE avrt = LoadLibraryA("avrt.dll");                 // Vista+; absent = skip
+    AvSetMmThreadCharacteristicsW_t join = avrt
+        ? (AvSetMmThreadCharacteristicsW_t)GetProcAddress(avrt, "AvSetMmThreadCharacteristicsW") : nullptr;
+    if (!join) {
+        logger::logf("process_priority: MMCSS unavailable (avrt.dll)");
+        return;
+    }
+    DWORD task = 0;
+    const HANDLE h = join(L"Games", &task);
+    if (h) {
+        logger::logf("process_priority: game thread in the MMCSS Games task (index %lu, now priority %d)",
+                     task, GetThreadPriority(GetCurrentThread()));
+    } else {
+        logger::logf("process_priority: MMCSS Games refused (err=%lu) - thread priority unchanged",
+                     GetLastError());
+    }
+    // never reverted: the registration lasts as long as the thread, i.e. the game
+}
 
 void process_priority_apply() {
     const DWORD pclass = priority_class_from(g_process_priority_config.process_priority);
