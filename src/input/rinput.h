@@ -41,6 +41,10 @@ void rinput_shutdown();
 // raw counts. m_rinput 0 (no raw thread): what the engine's own per-frame cursor read
 // would have returned, taken in the GetCursorPos hook.
 void rinput_ui_capture(bool on);
+// Mouse movement the engine has not read yet, WITHOUT consuming it (the render clock shows it
+// on frames drawn between two commands). m_rinput 1: the unread raw counts; m_rinput 0: the
+// cursor's offset from the engine's centre. 0/0 while the menu overlay holds the mouse.
+void rinput_peek_delta(long* dx, long* dy);
 void rinput_ui_take_delta(long* dx, long* dy);
 // True while the tap above is the menu's cursor source: raw input is on, or the engine
 // is reading and re-centring the cursor (fullscreen, or windowed in game). False when

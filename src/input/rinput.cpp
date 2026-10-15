@@ -101,6 +101,12 @@ void take_delta(long* x, long* y) {
     LeaveCriticalSection(&g_lock);
 }
 
+void peek_delta(long* x, long* y) {
+    EnterCriticalSection(&g_lock);
+    *x = g_dx; *y = g_dy;
+    LeaveCriticalSection(&g_lock);
+}
+
 void drop_delta() {
     EnterCriticalSection(&g_lock);
     g_dx = 0; g_dy = 0;
@@ -446,6 +452,23 @@ void rinput_ui_take_delta(long* dx, long* dy) {
     *dx = g_ui_dx; *dy = g_ui_dy;
     g_ui_dx = 0; g_ui_dy = 0;
     LeaveCriticalSection(&g_lock);
+}
+
+void rinput_peek_delta(long* dx, long* dy) {
+    *dx = 0; *dy = 0;
+    if (InterlockedCompareExchange(&g_ui_capture, 0, 0) == 1) return;   // the menu has the mouse
+    if (InterlockedCompareExchange(&g_active, 0, 0) == 1) {
+        if (g_lock_ready) peek_delta(dx, dy);
+        return;
+    }
+    // m_rinput 0: the engine reads GetCursorPos - centre and re-centres once a frame, so
+    // the cursor's current offset IS the movement it has not read yet
+    if (*g_center_x <= 0 || *g_center_y <= 0) return;
+    POINT real;
+    const BOOL ok = g_real_GetCursorPos ? g_real_GetCursorPos(&real) : GetCursorPos(&real);
+    if (!ok) return;
+    *dx = real.x - *g_center_x;
+    *dy = real.y - *g_center_y;
 }
 
 bool rinput_ui_cursor_pinned() {

@@ -9,6 +9,12 @@
 //   (COD1RELOADED_LIMITER_LEGACY=1 runs the 'new' wait on the old Sleep(1) path, for the jitter A/B)
 #include "performance/frame_limiter.h"
 
+// the render clock is off in this harness: no screen frame between two command frames
+namespace patches {
+bool render_clock_slot_before(LONGLONG, LONGLONG, LONGLONG*) { return false; }
+void render_clock_draw_between(LONGLONG) {}
+}
+
 #include <windows.h>
 #include <timeapi.h>
 #include <immintrin.h>

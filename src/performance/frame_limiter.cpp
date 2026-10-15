@@ -59,6 +59,7 @@
 
 #include "performance/frame_limiter.h"
 #include "performance/pacing_stats.h"
+#include "performance/render_clock.h"
 #include "core/logger.h"
 #include "netcode/version_patch.h" // CODMP_PREFERRED_BASE
 
@@ -311,6 +312,14 @@ int frame_wait(const FrameLimiterEngine& e) {
     }
 
     const LONGLONG deadline = g_next_deadline;
+    // render clock (cod1x_render_hz): a screen frame due before this command frame is drawn
+    // at its own instant, in the middle of the wait
+    LONGLONG slot;
+    while (render_clock_slot_before(deadline, now.QuadPart, &slot)) {
+        wait_until(slot, now);
+        render_clock_draw_between(now.QuadPart);
+        QueryPerformanceCounter(&now);
+    }
     wait_until(deadline, now);
 
     // ANCHOR ON THE DEADLINE, not on the wake time: waking late is normal (sleep
