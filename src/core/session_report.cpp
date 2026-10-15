@@ -3,6 +3,7 @@
 #include "core/logger.h"
 #include "performance/frame_limiter.h"
 #include "performance/gpu_sync.h"
+#include "performance/pacing_stats.h"
 #include "netcode/net_diag.h"
 #include "video/mode_guard.h"
 #include "features/settings_menu.h"   // CODMP_CVAR_FINDVAR_VA
@@ -73,6 +74,15 @@ void report(const char* tag, DWORD now) {
                  tag, fps, fs.frames, fs.late, fs.long_frames, fs.max_frame_ms, gpu,
                  w, h, hz, exclusive ? "exclusif" : "fenetre",
                  cvar_int("com_maxfps", 0), cvar_int("m_rinput", 0) ? "on" : "off", net);
+
+    // the REGULARITY of the same window (pacing_stats.h): what a VRR screen shows
+    PacingStats pf, pp;
+    pacing_stats(&pf, &pp, true);
+    if (pf.n || pp.n)
+        logger::logf("rythme %s: images %.3f ms +-%.3f (p99 %.2f, max %.1f, +25%% %ld) | "
+                     "affichage %.3f ms +-%.3f (p99 %.2f, max %.1f, +25%% %ld)",
+                     tag, pf.mean_ms, pf.sd_ms, pf.p99_ms, pf.max_ms, pf.over,
+                     pp.mean_ms, pp.sd_ms, pp.p99_ms, pp.max_ms, pp.over);
 }
 
 }  // namespace
@@ -80,7 +90,7 @@ void report(const char* tag, DWORD now) {
 void session_report_tick() {
     if (g_final_done || !engine_ready()) return;
     const DWORD now = GetTickCount();
-    if (!g_since) { g_since = now ? now : 1; frame_limiter_stats(nullptr, true); return; }
+    if (!g_since) { g_since = now ? now : 1; frame_limiter_stats(nullptr, true); pacing_stats(nullptr, nullptr, true); return; }
     if (now - g_since < 60000) return;
     report("60 s", now);
     g_since = now;

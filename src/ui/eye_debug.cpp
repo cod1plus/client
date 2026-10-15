@@ -147,7 +147,7 @@ void eye_debug_frame() {
     const DWORD now = GetTickCount();
     if (now - g_last_poll < 250) return;
     g_last_poll = now;
-    aim_log(now);
+    if (logger::dev_logs()) aim_log(now);   // DEV: off in release (COD1RELOADED_DEV_LOGS=1)
     if (!g_registered) {
         ((Cvar_Get_t)CODMP_CVAR_GET_VA)("player_debugEyePosition", "0", 0);
         g_registered = true;

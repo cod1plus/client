@@ -2,6 +2,7 @@
 #include "performance/gpu_sync.h"
 #include "core/iat.h"
 #include "core/logger.h"
+#include "performance/pacing_stats.h"
 
 namespace patches {
 
@@ -45,12 +46,17 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
     const BOOL r = g_orig_swap ? g_orig_swap(dc) : FALSE;
-    if (g_gpu_sync_config.mode == GPU_SYNC_OFF || g_auto_off) return r;
-    if (!g_resolve_tried) resolve_glfinish();
-    if (!g_glFinish) return r;
+    const bool wait = g_gpu_sync_config.mode != GPU_SYNC_OFF && !g_auto_off;
+    if (wait && !g_resolve_tried) resolve_glfinish();
+    if (!wait || !g_glFinish) {
+        QueryPerformanceCounter(&t1);
+        pacing_note_present(t1.QuadPart);          // without the wait: when the swap was queued
+        return r;
+    }
 
     g_glFinish();
     QueryPerformanceCounter(&t1);
+    pacing_note_present(t1.QuadPart);              // the frame is on its way to the screen
 
     const LONGLONG d = t1.QuadPart - t0.QuadPart;
     g_sum_ticks += d;

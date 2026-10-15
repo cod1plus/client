@@ -5,7 +5,8 @@
 // shipped from 1.6.3 to 1.6.8 is reproduced here as `old_wait` for the before / after.
 //
 //   g++ -std=c++17 -O2 -I src tools/test_frame_limiter.cpp src/performance/frame_limiter.cpp
-//       src/core/logger.cpp -lwinmm -o build/test_frame_limiter && build/test_frame_limiter
+//       src/performance/pacing_stats.cpp src/core/logger.cpp -lwinmm -o build/test_frame_limiter && build/test_frame_limiter
+//   (COD1RELOADED_LIMITER_LEGACY=1 runs the 'new' wait on the old Sleep(1) path, for the jitter A/B)
 #include "performance/frame_limiter.h"
 
 #include <windows.h>
@@ -67,7 +68,7 @@ static void busy_ms(double ms) { const double end = qpc_ms() + ms; while (qpc_ms
 
 struct Stats {
     int frames = 0, reloops = 0, doubled = 0, short_frames = 0;
-    double period_sum = 0, period_max = 0;
+    double period_sum = 0, period_max = 0, period_sum2 = 0;
     long epoch_err_max = 0;            // |returned - Sys_Milliseconds| at the return
 };
 
@@ -98,6 +99,7 @@ static Stats run(int (*wait)(), int maxfps, int frames, double stall_ms, int sta
             const double period = end - prev_end;
             ++s.frames;
             s.period_sum += period;
+            s.period_sum2 += period * period;
             if (period > s.period_max) s.period_max = period;
             if (period > 1.6 * nominal) ++s.doubled;
             if (period < 0.5 * nominal) ++s.short_frames;
@@ -146,15 +148,16 @@ int main() {
         { 333, 3.3, 20, "333 fps, a 3.3 ms frame every 20 (odd step)" },
     };
     const int N = 1500;
-    printf("%-44s %-5s %9s %9s %8s %8s %8s\n", "case", "wait", "avg ms", "max ms", "reloops", "doubled", "epoch");
+    printf("%-44s %-5s %9s %8s %9s %8s %8s %8s\n", "case", "wait", "avg ms", "sd ms", "max ms", "reloops", "doubled", "epoch");
     for (const Case& c : cases) {
         old_reset();
         const Stats o = run(old_wait, c.maxfps, N, c.stall, c.every);
         frame_limiter_reset();
         const Stats n = run(new_wait, c.maxfps, N, c.stall, c.every);
         const double nominal = 1000.0 / c.maxfps;
-        printf("%-44s %-5s %9.4f %9.3f %8d %8d %8ld\n", c.name, "old", o.period_sum / o.frames, o.period_max, o.reloops, o.doubled, o.epoch_err_max);
-        printf("%-44s %-5s %9.4f %9.3f %8d %8d %8ld\n", "", "new", n.period_sum / n.frames, n.period_max, n.reloops, n.doubled, n.epoch_err_max);
+        auto sd = [](const Stats& x) { const double m = x.period_sum / x.frames, v = x.period_sum2 / x.frames - m * m; return v > 0 ? sqrt(v) : 0.0; };
+        printf("%-44s %-5s %9.4f %8.4f %9.3f %8d %8d %8ld\n", c.name, "old", o.period_sum / o.frames, sd(o), o.period_max, o.reloops, o.doubled, o.epoch_err_max);
+        printf("%-44s %-5s %9.4f %8.4f %9.3f %8d %8d %8ld\n", "", "new", n.period_sum / n.frames, sd(n), n.period_max, n.reloops, n.doubled, n.epoch_err_max);
         char what[160];
         // Sys_Milliseconds moves in 0.9766 ms steps (the clock interrupt), the wait's clock
         // is continuous: they can disagree by a tick, never more

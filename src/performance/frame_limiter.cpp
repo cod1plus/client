@@ -58,11 +58,13 @@
 // it after the loop) and finishes the millisecond instead, re-anchoring the cadence.
 
 #include "performance/frame_limiter.h"
+#include "performance/pacing_stats.h"
 #include "core/logger.h"
 #include "netcode/version_patch.h" // CODMP_PREFERRED_BASE
 
 #include <climits>
 #include <cstdio>
+#include <cstdlib>
 #include <immintrin.h>   // _mm_pause - not pulled in transitively by older mingw <windows.h>
 #include <timeapi.h>     // timeGetTime (winmm)
 
@@ -140,6 +142,7 @@ void end_of_wait(const FrameLimiterEngine& e, LONGLONG now, bool reloop, LONGLON
             if (step_ticks > 0 && period > step_ticks + step_ticks / 2) ++g_st_long;
         }
         g_prev_end = now;
+        pacing_note_frame(now);
     }
     if (g_frame_limiter_config.late_input && e.late_input) e.late_input();
 }
@@ -169,6 +172,63 @@ inline void spin_once(LONGLONG remaining_ticks) {
     // there is real slack and spin the tail.
     if (remaining_us > 2500) Sleep(1);
     else                     _mm_pause();
+}
+
+// HIGH-RESOLUTION WAIT (2026-10-16). Sleep(1) wakes on the next clock interrupt at best and
+// often one or two later, which is why the coarse sleep above stops 2.5 ms before the
+// deadline and spins the rest: up to 60 % of every 4 ms frame burnt in a spin, and a
+// preempted spin is a late frame. A waitable timer created with
+// CREATE_WAITABLE_TIMER_HIGH_RESOLUTION (Windows 10 1803+) wakes within a fraction of a
+// millisecond of its due time, so the coarse wait can go to HR_SPIN_US before the deadline
+// and only that tail is spun - the deadline itself is still met by the spin, to the QPC
+// tick. Resolved at run time (older Windows / older headers): without it, the Sleep(1) path
+// above, unchanged. COD1RELOADED_LIMITER_LEGACY=1 forces the old path for an A/B.
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+constexpr LONGLONG HR_SPIN_US = 1000;
+typedef HANDLE (WINAPI* CreateWaitableTimerExW_t)(LPSECURITY_ATTRIBUTES, LPCWSTR, DWORD, DWORD);
+HANDLE g_hr_timer = NULL;
+bool   g_hr_tried = false;
+
+void hr_timer_init() {
+    if (g_hr_tried) return;
+    g_hr_tried = true;
+    const char* e = getenv("COD1RELOADED_LIMITER_LEGACY");
+    if (e && *e && *e != '0') {
+        logger::logf("frame_limiter: legacy Sleep(1) wait (COD1RELOADED_LIMITER_LEGACY)");
+        return;
+    }
+    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    CreateWaitableTimerExW_t create = k32 ? (CreateWaitableTimerExW_t)GetProcAddress(k32, "CreateWaitableTimerExW") : nullptr;
+    if (create) g_hr_timer = create(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    logger::logf(g_hr_timer ? "frame_limiter: high-resolution waitable timer (spin the last %lld us only)"
+                            : "frame_limiter: no high-resolution timer on this Windows - Sleep(1) wait%s",
+                 g_hr_timer ? HR_SPIN_US : 0LL);
+}
+
+// wait until the QPC deadline; `now` is updated
+void wait_until(LONGLONG deadline, LARGE_INTEGER& now) {
+    hr_timer_init();
+    while (now.QuadPart < deadline) {
+        const LONGLONG remaining = deadline - now.QuadPart;
+        if (g_hr_timer) {
+            const LONGLONG remaining_us = remaining * 1000000LL / g_qpc_freq.QuadPart;
+            if (remaining_us > HR_SPIN_US + 100) {
+                LARGE_INTEGER due;
+                due.QuadPart = -(remaining_us - HR_SPIN_US) * 10;     // relative, 100 ns units
+                if (SetWaitableTimer(g_hr_timer, &due, 0, NULL, NULL, FALSE))
+                    WaitForSingleObject(g_hr_timer, INFINITE);
+                else
+                    spin_once(remaining);
+            } else {
+                _mm_pause();
+            }
+        } else {
+            spin_once(remaining);
+        }
+        QueryPerformanceCounter(&now);
+    }
 }
 
 }  // namespace
@@ -251,10 +311,7 @@ int frame_wait(const FrameLimiterEngine& e) {
     }
 
     const LONGLONG deadline = g_next_deadline;
-    while (now.QuadPart < deadline) {
-        spin_once(deadline - now.QuadPart);
-        QueryPerformanceCounter(&now);
-    }
+    wait_until(deadline, now);
 
     // ANCHOR ON THE DEADLINE, not on the wake time: waking late is normal (sleep
     // granularity, scheduling) and re-anchoring on it made every frame start its

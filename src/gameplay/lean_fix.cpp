@@ -196,7 +196,7 @@ extern "C" void apply_lean_adjust(float* controllers,
         const DWORD now = GetTickCount();
         if (cn >= 0 && cn < 64)
             hitbox_view_note_entity(cn, (const float*)((const char*)entity + 0x18), *(const float*)((const char*)entity + 0x40));
-        if (cn >= 0 && cn < 64 && now - s_pos_log[cn] > 1000) {
+        if (logger::dev_logs() && cn >= 0 && cn < 64 && now - s_pos_log[cn] > 1000) {
             const float* tb = (const float*)((const char*)entity + 0x18);
             const float* ap = (const float*)((const char*)entity + 0x3c);
             s_pos_log[cn] = now;
@@ -341,7 +341,7 @@ extern "C" void apply_ctrl_smooth(float* controllers,
         static DWORD s_pos_log[64] = {0};
         const int cn = *(const int*)((const char*)entity + ENT_CLIENTNUM_OFFSET);
         const DWORD now = GetTickCount();
-        if (cn >= 0 && cn < 64 && now - s_pos_log[cn] > 1000) {
+        if (logger::dev_logs() && cn >= 0 && cn < 64 && now - s_pos_log[cn] > 1000) {
             const float* tb = (const float*)((const char*)entity + 0x18);
             const float* ap = (const float*)((const char*)entity + 0x3c);
             s_pos_log[cn] = now;

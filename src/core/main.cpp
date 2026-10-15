@@ -248,6 +248,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             break;
         case DLL_PROCESS_DETACH:
             patches::session_report_final("fin");
+            logger::flush();                 // ExitProcess already killed the writer thread
             patches::demo_seek_restore_now();
             patches::rinput_shutdown();      // unregister the raw input device + join its thread
             patches::gamma_fix_shutdown();   // never leave the desktop gamma modified
