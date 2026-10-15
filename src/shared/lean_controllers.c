@@ -50,12 +50,27 @@
  * Vanilla's flat 2.5 was the mirror problem (right -3.6 u: see without being hittable).
  * Lever-arm model validated against the server's own bone dumps (18.1 u predicted, 18.1
  * measured), head bone minus eye at full standing lean:  K 3.0 left -> +0.2,  K 7.5 right
- * -> +0.2.  Crouch values are PROVISIONAL (= standing): the pre-v4 dumps had crouch-left at
- * +3.3 (K 7.5) like standing and crouch-right at -2.2, and v4's x0.8 pulls the right in
- * further - measure in game before tuning them. */
-#define LC_LATERAL_STAND_LEFT    3.0f
-#define LC_LATERAL_STAND_RIGHT   7.5f
-#define LC_LATERAL_CROUCH_LEFT   3.0f
+ * -> +0.2.
+ *
+ * v7 (2026-10-15): MEASURED, not modelled. cod1plushookserver's lean_probe drives a test client
+ * through every stance / side / movement and fires the server's own bullet trace through it (one
+ * ray per unit, from in front): what can be hit beyond the eye while the leaner cannot see yet is
+ * "killed behind the wall". Held full lean, u^2 (stand L / stand R / crouch L / crouch R):
+ *   vanilla CoD1 (2.5, shipped boxes)       164 / 139 / 181 / 197
+ *   + hitbox_fix                            203 / 170 / 205 / 244
+ *   + flat 7.5 (1.6.13)                     466 / 387 / 373 / 301   (the shift alone: x2.5)
+ * The shift moves the body RIGIDLY (vanilla + 0.75 * 5 lands on the 7.5 run within 4 %), so any K
+ * can be read off one run: head bone - eye = measured + 0.75 * (K - 7.5). What we did beyond cod2x
+ * was the RIGHT side: 7.5 where CoD2 has 2.5 (CoD1 bends x0.8 there, CoD2 x1.25 - vanilla's right
+ * head sat 3.4 u behind the eye, hence the raise, but 7.5 overshoots CoD2 by ~2 u). The table puts
+ * the head where cod2x puts it (+0.2 left / -1.6 right):
+ *   stand  L 4.5 -> head +0.2, 300 u^2      stand  R 5.0 -> head -1.5, 261 u^2
+ *   crouch L 3.5 -> head +0.1, 243 u^2      crouch R 7.5 -> head -2.2, 301 u^2 (already within
+ *   0.6 u of the target behind the eye; more would only add exposure)
+ * against 466 / 387 / 373 / 301 in 1.6.13. */
+#define LC_LATERAL_STAND_LEFT    4.5f
+#define LC_LATERAL_STAND_RIGHT   5.0f
+#define LC_LATERAL_CROUCH_LEFT   3.5f
 #define LC_LATERAL_CROUCH_RIGHT  7.5f
 
 float lc_lateral_total(int stance, float lean_frac)

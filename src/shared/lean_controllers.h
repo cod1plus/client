@@ -55,8 +55,12 @@ extern "C" {
  * v4: crouch + lean right bends like STAND + lean right (x0.8) - enzo, in game.
  * v5: the lateral body shift is per SIDE (and stance): standing 3.0 left / 7.5 right, crouch
  *     provisional = standing. The head bone lands on the eye on both sides, which is what
- *     CoD2's own table achieves for CoD2's symmetric roll (lean_controllers.c, the table). */
-#define LC_VERSION 5
+ *     CoD2's own table achieves for CoD2's symmetric roll (lean_controllers.c, the table).
+ * v7: the table is calibrated on the SERVER'S MEASURED hit volume (lean_probe, 2026-10-15) so
+ *     that the head sits where cod2x puts it against the eye (+0.2 left / -1.6 right):
+ *     standing 4.5 left / 5.0 right, crouch 3.5 left / 7.5 right. (v6, the cod2x moving tilt,
+ *     is dropped: the shift is in the model's view-aligned frame and is not lost while moving.) */
+#define LC_VERSION 7
 
 #define LC_SIDE_CLIENT 0
 #define LC_SIDE_SERVER 1
