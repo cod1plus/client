@@ -60,7 +60,7 @@ extern "C" {
  *     that the head sits where cod2x puts it against the eye (+0.2 left / -1.6 right):
  *     standing 4.5 left / 5.0 right, crouch 3.5 left / 7.5 right. (v6, the cod2x moving tilt,
  *     is dropped: the shift is in the model's view-aligned frame and is not lost while moving.) */
-#define LC_VERSION 8
+#define LC_VERSION 9
 
 #define LC_SIDE_CLIENT 0
 #define LC_SIDE_SERVER 1

@@ -71,9 +71,14 @@
  *
  * v8 (2026-10-21, enzo): the LEFT side goes back to what the release ships (1.6.13's flat
  * 7.5, stand and crouch) - the left lean is the one players know and it stays as is for
- * this version; the right side keeps v7's measured values (stand 5.0 / crouch 7.5). */
+ * this version; the right side keeps v7's measured values (stand 5.0 / crouch 7.5).
+ *
+ * v9 (2026-10-21, enzo): the whole table = what the release ships and what FPSChallenge runs
+ * (cod1plus.so of 2026-10-08, lean v4: 7.5 everywhere, blend on) - this client must play there
+ * without a server update; the measured right side (v7: 5.0 / 7.5) waits for a coordinated
+ * client + server release. Numerically identical to v4; only the banner differs. */
 #define LC_LATERAL_STAND_LEFT    7.5f
-#define LC_LATERAL_STAND_RIGHT   5.0f
+#define LC_LATERAL_STAND_RIGHT   7.5f
 #define LC_LATERAL_CROUCH_LEFT   7.5f
 #define LC_LATERAL_CROUCH_RIGHT  7.5f
 
