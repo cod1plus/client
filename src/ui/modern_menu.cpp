@@ -96,6 +96,7 @@ int  g_display_mode = 0;             // 0 fullscreen (stretch), 1 borderless
 int  g_view_mode = 0;                // 0 classic, 1 widescreen, 2 stretched (= cod1x_viewmode)
 int  g_fov = 80;
 int  g_tab = 0;
+float g_content_w = 0;   // content width of the current draw (for the wide Inspect list)
 bool g_dirty = false, g_init = false;
 std::vector<std::string> g_cfgs;
 struct DemoEnt { std::string name, dir; };     // dir = search-path folder (Main, mod)
@@ -1141,9 +1142,25 @@ void draw_demos_tab(float cx, float cy, float cw, float bottom) {
 }  // namespace
 
 // ------------------------------------------------------------- weapon inspect
-// gameplay/inspect.cpp plays it: `set cod1x_inspect N` (1-6 = a fixed animation, 7 = the one
-// chosen here, cod1x_inspect_mode). The key row binds "set cod1x_inspect 7" like the Keys tab.
-const BindAct k_inspect_act = { "set cod1x_inspect 7", "Inspect weapon" };
+// gameplay/inspect.cpp plays it: `set cod1x_inspect N`, N = 1..6 one animation each (7 = the
+// archived cod1x_inspect_mode, kept for console users). Here every animation is a row of the
+// Keys tab's kind with its own key: click the row, press the key, that key plays that one.
+const BindAct k_inspect_acts[6] = {
+    { "set cod1x_inspect 1", "Turn" },
+    { "set cod1x_inspect 2", "Full inspect" },
+    { "set cod1x_inspect 3", "Pistol spin" },
+    { "set cod1x_inspect 4", "Toss" },
+    { "set cod1x_inspect 5", "Weapon trick" },
+    { "set cod1x_inspect 6", "Sleeve wipe" },
+};
+const char* const k_inspect_desc[6] = {
+    "shows both sides and the underside (3 s)",
+    "chamber check, magazine out and back, both sides (6 s)",
+    "Colt / Luger spin on the finger (others: full inspect)",
+    "thrown up with one roll and caught",
+    "the weapon's own: magazine thrown and slapped home, PPSh drum, bolt work, Garand ping, pistol juggle",
+    "a sleeve wiped along the flank",
+};
 
 // capture resolution (Keys and Inspect tabs): the next input becomes the bind
 void resolve_capture() {
@@ -1167,100 +1184,80 @@ void resolve_capture() {
     }
 }
 
-// one bind row, the Keys tab's look
-void bind_row(float kx, float ky, float kw, const BindAct& a) {
-    const float rowh = 34;
-    bool capme = g_cap_act == &a;
-    bool over = hit(kx, ky, kw, rowh - 4);
-    float hv = ui_smooth(wkey(kx, ky, 6), over ? 1.0f : 0.0f, 14.0f);
-    ui_rect_rounded(kx, ky, kw, rowh - 4, 6, capme ? UI_ROW_HOT : mixc(UI_ROW, UI_ROW_HOT, hv));
-    if (capme) ui_rect_border(kx, ky, kw, rowh - 4, 6, 1.5f, UI_ACCENT);
-    ui_text(kx + 14, ky + 5, 14, 400, UI_TEXT, a.label);
+int clampi_(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+// one animation: [ name | what it does | key box | Play ]. The row binds, Play previews.
+void inspect_row(float x, float y, float w, int i) {
+    const BindAct& a = k_inspect_acts[i];
+    const float h = 44, pw_ = 70;                       // Play button width
+    const float keyw = 150;                              // key box width
+    const bool capme = g_cap_act == &a;
+    const bool over_play = hit(x + w - pw_ - 8, y + 8, pw_, h - 16);
+    const bool over = hit(x, y, w - pw_ - 16, h) && !over_play;
+    float hv = ui_smooth(wkey(x, y, 8), over ? 1.0f : 0.0f, 14.0f);
+    ui_rect_rounded(x, y, w, h, 8, capme ? UI_ROW_HOT : mixc(UI_ROW, UI_ROW_HOT, hv));
+    if (capme) ui_rect_border(x, y, w, h, 8, 1.5f, UI_ACCENT);
+    ui_text(x + 16, y + 12, 15, 600, UI_TEXT, a.label);
+    ui_text(x + 150, y + 14, 12, 400, UI_HINT, k_inspect_desc[i]);
+    // key box
+    const float kx = x + w - pw_ - 16 - keyw;
     if (capme) {
         const char* msg = "PRESS A KEY  -  ESC cancels";
         float mw = ui_text_width(12, 600, msg);
-        ui_text(kx + kw - mw - 14, ky + 7, 12, 600, UI_ACCENT, msg);
+        ui_text(kx + keyw - mw, y + 14, 12, 600, UI_ACCENT, msg);
     } else {
         char kb[64];
+        ui_rect_rounded(kx, y + 10, keyw, h - 20, 6, 0xFF101010);
         if (keys_for(a.cmd, kb, sizeof(kb))) {
-            float bw2 = ui_text_width(12, 600, kb) + 14;
-            ui_rect_rounded(kx + kw - bw2 - 10, ky + 5, bw2, 20, 5, 0xFF101010);
-            ui_text(kx + kw - bw2 - 3, ky + 7, 12, 600, 0xFFC9C9C9, kb);
+            float tw = ui_text_width(13, 600, kb);
+            ui_text(kx + (keyw - tw) / 2, y + 13, 13, 600, 0xFFE0E0E0, kb);
         } else {
-            ui_text(kx + kw - 60, ky + 7, 12, 600, 0xFF4A4A4A, "unbound");
+            const char* msg = over ? "press a key..." : "click to bind";
+            float tw = ui_text_width(12, 400, msg);
+            ui_text(kx + (keyw - tw) / 2, y + 14, 12, 400, over ? UI_ACCENT : 0xFF5A5A5A, msg);
         }
     }
     if (over && !g_cap_act && ui_input().clicked) {
         g_cap_act = &a;
         ui_key_capture(true);
     }
+    // Play: the animation right now, behind the menu
+    if (button(x + w - pw_ - 8, y + 8, pw_, h - 16, "Play", false)) cmdf("%s\n", a.cmd);
 }
 
-int clampi_(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
-
 void draw_inspect_tab(float cx, float cy, float colw, float rx, float rw, bool two_col) {
+    (void)colw; (void)rx; (void)rw; (void)two_col;
     if (GetTickCount() - g_binds_scan > 2000) {
         parse_binds();
         g_binds_scan = GetTickCount();
     }
     resolve_capture();
-    float cy2 = cy;
+    const UiInput& in = ui_input();
+    (void)in;
+    // one wide list: the whole content width, capped so the rows stay readable
+    float lw = (g_content_w > 0 ? g_content_w : 900.0f);
+    if (lw > 980) lw = 980;
 
-    section(cx, cy, colw, "ANIMATION"); cy += 26;
-    static const char* names[6] = { "Turn", "Full inspect", "Pistol spin", "Toss", "Weapon trick", "Sleeve wipe" };
-    static const char* descs[6] = {
-        "both sides and the underside, 3 s",
-        "chamber, magazine out and back, 6 s",
-        "Colt / Luger spin on the finger",
-        "thrown up with a roll, caught",
-        "its own: mag toss, drum, bolt, Garand ping",
-        "a sleeve along the flank",
-    };
-    int mode = clampi_(cv_int("cod1x_inspect_mode", 5), 1, 6);
-    const float rowh = 38;
+    section(cx, cy, lw, "ANIMATIONS  -  click one, press a key: that key plays it"); cy += 30;
     for (int i = 0; i < 6; ++i) {
-        const bool sel = mode == i + 1;
-        const bool over = hit(cx, cy, colw, rowh - 4);
-        float hv = ui_smooth(wkey(cx, cy, 7), over ? 1.0f : 0.0f, 14.0f);
-        ui_rect_rounded(cx, cy, colw, rowh - 4, 6, sel ? UI_ROW_HOT : mixc(UI_ROW, UI_ROW_HOT, hv));
-        if (sel) ui_rect_border(cx, cy, colw, rowh - 4, 6, 1.5f, UI_ACCENT);
-        ui_text(cx + 14, cy + 6, 14, 600, sel ? UI_ACCENT : UI_TEXT, names[i]);
-        ui_text(cx + 128, cy + 8, 12, 400, UI_HINT, descs[i]);
-        if (over && ui_input().clicked && !sel) cmdf("seta cod1x_inspect_mode %d\n", i + 1);
-        cy += rowh;
+        inspect_row(cx, cy, lw, i);
+        cy += 50;
     }
-    cy += 10;
+    cy += 4;
+    hint(cx, cy, "Play tries it right now (in a game, weapon out, not aiming). Keys are written to config_mp.cfg at once;");
+    cy += 20;
+    hint(cx, cy, "a key already in use is taken from its old action. Firing, aiming, reloading or switching weapons cuts an inspection.");
+    cy += 34;
 
-    section(cx, cy, colw, "KEY"); cy += 26;
-    bind_row(cx, cy, colw, k_inspect_act);
-    cy += 36;
-    hint(cx, cy, "Plays the animation chosen above. Written to config_mp.cfg immediately.");
-    cy += 32;
-
-    section(cx, cy, colw, "SPEED"); cy += 24;
+    section(cx, cy, 430, "SPEED"); cy += 24;
     int sp = (int)(atof(cv_str("cod1x_inspect_speed", "1")) * 100 + 0.5f);
     sp = clampi_(sp, 50, 200);
-    int nsp = slider(cx, cy, colw - 70, 50, 200, sp);
+    int nsp = slider(cx, cy, 430 - 70, 50, 200, sp);
     char st[16]; snprintf(st, sizeof(st), "%d%%", nsp);
-    ui_text(cx + colw - 52, cy + 8, 17, 600, UI_TEXT, st);
+    ui_text(cx + 430 - 52, cy + 8, 17, 600, UI_TEXT, st);
     if (nsp != sp) cmdf("seta cod1x_inspect_speed %.2f\n", nsp / 100.0f);
-    cy += 52;
-
-    if (button(cx, cy, 190, 44, "TRY IT NOW", true)) cmdf("set cod1x_inspect %d\n", mode);
-    hint(cx + 206, cy + 14, "Plays behind this menu - in a game, weapon out, not aiming.");
-
-    // ---- right column
-    if (!two_col) { cy += 70; cy2 = cy; }
-    section(rx, cy2, rw, "GOOD TO KNOW"); cy2 += 26;
-    hint(rx, cy2, "Local only: nobody else sees it and the server is not involved."); cy2 += 20;
-    hint(rx, cy2, "Firing, aiming down the sight, reloading or switching weapons cuts it."); cy2 += 20;
-    hint(rx, cy2, "Pistol spin falls back to the full inspect on anything but a pistol."); cy2 += 20;
-    hint(rx, cy2, "Weapon trick: the magazine is thrown and slapped home on SMGs, BAR and FG42,"); cy2 += 20;
-    hint(rx, cy2, "the PPSh flips its drum, bolt rifles work the bolt, the Garand pings its clip,"); cy2 += 20;
-    hint(rx, cy2, "pistols are juggled; the rest get the sleeve wipe."); cy2 += 32;
-    section(rx, cy2, rw, "FROM THE CONSOLE"); cy2 += 26;
-    hint(rx, cy2, "bind v \"set cod1x_inspect 7\"    the animation chosen here"); cy2 += 20;
-    hint(rx, cy2, "bind b \"set cod1x_inspect 2\"    a fixed one, 1 to 6"); cy2 += 20;
+    cy += 46;
+    hint(cx, cy, "100% = the animations as designed. Local only: nobody else sees it, the server is not involved.");
 }
 
 bool modern_menu_poll_open() {
@@ -1300,7 +1297,7 @@ void modern_menu_draw(float sw, float sh) {
         "Raw input and aim feel. What your hand does is what the game gets.",
         "Click an action, press the new key. Saved to your config instantly.",
         "Performance, HUD, effects and the competitive netcode.",
-        "Weapon inspection: pick the animation, bind a key, try it live. Local only.",
+        "Weapon inspection: one key per animation. Click a row, press a key. Play tries it.",
         "Configs and demos - Main and every mod folder. One click to run.",
         "Every demo, every kill in it. Click a kill: the demo plays from just before.",
         "What this client is and what runs under the hood.",
@@ -1339,6 +1336,7 @@ void modern_menu_draw(float sw, float sh) {
 
     // content frame of reference (kept so the tab bodies below stay untouched)
     const float pw = sw - rail;
+    g_content_w = pw - 120;
     const float px = rail + 24, py = 40 + (1.0f - ot) * 14.0f;
     ui_text(px + 36, py + 10, 30, 600, UI_TEXT, tabs[g_tab]);
     ui_text(px + 36, py + 52, 14, 400, UI_MUTED, subs[g_tab]);
