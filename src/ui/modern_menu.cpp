@@ -533,11 +533,17 @@ void icon_tab(int id, float x, float y, DWORD c) {
         ui_rect(x + 12.5f, y + 8, 5.5f, 2, c);
         ui_rect(x + 8, y + 8, 2, 2, c);
         break;
-    case 4:                                             // files: folder
+    case 4:                                             // inspect: a rifle, side on
+        ui_rect(x, y + 7, 18, 2, c);
+        ui_rect(x + 1.5f, y + 4.5f, 2, 2.5f, c);
+        ui_rect(x + 7, y + 9, 2.5f, 4.5f, c);
+        ui_rect(x + 12, y + 9, 6, 3, c);
+        break;
+    case 5:                                             // files: folder
         ui_rect(x, y + 2, 8, 3, c);
         ui_rect_border(x, y + 5, 18, 11, 0, 1.5f, c);
         break;
-    case 5:                                             // demos: frame + play
+    case 6:                                             // demos: frame + play
         ui_rect_border(x, y + 2, 18, 14, 0, 1.5f, c);
         ui_triangle(x + 7, y + 5.5f, x + 7, y + 12.5f, x + 12.5f, y + 9, c);
         break;
@@ -1134,6 +1140,129 @@ void draw_demos_tab(float cx, float cy, float cw, float bottom) {
 
 }  // namespace
 
+// ------------------------------------------------------------- weapon inspect
+// gameplay/inspect.cpp plays it: `set cod1x_inspect N` (1-6 = a fixed animation, 7 = the one
+// chosen here, cod1x_inspect_mode). The key row binds "set cod1x_inspect 7" like the Keys tab.
+const BindAct k_inspect_act = { "set cod1x_inspect 7", "Inspect weapon" };
+
+// capture resolution (Keys and Inspect tabs): the next input becomes the bind
+void resolve_capture() {
+    if (!g_cap_act) return;
+    int vkin = ui_input().vk;
+    if (vkin == VK_ESCAPE) {
+        g_cap_act = nullptr; ui_key_capture(false);
+    } else if (vkin) {
+        const char* kn = keyname_from_vk(vkin);
+        if (kn) {
+            cmdf("bind %s \"%s\"\n", kn, g_cap_act->cmd);
+            cmdf("writeconfig config_mp.cfg\n");
+            // optimistic local update so the row refreshes this frame;
+            // the file re-parse (2 s) then confirms the engine's truth
+            for (auto& b : g_binds)
+                if (_stricmp(b.first.c_str(), kn) == 0) b.second.clear();
+            g_binds.push_back({ kn, g_cap_act->cmd });
+            g_binds_scan = GetTickCount();       // delay re-parse
+            g_cap_act = nullptr; ui_key_capture(false);
+        }
+    }
+}
+
+// one bind row, the Keys tab's look
+void bind_row(float kx, float ky, float kw, const BindAct& a) {
+    const float rowh = 34;
+    bool capme = g_cap_act == &a;
+    bool over = hit(kx, ky, kw, rowh - 4);
+    float hv = ui_smooth(wkey(kx, ky, 6), over ? 1.0f : 0.0f, 14.0f);
+    ui_rect_rounded(kx, ky, kw, rowh - 4, 6, capme ? UI_ROW_HOT : mixc(UI_ROW, UI_ROW_HOT, hv));
+    if (capme) ui_rect_border(kx, ky, kw, rowh - 4, 6, 1.5f, UI_ACCENT);
+    ui_text(kx + 14, ky + 5, 14, 400, UI_TEXT, a.label);
+    if (capme) {
+        const char* msg = "PRESS A KEY  -  ESC cancels";
+        float mw = ui_text_width(12, 600, msg);
+        ui_text(kx + kw - mw - 14, ky + 7, 12, 600, UI_ACCENT, msg);
+    } else {
+        char kb[64];
+        if (keys_for(a.cmd, kb, sizeof(kb))) {
+            float bw2 = ui_text_width(12, 600, kb) + 14;
+            ui_rect_rounded(kx + kw - bw2 - 10, ky + 5, bw2, 20, 5, 0xFF101010);
+            ui_text(kx + kw - bw2 - 3, ky + 7, 12, 600, 0xFFC9C9C9, kb);
+        } else {
+            ui_text(kx + kw - 60, ky + 7, 12, 600, 0xFF4A4A4A, "unbound");
+        }
+    }
+    if (over && !g_cap_act && ui_input().clicked) {
+        g_cap_act = &a;
+        ui_key_capture(true);
+    }
+}
+
+int clampi_(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+void draw_inspect_tab(float cx, float cy, float colw, float rx, float rw, bool two_col) {
+    if (GetTickCount() - g_binds_scan > 2000) {
+        parse_binds();
+        g_binds_scan = GetTickCount();
+    }
+    resolve_capture();
+    float cy2 = cy;
+
+    section(cx, cy, colw, "ANIMATION"); cy += 26;
+    static const char* names[6] = { "Turn", "Full inspect", "Pistol spin", "Toss", "Weapon trick", "Sleeve wipe" };
+    static const char* descs[6] = {
+        "both sides and the underside, 3 s",
+        "chamber, magazine out and back, 6 s",
+        "Colt / Luger spin on the finger",
+        "thrown up with a roll, caught",
+        "its own: mag toss, drum, bolt, Garand ping",
+        "a sleeve along the flank",
+    };
+    int mode = clampi_(cv_int("cod1x_inspect_mode", 5), 1, 6);
+    const float rowh = 38;
+    for (int i = 0; i < 6; ++i) {
+        const bool sel = mode == i + 1;
+        const bool over = hit(cx, cy, colw, rowh - 4);
+        float hv = ui_smooth(wkey(cx, cy, 7), over ? 1.0f : 0.0f, 14.0f);
+        ui_rect_rounded(cx, cy, colw, rowh - 4, 6, sel ? UI_ROW_HOT : mixc(UI_ROW, UI_ROW_HOT, hv));
+        if (sel) ui_rect_border(cx, cy, colw, rowh - 4, 6, 1.5f, UI_ACCENT);
+        ui_text(cx + 14, cy + 6, 14, 600, sel ? UI_ACCENT : UI_TEXT, names[i]);
+        ui_text(cx + 128, cy + 8, 12, 400, UI_HINT, descs[i]);
+        if (over && ui_input().clicked && !sel) cmdf("seta cod1x_inspect_mode %d\n", i + 1);
+        cy += rowh;
+    }
+    cy += 10;
+
+    section(cx, cy, colw, "KEY"); cy += 26;
+    bind_row(cx, cy, colw, k_inspect_act);
+    cy += 36;
+    hint(cx, cy, "Plays the animation chosen above. Written to config_mp.cfg immediately.");
+    cy += 32;
+
+    section(cx, cy, colw, "SPEED"); cy += 24;
+    int sp = (int)(atof(cv_str("cod1x_inspect_speed", "1")) * 100 + 0.5f);
+    sp = clampi_(sp, 50, 200);
+    int nsp = slider(cx, cy, colw - 70, 50, 200, sp);
+    char st[16]; snprintf(st, sizeof(st), "%d%%", nsp);
+    ui_text(cx + colw - 52, cy + 8, 17, 600, UI_TEXT, st);
+    if (nsp != sp) cmdf("seta cod1x_inspect_speed %.2f\n", nsp / 100.0f);
+    cy += 52;
+
+    if (button(cx, cy, 190, 44, "TRY IT NOW", true)) cmdf("set cod1x_inspect %d\n", mode);
+    hint(cx + 206, cy + 14, "Plays behind this menu - in a game, weapon out, not aiming.");
+
+    // ---- right column
+    if (!two_col) { cy += 70; cy2 = cy; }
+    section(rx, cy2, rw, "GOOD TO KNOW"); cy2 += 26;
+    hint(rx, cy2, "Local only: nobody else sees it and the server is not involved."); cy2 += 20;
+    hint(rx, cy2, "Firing, aiming down the sight, reloading or switching weapons cuts it."); cy2 += 20;
+    hint(rx, cy2, "Pistol spin falls back to the full inspect on anything but a pistol."); cy2 += 20;
+    hint(rx, cy2, "Weapon trick: the magazine is thrown and slapped home on SMGs, BAR and FG42,"); cy2 += 20;
+    hint(rx, cy2, "the PPSh flips its drum, bolt rifles work the bolt, the Garand pings its clip,"); cy2 += 20;
+    hint(rx, cy2, "pistols are juggled; the rest get the sleeve wipe."); cy2 += 32;
+    section(rx, cy2, rw, "FROM THE CONSOLE"); cy2 += 26;
+    hint(rx, cy2, "bind v \"set cod1x_inspect 7\"    the animation chosen here"); cy2 += 20;
+    hint(rx, cy2, "bind b \"set cod1x_inspect 2\"    a fixed one, 1 to 6"); cy2 += 20;
+}
+
 bool modern_menu_poll_open() {
     if (cv_int("cod1x_open_modern", 0)) {
         cmdf("set cod1x_open_modern 0\n");
@@ -1165,12 +1294,13 @@ void modern_menu_draw(float sw, float sh) {
     ui_text(38, 88, 11, 600, UI_MUTED, "C O D 1  R E L O A D E D");
     ui_rect(36, 118, rail - 72, 1, UI_LINE);
 
-    static const char* tabs[] = { "Display", "Mouse", "Keys", "Game", "Files", "Demos", "About" };
+    static const char* tabs[] = { "Display", "Mouse", "Keys", "Game", "Inspect", "Files", "Demos", "About" };
     static const char* subs[] = {
         "Resolution, refresh rate and how the image reaches the screen.",
         "Raw input and aim feel. What your hand does is what the game gets.",
         "Click an action, press the new key. Saved to your config instantly.",
         "Performance, HUD, effects and the competitive netcode.",
+        "Weapon inspection: pick the animation, bind a key, try it live. Local only.",
         "Configs and demos - Main and every mod folder. One click to run.",
         "Every demo, every kill in it. Click a kill: the demo plays from just before.",
         "What this client is and what runs under the hood.",
@@ -1178,7 +1308,7 @@ void modern_menu_draw(float sw, float sh) {
     float taby = 150;
     float tsel = ui_smooth(8002, (float)g_tab, 13.0f);
     ui_rect_rounded(20, 150 + tsel * 54 - 6, rail - 40, 46, 10, UI_ACCENT);
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 8; ++i) {
         bool over = hit(20, taby - 6, rail - 40, 46);
         float prox = 1.0f - (tsel > i ? tsel - i : i - tsel);
         if (prox < 0) prox = 0;
@@ -1192,7 +1322,7 @@ void modern_menu_draw(float sw, float sh) {
     }
     // leaving the Keys tab mid-capture must release the keyboard, or every key
     // would keep vanishing into a bind that no longer has a visible target
-    if (g_tab != 2 && g_cap_act) { g_cap_act = nullptr; ui_key_capture(false); }
+    if (g_tab != 2 && g_tab != 4 && g_cap_act) { g_cap_act = nullptr; ui_key_capture(false); }
 
     // rail footer: key chips + version
     {
@@ -1408,26 +1538,7 @@ void modern_menu_draw(float sw, float sh) {
             parse_binds();
             g_binds_scan = GetTickCount();
         }
-        // capture resolution: the next input becomes the bind
-        if (g_cap_act) {
-            int vkin = ui_input().vk;
-            if (vkin == VK_ESCAPE) {
-                g_cap_act = nullptr; ui_key_capture(false);
-            } else if (vkin) {
-                const char* kn = keyname_from_vk(vkin);
-                if (kn) {
-                    cmdf("bind %s \"%s\"\n", kn, g_cap_act->cmd);
-                    cmdf("writeconfig config_mp.cfg\n");
-                    // optimistic local update so the row refreshes this frame;
-                    // the file re-parse (2 s) then confirms the engine's truth
-                    for (auto& b : g_binds)
-                        if (_stricmp(b.first.c_str(), kn) == 0) b.second.clear();
-                    g_binds.push_back({ kn, g_cap_act->cmd });
-                    g_binds_scan = GetTickCount();       // delay re-parse
-                    g_cap_act = nullptr; ui_key_capture(false);
-                }
-            }
-        }
+        resolve_capture();                  // the next input becomes the bind
         const float kw = (pw - 120 - 40) / 2 > 470 ? 470 : (pw - 120 - 40) / 2;
         const float rowh = 34;
         float col_y[2] = { cy, cy };
@@ -1559,6 +1670,8 @@ void modern_menu_draw(float sw, float sh) {
                     "netcode. 40 Hz + antilag: what you see is what you hit.");
         }
     } else if (g_tab == 4) {
+        draw_inspect_tab(cx, cy, colw, two_col ? col2x : cx, two_col ? (col2w > 430 ? 430 : col2w) : colw, two_col);
+    } else if (g_tab == 5) {
         if (GetTickCount() - g_files_scan > 3000) {
             scan_dir("configs", "*.cfg", g_cfgs);
             scan_demos();
@@ -1682,7 +1795,7 @@ void modern_menu_draw(float sw, float sh) {
              "Configs from Main/configs. Demos from every folder's demos/ - playing a mod's");
         hint(cx, ly + vis * rh + 30,
              "demo loads that mod first (fs_game + renderer restart), then plays it.");
-    } else if (g_tab == 5) {
+    } else if (g_tab == 6) {
         draw_demos_tab(cx, cy, pw - 120, sh - 36);
     } else {
         // ABOUT: what 1.6X actually is - the feature list doubles as a changelog

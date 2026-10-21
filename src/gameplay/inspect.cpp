@@ -174,6 +174,7 @@ int g_weapon = 0, g_state = 0;
 // `cod1x_inspect_dump 1`: every inspect records, 15 times a second, the built view skeleton (as the
 // inspect left it), the eye and the hand refEntity, and writes them at its end next to the exe -
 // offline, the frames the player saw are rendered from them, from the real eye
+void* g_cv_mode = nullptr;
 void* g_cv_dump = nullptr;
 constexpr int DUMP_FRAMES = 120, DUMP_BONES = 128;
 struct DumpFrame { float t; float view[14]; float ref[12]; float bones[DUMP_BONES][12]; };
@@ -535,6 +536,7 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
         g_cv_speed = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect_speed", "1", 0);
         g_cv_mag   = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect_mag", "5", 0);
         g_cv_dump  = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect_dump", "0", 0);
+        g_cv_mode  = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect_mode", "5", 1);   // archived: the Ctrl+M choice
         QueryPerformanceFrequency(&g_freq);
         if (!g_cv_go || !g_cv_pivot || !g_cv_speed) return;
     }
@@ -548,7 +550,11 @@ __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref
     if (asked) {
         ((Cvar_Set_t)CODMP_CVAR_SET_VA)("cod1x_inspect", "0");
         if (ads > 0.001f) logger::logf("inspect: ignored while aiming (ads %.2f)", ads);
-        else start(asked >= 5 && asked <= 6 ? asked : asked == 4 ? 4 : asked == 3 ? 3 : asked == 2 ? 2 : 1, weapon, state, ref);
+        else {
+            int m = asked;
+            if (m >= 7 && g_cv_mode) m = *(const int*)((const uint8_t*)g_cv_mode + CV_INT);   // 7 = the menu's choice
+            start(m >= 5 && m <= 6 ? m : m == 4 ? 4 : m == 3 ? 3 : m == 2 ? 2 : 1, weapon, state, ref);
+        }
     }
     if (!g_mode) return;
     if (weapon != g_weapon) { stop("cut - weapon switch"); return; }
@@ -1209,7 +1215,7 @@ bool inspect_install(HMODULE cgame) {
     *(int32_t*)(site + 1) = rel;
     VirtualProtect((void*)(site + 1), 4, old, &old);
     FlushInstructionCache(GetCurrentProcess(), (void*)site, 5);
-    logger::logf("inspect: view weapon hooked (cgame+0x%x) - `set cod1x_inspect 1` (turn), 2 (full), 3 (pistol spin), 4 (toss), 5 (the weapon's trick), 6 (sleeve wipe); cod1x_inspect_dump 1 records them", (unsigned)CALL_RVA);
+    logger::logf("inspect: view weapon hooked (cgame+0x%x) - `set cod1x_inspect 1` (turn), 2 (full), 3 (pistol spin), 4 (toss), 5 (the weapon's trick), 6 (sleeve wipe), 7 (the Ctrl+M choice, cod1x_inspect_mode); cod1x_inspect_dump 1 records them", (unsigned)CALL_RVA);
     return true;
 }
 
