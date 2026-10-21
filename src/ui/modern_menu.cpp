@@ -1221,8 +1221,18 @@ void inspect_row(float x, float y, float w, int i) {
         g_cap_act = &a;
         ui_key_capture(true);
     }
-    // Play: the animation right now, behind the menu
-    if (button(x + w - pw_ - 8, y + 8, pw_, h - 16, "Play", false)) cmdf("%s\n", a.cmd);
+    // Play: closes the menu (it covers the whole view) and plays it - in a game only, the
+    // inspection moves the first-person weapon and there is none in the menus
+    if (GetModuleHandleA("cgame_mp_x86.dll")) {
+        if (button(x + w - pw_ - 8, y + 8, pw_, h - 16, "Play", false)) {
+            cmdf("%s\n", a.cmd);
+            overlay_toggle(false);
+        }
+    } else {
+        ui_rect_rounded(x + w - pw_ - 8, y + 8, pw_, h - 16, 8, UI_ROW);
+        float tw = ui_text_width(11, 400, "in game");
+        ui_text(x + w - pw_ - 8 + (pw_ - tw) / 2, y + 14, 11, 400, 0xFF5A5A5A, "in game");
+    }
 }
 
 void draw_inspect_tab(float cx, float cy, float colw, float rx, float rw, bool two_col) {
@@ -1244,7 +1254,7 @@ void draw_inspect_tab(float cx, float cy, float colw, float rx, float rw, bool t
         cy += 50;
     }
     cy += 4;
-    hint(cx, cy, "Play tries it right now (in a game, weapon out, not aiming). Keys are written to config_mp.cfg at once;");
+    hint(cx, cy, "Play closes this menu and plays it - in a game, weapon out, not aiming. Keys are written to config_mp.cfg at once;");
     cy += 20;
     hint(cx, cy, "a key already in use is taken from its old action. Firing, aiming, reloading or switching weapons cuts an inspection.");
     cy += 34;
