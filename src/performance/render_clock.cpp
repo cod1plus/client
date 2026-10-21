@@ -27,6 +27,7 @@
 #include "features/settings_menu.h"      // CODMP_CVAR_FINDVAR_VA
 #include "netcode/protocol_patch.h"      // CODMP_CVAR_GET_VA
 
+#include <windows.h>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -278,6 +279,15 @@ void render_clock_tick() {
     }
     Cvar_FindVar_t find = (Cvar_FindVar_t)CODMP_CVAR_FINDVAR_VA;
     int hz = cvi(find("cod1x_render_hz"), 0);
+    bool follow = false;
+    if (hz == -1) {                       // follow the screen: r_displayRefresh, else the mode in use
+        follow = true;
+        hz = cvi(find("r_displayRefresh"), 0);
+        if (hz <= 0) {
+            DEVMODEA dm = {}; dm.dmSize = sizeof(dm);
+            if (EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm)) hz = (int)dm.dmDisplayFrequency;
+        }
+    }
     if (hz < 0) hz = 0;
     if (hz > 1000) hz = 1000;
     if (hz && hz < 30) hz = 30;
@@ -291,7 +301,8 @@ void render_clock_tick() {
     g_cv_accel = find("cl_mouseAccel");
     if (hz != last_hz) {
         InterlockedExchange(&g_hz, hz);
-        if (hz) logger::logf("render_clock: ON - %d frames a second on screen, commands at com_maxfps %d", hz, maxfps);
+        if (hz) logger::logf("render_clock: ON - %d frames a second on screen%s, commands at com_maxfps %d", hz,
+                             follow ? " (follows the screen's rate)" : "", maxfps);
         else    logger::logf("render_clock: off (engine behaviour)");
         last_hz = hz;
         g_axis_checks = 0;

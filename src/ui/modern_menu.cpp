@@ -1411,6 +1411,27 @@ void modern_menu_draw(float sw, float sh) {
         if (dh) { int n = (int)g_hz.size() + 1;
                   g_hz_sel = (g_hz_sel + dh + n) % n; g_dirty = true; }
         cy += 58;
+        // render clock (cod1x_render_hz): N evenly spaced frames a second on screen while the
+        // game keeps its 250 commands; live, no restart. -1 = follow the screen's rate.
+        section(cx, cy, colw, "RENDER CLOCK  (frames shown per second)"); cy += 24;
+        {
+            static const int rates[] = { 0, -1, 60, 100, 120, 144, 165, 200, 240, 300, 320, 360, 480 };
+            const int nr = (int)(sizeof(rates) / sizeof(rates[0]));
+            const int cur = cv_int("cod1x_render_hz", 0);
+            int rsel = 0;
+            for (int i = 0; i < nr; ++i) if (rates[i] == cur) rsel = i;
+            char rl[48];
+            if (cur == 0)       snprintf(rl, sizeof(rl), "Off  (frames at com_maxfps)");
+            else if (cur == -1) snprintf(rl, sizeof(rl), "Screen rate  (%d Hz now)", sel_hz());
+            else                snprintf(rl, sizeof(rl), "%d frames / s", cur);
+            int dr = cycler(cx, cy, colw, rl);
+            if (dr) cmdf("seta cod1x_render_hz %d\n", rates[(rsel + dr + nr) % nr]);
+            cy += 48;
+            hint(cx, cy, "The screen gets exactly that many frames, evenly spaced, while the game keeps 250");
+            cy += 18;
+            hint(cx, cy, "commands a second: no judder on a 144 / 240 / 320 Hz screen. Applies at once.");
+            cy += 30;
+        }
 
         section(cx, cy, colw, "VIEW"); cy += 24;
         static const char* vmodes[] = { "Classic", "Widescreen", "Stretched" };
