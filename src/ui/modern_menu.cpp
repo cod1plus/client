@@ -1162,11 +1162,27 @@ const char* const k_inspect_desc[6] = {
     "a sleeve wiped along the flank",
 };
 
-// capture resolution (Keys and Inspect tabs): the next input becomes the bind
+// every key bound to this command is unbound (the engine's own unbind, then the config)
+void unbind_cmd(const char* cmd) {
+    bool any = false;
+    for (auto& b : g_binds)
+        if (_stricmp(b.second.c_str(), cmd) == 0) {
+            cmdf("unbind %s\n", b.first.c_str());
+            b.second.clear();
+            any = true;
+        }
+    if (any) { cmdf("writeconfig config_mp.cfg\n"); g_binds_scan = GetTickCount(); }
+}
+
+// capture resolution (Keys and Inspect tabs): the next input becomes the bind; BACKSPACE
+// clears the action's keys instead
 void resolve_capture() {
     if (!g_cap_act) return;
     int vkin = ui_input().vk;
     if (vkin == VK_ESCAPE) {
+        g_cap_act = nullptr; ui_key_capture(false);
+    } else if (vkin == VK_BACK) {
+        unbind_cmd(g_cap_act->cmd);
         g_cap_act = nullptr; ui_key_capture(false);
     } else if (vkin) {
         const char* kn = keyname_from_vk(vkin);
@@ -1190,6 +1206,7 @@ int clampi_(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 void inspect_row(float x, float y, float w, int i) {
     const BindAct& a = k_inspect_acts[i];
     const float h = 44, pw_ = 70;                       // Play button width
+    bool clear_click = false;                            // the x was clicked this frame
     const float keyw = 150;                              // key box width
     const bool capme = g_cap_act == &a;
     const bool over_play = hit(x + w - pw_ - 8, y + 8, pw_, h - 16);
@@ -1202,7 +1219,7 @@ void inspect_row(float x, float y, float w, int i) {
     // key box
     const float kx = x + w - pw_ - 16 - keyw;
     if (capme) {
-        const char* msg = "PRESS A KEY  -  ESC cancels";
+        const char* msg = "PRESS A KEY  -  ESC cancels, BACKSPACE clears";
         float mw = ui_text_width(12, 600, msg);
         ui_text(kx + keyw - mw, y + 14, 12, 600, UI_ACCENT, msg);
     } else {
@@ -1210,14 +1227,19 @@ void inspect_row(float x, float y, float w, int i) {
         ui_rect_rounded(kx, y + 10, keyw, h - 20, 6, 0xFF101010);
         if (keys_for(a.cmd, kb, sizeof(kb))) {
             float tw = ui_text_width(13, 600, kb);
-            ui_text(kx + (keyw - tw) / 2, y + 13, 13, 600, 0xFFE0E0E0, kb);
+            ui_text(kx + (keyw - tw) / 2 - 8, y + 13, 13, 600, 0xFFE0E0E0, kb);
+            // clear: a small x inside the key box, right end
+            const float xx = kx + keyw - 24, xy = y + 13;
+            const bool over_x = hit(xx - 4, xy - 4, 24, 24);
+            ui_text(xx, xy - 1, 14, 600, over_x ? 0xFFFF5A5A : 0xFF7A7A7A, "x");
+            if (over_x && ui_input().clicked) { unbind_cmd(a.cmd); clear_click = true; }
         } else {
             const char* msg = over ? "press a key..." : "click to bind";
             float tw = ui_text_width(12, 400, msg);
             ui_text(kx + (keyw - tw) / 2, y + 14, 12, 400, over ? UI_ACCENT : 0xFF5A5A5A, msg);
         }
     }
-    if (over && !g_cap_act && ui_input().clicked) {
+    if (over && !g_cap_act && !clear_click && ui_input().clicked) {
         g_cap_act = &a;
         ui_key_capture(true);
     }
@@ -1256,7 +1278,7 @@ void draw_inspect_tab(float cx, float cy, float colw, float rx, float rw, bool t
     cy += 4;
     hint(cx, cy, "Play closes this menu and plays it - in a game, weapon out, not aiming. Keys are written to config_mp.cfg at once;");
     cy += 20;
-    hint(cx, cy, "a key already in use is taken from its old action. Firing, aiming, reloading or switching weapons cuts an inspection.");
+    hint(cx, cy, "a key already in use is taken from its old action; the x (or BACKSPACE while binding) clears it. Firing, aiming, reloading or switching weapons cuts an inspection.");
     cy += 34;
 
     section(cx, cy, 430, "SPEED"); cy += 24;
@@ -1565,7 +1587,7 @@ void modern_menu_draw(float sw, float sh) {
                 if (capme) ui_rect_border(kx, ky, kw, rowh - 4, 6, 1.5f, UI_ACCENT);
                 ui_text(kx + 14, ky + 5, 14, 400, UI_TEXT, a.label);
                 if (capme) {
-                    const char* msg = "PRESS A KEY  -  ESC cancels";
+                    const char* msg = "PRESS A KEY  -  ESC cancels, BACKSPACE clears";
                     float mw = ui_text_width(12, 600, msg);
                     ui_text(kx + kw - mw - 14, ky + 7, 12, 600, UI_ACCENT, msg);
                 } else {
