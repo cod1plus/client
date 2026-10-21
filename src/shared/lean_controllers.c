@@ -67,10 +67,14 @@
  *   stand  L 4.5 -> head +0.2, 300 u^2      stand  R 5.0 -> head -1.5, 261 u^2
  *   crouch L 3.5 -> head +0.1, 243 u^2      crouch R 7.5 -> head -2.2, 301 u^2 (already within
  *   0.6 u of the target behind the eye; more would only add exposure)
- * against 466 / 387 / 373 / 301 in 1.6.13. */
-#define LC_LATERAL_STAND_LEFT    4.5f
+ * against 466 / 387 / 373 / 301 in 1.6.13.
+ *
+ * v8 (2026-10-21, enzo): the LEFT side goes back to what the release ships (1.6.13's flat
+ * 7.5, stand and crouch) - the left lean is the one players know and it stays as is for
+ * this version; the right side keeps v7's measured values (stand 5.0 / crouch 7.5). */
+#define LC_LATERAL_STAND_LEFT    7.5f
 #define LC_LATERAL_STAND_RIGHT   5.0f
-#define LC_LATERAL_CROUCH_LEFT   3.5f
+#define LC_LATERAL_CROUCH_LEFT   7.5f
 #define LC_LATERAL_CROUCH_RIGHT  7.5f
 
 float lc_lateral_total(int stance, float lean_frac)
