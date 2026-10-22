@@ -31,7 +31,7 @@ struct LockedKey {
 const LockedKey kLocked[] = {
     { "frame_limiter_enable", "on",   "exact frame cadence (the mod's limiter)" },
     { "force_1ms_timer",      "on",   "the limiter sleeps in 1 ms steps" },
-    { "gpu_sync",             "auto", "one frame in flight; switches itself off if the GPU sets the fps" },
+    { "gpu_sync",             "auto", "one frame in flight (a fence on the previous frame); off by itself if the GPU sets the fps" },
     { "input_late_sampling",  "on",   "mouse and keys read after the frame wait, not before" },
     { "fullscreen",           "on",   "exclusive fullscreen: no desktop compositor between the game and the screen" },
     { "refresh_rate",         "max",  "the highest Hz the display lists" },

@@ -13,9 +13,7 @@
 // popped / pushed per overflow (O(log N)): the same slot the engine would have picked, for
 // a few microseconds a frame instead of milliseconds. Two cvars, both archived:
 //   cod1x_smodel_fast      1 (default) = the heap; 0 = the engine's own scan, timed
-//   cod1x_smodel_keepnear  1 (default) = a model farther than everything in the list is
-//                          not added at all (the engine replaced the farthest with it, so a
-//                          nearby prop could vanish for a distant one); 0 = exactly vanilla
+// The slot picked is exactly the engine's: the same models on screen as vanilla, always.
 // The bilan gets a "scene" line whenever a window had frames over the limit.
 #ifndef COD1RELOADED_SMODEL_FAST_H
 #define COD1RELOADED_SMODEL_FAST_H

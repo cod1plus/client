@@ -42,8 +42,7 @@ typedef int   (__cdecl* find_far_t)(void);
 
 bool  g_installed = false;
 void* g_cv_fast = nullptr;
-void* g_cv_keep = nullptr;
-volatile LONG g_fast = 1, g_keep = 1;      // cvar values, polled by the watcher
+volatile LONG g_fast = 1;                  // cvar value, polled by the watcher
 LARGE_INTEGER g_freq;
 
 // ---- the heap: (squared distance, slot) with the farthest on top ---------------------------
@@ -152,11 +151,10 @@ extern "C" int __cdecl smodel_find_slot(const uint8_t* ent) {
             if (t != 0 && t != 1 && g_n < MAX_SLOTS) heap_push(dist2((const float*)(s + RE_ORIGIN)), g_last_slot);
             g_last_slot = -1;
         }
+        // EXACTLY the engine's choice (the farthest replaceable slot), never a different set of
+        // models on screen: which props show is the game's business, not the DLL's (10-23)
         if (g_n == 0) {
             r = -1;
-        } else if (g_keep && ent && dist2((const float*)(ent + RE_ORIGIN)) >= g_d2[0]) {
-            r = -1;                                             // farther than everything listed
-            g_cur.dropped++;
         } else {
             r = heap_pop();
             g_last_slot = r;
@@ -213,21 +211,17 @@ void smodel_fast_install() {
     }
     g_installed = true;
     logger::logf("smodel_fast: scene overflow (> 1021 models) replaced at 0x%08x - heap instead of the engine's "
-                 "sqrt scan per model (cod1x_smodel_fast 0 = engine scan, timed; cod1x_smodel_keepnear 1 = a model "
-                 "farther than every listed one is dropped, not swapped in)", (unsigned)VA_CALLSITE);
+                 "sqrt scan per model, the same slot picked (cod1x_smodel_fast 0 = engine scan, timed)", (unsigned)VA_CALLSITE);
 }
 
 void smodel_fast_tick() {
     if (!g_installed) return;
     if (!g_cv_fast) {
         g_cv_fast = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_smodel_fast", "1", CVAR_ARCHIVE);
-        g_cv_keep = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_smodel_keepnear", "1", CVAR_ARCHIVE);
-        if (!g_cv_fast || !g_cv_keep) { g_cv_fast = g_cv_keep = nullptr; return; }
+        if (!g_cv_fast) return;
     }
     const LONG f = *(const int*)((const uint8_t*)g_cv_fast + CV_INT) ? 1 : 0;
-    const LONG k = *(const int*)((const uint8_t*)g_cv_keep + CV_INT) ? 1 : 0;
     if (f != g_fast) { InterlockedExchange(&g_fast, f); logger::logf("smodel_fast: %s", f ? "heap" : "engine scan (timed)"); }
-    if (k != g_keep) { InterlockedExchange(&g_keep, k); logger::logf("smodel_fast: keep near %s", k ? "on" : "off (vanilla swap)"); }
 }
 
 void smodel_fast_report(char* buf, size_t n, bool reset) {
@@ -241,7 +235,7 @@ void smodel_fast_report(char* buf, size_t n, bool reset) {
     snprintf(buf, n, "scene > 1021 modeles: %ld images, %ld remplacements (max %ld/image, %ld refuses), "
                      "%.3f ms/image moy, %.2f ms max, %s",
              w.frames, w.calls, w.calls_max, w.dropped, w.ms_sum / w.frames, w.ms_max,
-             g_fast ? (g_keep ? "tas + proches gardes" : "tas") : "scan moteur");
+             g_fast ? "tas" : "scan moteur");
 }
 
 void smodel_fast_poll_frame(long* calls, double* ms) {
