@@ -4,6 +4,7 @@
 #include "performance/frame_limiter.h"
 #include "performance/gpu_sync.h"
 #include "performance/pacing_stats.h"
+#include "performance/smodel_fast.h"
 #include "netcode/net_diag.h"
 #include "video/mode_guard.h"
 #include "features/settings_menu.h"   // CODMP_CVAR_FINDVAR_VA
@@ -83,6 +84,10 @@ void report(const char* tag, DWORD now) {
                      "affichage %.3f ms +-%.3f (p99 %.2f, max %.1f, +25%% %ld)",
                      tag, pf.mean_ms, pf.sd_ms, pf.p99_ms, pf.max_ms, pf.over,
                      pp.mean_ms, pp.sd_ms, pp.p99_ms, pp.max_ms, pp.over);
+    // the scene list's overflow (smodel_fast.h): the engine's per-model sqrt scan, or ours
+    char scene[200];
+    smodel_fast_report(scene, sizeof(scene), true);
+    if (scene[0]) logger::logf("%s %s", tag, scene);
 }
 
 }  // namespace

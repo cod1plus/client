@@ -28,6 +28,7 @@
 #include "performance/fps_cap.h"
 #include "performance/frame_limiter.h"
 #include "performance/render_clock.h"
+#include "performance/smodel_fast.h"
 #include "performance/gpu_sync.h"
 #include "core/session_report.h"
 #include "core/ini_lock.h"
@@ -133,6 +134,7 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::netmode_tick();             // follow cod1x_masterlist (1.6 <-> legacy 1.5)
             patches::session_report_tick();      // one 'bilan' line a minute in the log
             patches::render_clock_tick();        // cod1x_render_hz
+            patches::smodel_fast_tick();         // cod1x_smodel_fast / _keepnear
             patches::ini_lock_tick();            // r_fullscreen read-only, r_displayRefresh at max
             patches::net_diag_tick();            // a network silence still open gets its line
         }
@@ -234,6 +236,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
 
             patches::apply_frame_limiter_patch();
             patches::render_clock_install();     // CL_Frame's draw: on the render clock when cod1x_render_hz > 0
+            patches::smodel_fast_install();      // scene overflow (> 1021 models): heap, not the engine's sqrt scan
             patches::bone_probe_install();      // DEV DIAGNOSTIC: drawn bone positions (2026-09-29)
 
             // one frame in flight: glFinish after every SwapBuffers (gpu_sync = off to skip)
