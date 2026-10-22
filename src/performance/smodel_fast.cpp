@@ -52,6 +52,7 @@ int   g_idx[MAX_SLOTS];
 int   g_n = 0;
 int   g_frame = -1;        // frameCount the heap belongs to
 int   g_count = -1;        // list count it was built for
+int   g_first = -1;        // and the scene's first slot (a second scene in the frame rebuilds)
 int   g_last_slot = -1;    // the slot handed out last time: the engine copied the new model there
 
 inline const uint8_t* slot_ptr(int i) {
@@ -140,9 +141,9 @@ extern "C" int __cdecl smodel_find_slot(const uint8_t* ent) {
     } else {
         const int count = *(const int*)VA_ENT_COUNT;
         const int first = *(const int*)VA_ENT_FIRST;
-        if (frame != g_frame || count != g_count) {
+        if (frame != g_frame || count != g_count || first != g_first) {
             heap_build(first, count);
-            g_frame = frame; g_count = count; g_last_slot = -1;
+            g_frame = frame; g_count = count; g_first = first; g_last_slot = -1;
         } else if (g_last_slot >= 0) {
             // the engine copied the previous model into that slot: it is in the list now
             const uint8_t* s = slot_ptr(g_last_slot);
