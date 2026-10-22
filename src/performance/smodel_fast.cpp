@@ -219,6 +219,17 @@ void smodel_fast_tick() {
     if (!g_cv_fast) {
         g_cv_fast = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_smodel_fast", "1", CVAR_ARCHIVE);
         if (!g_cv_fast) return;
+        // the option that used to drop far models (cod1x_smodel_keepnear, 10-23) is gone; a config
+        // that still says `seta cod1x_smodel_keepnear` would keep the cvar alive and write it back
+        // forever - purge: found once, its ARCHIVE bit cleared, so the next writeconfig drops it
+        typedef void* (*FindVar_t)(const char*);
+        if (void* old = ((FindVar_t)CODMP_CVAR_FINDVAR_VA)("cod1x_smodel_keepnear")) {
+            int* flags = (int*)((uint8_t*)old + 0x10);
+            if (*flags & CVAR_ARCHIVE) {
+                *flags &= ~CVAR_ARCHIVE;
+                logger::logf("smodel_fast: old cod1x_smodel_keepnear found in the config - unarchived, it will not be written back");
+            }
+        }
     }
     const LONG f = *(const int*)((const uint8_t*)g_cv_fast + CV_INT) ? 1 : 0;
     if (f != g_fast) { InterlockedExchange(&g_fast, f); logger::logf("smodel_fast: %s", f ? "heap" : "engine scan (timed)"); }

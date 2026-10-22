@@ -134,7 +134,7 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::netmode_tick();             // follow cod1x_masterlist (1.6 <-> legacy 1.5)
             patches::session_report_tick();      // one 'bilan' line a minute in the log
             patches::render_clock_tick();        // cod1x_render_hz
-            patches::smodel_fast_tick();         // cod1x_smodel_fast / _keepnear
+            patches::smodel_fast_tick();         // cod1x_smodel_fast
             patches::ini_lock_tick();            // r_fullscreen read-only, r_displayRefresh at max
             patches::net_diag_tick();            // a network silence still open gets its line
         }
