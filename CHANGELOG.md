@@ -1,5 +1,56 @@
 # cod1reloaded — Changelog
 
+## 1.6.13 (2026-10-23) — des fps stables à 250, sans rien retirer de l'écran
+
+### 🎯 Ce qui faisait chuter les fps en 1.6.12 (mesuré sur les logs, lignes `bilan`)
+- **Le journal était écrit de façon synchrone sur le thread du jeu** : chaque ligne = fopen / fputs / fclose.
+  Or 1.6.12 écrivait `pos_log` une fois par seconde ET PAR JOUEUR, plus `aim_log` deux fois par seconde :
+  sur un serveur plein, vingt ouvertures de fichier par seconde au milieu des frames (disque lent, dossier
+  OneDrive, antivirus = plusieurs ms chacune). Le logger est désormais **asynchrone** (thread écrivain,
+  WriteFile) et les traces de développement (`pos_log`, `aim_log`, dump des contrôleurs) ne s'activent
+  qu'avec `COD1RELOADED_DEV_LOGS=1`.
+- **L'attente du GPU bloquait le jeu** : `gpu_sync` faisait un `glFinish` après chaque SwapBuffers (zéro
+  image en vol). Chaque à-coup du GPU — 1,5 à 5 ms sur une image qui en prend 0,5 en moyenne, 12 à 36 ms au
+  retour d'un alt-tab — devenait une frame longue (54 des 66 frames longues d'une session mesurée). Remplacé
+  par une **fence GL_ARB_sync sur l'image précédente** : une image en vol au maximum (la file d'un pilote
+  laissé seul en garde deux ou trois), les à-coups sont absorbés, et tant que le GPU suit la latence est la
+  même qu'avant. Sans GL_ARB_sync, ou avec `COD1RELOADED_GPU_FINISH=1`, l'ancien glFinish.
+- **Les cartes à plus de 1021 modèles visibles** (coastal, hurtgen, carentan depuis certains points) : pour
+  CHAQUE modèle au-delà de la limite, le moteur parcourait toute la liste avec une racine carrée par entrée
+  pour trouver le plus lointain à remplacer — des millions d'opérations par image, 30 fps sur coastal. Le
+  parcours est remplacé par un tas de distances construit une fois par image (`smodel_fast`, cvar
+  `cod1x_smodel_fast`, 1 par défaut). **Le modèle remplacé est exactement celui que le moteur aurait choisi** :
+  ce qui est affiché ne change pas d'un buisson, seule la vitesse change.
+- L'attente du limiteur passe sur un minuteur haute résolution (spin 1 ms au lieu de 2,5) et le thread du jeu
+  rejoint la classe MMCSS « Games » (`COD1RELOADED_MMCSS=0` pour l'éviter) : pics de frame divisés par 2 à 4
+  au banc.
+
+### 📊 Diagnostic dans `cod1reloaded.log` (pour les prochaines plaintes)
+- Ligne `rythme` à chaque bilan : régularité des images et de l'affichage (moyenne, écart-type, p99, max).
+- Ligne `dll` à chaque bilan : ce que les hooks de la DLL coûtent par image, hook par hook.
+- Ligne `stall:` pour chaque frame à plus de deux fois la période du cap et 8 ms (40 par minute au plus) :
+  temps où le thread a vraiment tourné (préempté / en attente sinon), attente GPU, remplacements de scène,
+  paquets reçus, fenêtre réduite ou en arrière-plan, et la part de la DLL. `COD1RELOADED_STALL_TRACE=0` = off.
+- Ligne `scene` quand une fenêtre a eu des images au-delà des 1021 modèles.
+
+### 🖥️ Ctrl+M
+- **Onglet Inspect** : les six inspections d'arme (`cod1x_inspect` 1 à 6 : tour, complète, moulinet du pistolet,
+  lancer du chargeur, le tour propre à l'arme, essuyage de la manche), touche à lier par animation (BACKSPACE
+  efface, ESC annule), bouton Play en jeu, vitesse 50 à 200 %. Mode 7 = le choix du menu (`cod1x_inspect_mode`).
+- **Display > RENDER CLOCK** (`cod1x_render_hz`, **0 = off par défaut, comportement moteur inchangé**) : N images
+  par seconde régulièrement espacées à l'écran pendant que le jeu garde ses 250 commandes ; -1 = suit l'écran.
+  Au-dessus de 250 c'est du travail CPU en plus : si plus de 5 % des frames de commande arrivent en retard,
+  le taux retombe de lui-même à com_maxfps et réessaie 30 s plus tard (trois fois par session).
+- Keys : BACKSPACE pendant une liaison efface les touches de l'action.
+
+### 🎮 Jeu
+- Lean : table v9 = **la même que 1.6.12 et que le .so en ligne** (7,5 partout) ; aucune mise à jour serveur
+  n'est nécessaire pour cette version.
+- Démos : lues dans le mod de l'enregistrement (fs_game), avec la liste pure du serveur enregistré ; le spec
+  compétitif du serveur n'est plus réappliqué en lecture (timescale libre).
+- anim_clamp : une valeur d'animation hors plage est jouée comme l'animation 0 à l'entrée du runner d'interpolation
+  (plus de retour au menu sur une démo enregistrée sur un serveur moddé).
+
 ## Non publié (correctif 1.6.9, build de test du 2026-09-26)
 
 ### 📄 `cod1reloaded.ini` absent = recréé, plus jamais les défauts compilés en silence
