@@ -97,7 +97,7 @@ void stall_trace_frame(LONGLONG now, LONGLONG period) {
     else if (!fg) snprintf(focus, sizeof(focus), "BACKGROUND");
     else if (since_focus >= 0 && since_focus < 3000) snprintf(focus, sizeof(focus), "focus back %.0f ms ago", since_focus);
     else snprintf(focus, sizeof(focus), "in front");
-    logger::logf("stall: %.1f ms | thread ran ~%.1f ms of it%s | glFinish %.2f ms | scene %ld replacements %.2f ms | "
+    logger::logf("stall: %.1f ms | thread ran ~%.1f ms of it%s | gpu %.2f ms | scene %ld replacements %.2f ms | "
                  "%ld pq recus | %s%s | dll %.2f ms (bone %.2f/%ld lean %.2f/%ld inspect %.2f overlay %.2f rcdraw %.2f/%ld)",
                  ms, busy, busy >= 0 && busy < ms * 0.7 ? " (PREEMPTED / WAITING)" : "",
                  finish_ms, sc_calls, sc_ms, rx, focus, overlay_visible() ? " | overlay open" : "",

@@ -87,6 +87,7 @@ LONGLONG g_draw_qpc = 0;                 // the instant the current draw shows (
 int      g_last_st = 0;                  // cl.serverTime of the last draw: never shown backwards
 long     g_st_held = 0;                  // draws whose engine time was behind the last one shown
 LONGLONG g_cost = 0;                     // moving average of one draw (QPC ticks)
+LONGLONG g_cost_hi = 0;                  // its recent peak, decaying over ~256 draws: what a between draw must fit
 long     g_st_in_frame = 0, g_st_between = 0, g_st_skipped = 0;
 int      g_axis_checks = 0;              // first in-frame draws: our AnglesToAxis vs the engine's
 
@@ -145,6 +146,7 @@ void draw(LONGLONG now, bool between) {
     QueryPerformanceCounter(&t1);
     const LONGLONG c = t1.QuadPart - t0.QuadPart;
     g_cost = g_cost ? (g_cost * 7 + c) / 8 : c;
+    if (c > g_cost_hi) g_cost_hi = c; else g_cost_hi -= g_cost_hi / 256;
     g_next = slot + period;
     if (g_next <= now) g_next = now + period;          // fell behind: restart the cadence
 }
@@ -346,9 +348,10 @@ void render_clock_tick() {
     if (hz && now - last_log >= 10000) {
         if (last_log && (g_st_in_frame || g_st_between))
             logger::logf("render_clock: last 10 s - %ld drawn with a command, %ld between commands, "
-                         "%ld command frames without a draw, %ld engine times held; draw %.2f ms",
+                         "%ld command frames without a draw, %ld engine times held; draw %.2f ms (peaks %.2f)",
                          g_st_in_frame, g_st_between, g_st_skipped, g_st_held,
-                         g_freq.QuadPart ? (double)g_cost * 1000.0 / (double)g_freq.QuadPart : 0.0);
+                         g_freq.QuadPart ? (double)g_cost * 1000.0 / (double)g_freq.QuadPart : 0.0,
+                         g_freq.QuadPart ? (double)g_cost_hi * 1000.0 / (double)g_freq.QuadPart : 0.0);
         g_st_in_frame = g_st_between = g_st_skipped = g_st_held = 0;
         last_log = now;
     }
@@ -356,7 +359,9 @@ void render_clock_tick() {
 
 bool render_clock_slot_before(LONGLONG deadline, LONGLONG now, LONGLONG* slot) {
     if (g_hz <= 0 || !g_next || !in_game()) return false;
-    const LONGLONG guard = g_cost + g_freq.QuadPart / 3000;     // the draw itself + 0.33 ms
+    // the draw at its recent WORST + 0.33 ms: the mean (1.85 ms) let 2-5 ms draws through and
+    // the command frame behind them came late (10-23)
+    const LONGLONG guard = g_cost_hi + g_freq.QuadPart / 3000;
     if (g_next + guard >= deadline) return false;
     *slot = g_next > now ? g_next : now;
     return true;
