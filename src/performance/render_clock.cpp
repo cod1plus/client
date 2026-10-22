@@ -301,6 +301,39 @@ void render_clock_tick() {
     g_cv_freelook = find("cl_freelook");
     g_cv_filter = find("m_filter");
     g_cv_accel = find("cl_mouseAccel");
+
+    // THE BUDGET (10-23). Every draw past com_maxfps is extra CPU work: the engine's whole
+    // render, 2.2-4 ms a draw on a modest CPU with the window up (1.4 ms minimized). 320 a
+    // second beside 250 command frames asked this PC for more than a second of work per
+    // second: the command frames came late (the limiter's reloops, 1400-3200 a minute),
+    // the fps counter sat at 232 and the game felt unstable - with the clock off the same
+    // session had 0 late frames. When the command frames start coming late, the rate is
+    // capped at com_maxfps (no extra draw: the clock-off work, the draws merely re-timed)
+    // and the asked rate tried again 30 s later, three times a session.
+    static LONG  s_fit = 0;                 // 0 = none, else the cap in force
+    static DWORD s_fit_since = 0;
+    static int   s_fit_tries = 0;
+    static int   s_bad = 0;                 // consecutive seconds over budget
+    long late = 0, frames = 0;
+    frame_limiter_late_poll(&late, &frames);
+    const DWORD tnow = GetTickCount();
+    const int requested = hz;
+    if (s_fit && hz > s_fit) {
+        hz = s_fit;
+        if (s_fit_tries < 3 && tnow - s_fit_since >= 30000) {
+            s_fit = 0; s_bad = 0; hz = requested;
+            logger::logf("render_clock: trying %d a second again", requested);
+        }
+    } else if (hz > maxfps && frames >= 100 && late * 20 > frames) {     // > 5 % of the command frames late
+        if (++s_bad >= 2) {
+            s_fit = maxfps; s_fit_since = tnow; ++s_fit_tries; s_bad = 0;
+            hz = maxfps;
+            logger::logf("render_clock: %d a second does not fit beside com_maxfps %d on this CPU (a draw costs %.2f ms; "
+                         "%ld of %ld command frames came late) - %d a second %s",
+                         requested, maxfps, g_freq.QuadPart ? (double)g_cost * 1000.0 / (double)g_freq.QuadPart : 0.0,
+                         late, frames, maxfps, s_fit_tries >= 3 ? "for the rest of the session" : "until it does (retry in 30 s)");
+        }
+    } else s_bad = 0;
     if (hz != last_hz) {
         InterlockedExchange(&g_hz, hz);
         if (hz) logger::logf("render_clock: ON - %d frames a second on screen%s, commands at com_maxfps %d", hz,

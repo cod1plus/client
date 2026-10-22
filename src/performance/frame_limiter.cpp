@@ -95,6 +95,7 @@ bool          g_applied = false;
 LONGLONG      g_prev_end = 0;        // QPC at the previous frame's return
 LONGLONG      g_st_max_ticks = 0;
 long          g_st_frames = 0, g_st_late = 0, g_st_long = 0;
+volatile long g_rc_late = 0, g_rc_frames = 0;   // since the render clock's last poll
 long          g_st_total = 0;        // frames since the start, never reset
 
 int read_com_maxfps_dvar() {
@@ -136,9 +137,11 @@ const FrameLimiterEngine g_engine = {
 void end_of_wait(const FrameLimiterEngine& e, LONGLONG now, bool reloop, LONGLONG step_ticks) {
     if (reloop) {
         ++g_st_late;
+        InterlockedIncrement(&g_rc_late);
     } else {
         ++g_st_frames;
         ++g_st_total;
+        InterlockedIncrement(&g_rc_frames);
         if (g_prev_end) {
             const LONGLONG period = now - g_prev_end;
             if (period > g_st_max_ticks) g_st_max_ticks = period;
@@ -246,6 +249,11 @@ void frame_limiter_stats(FrameLimiterStats* out, bool reset) {
         out->max_frame_ms = g_qpc_freq.QuadPart ? (double)g_st_max_ticks * 1000.0 / (double)g_qpc_freq.QuadPart : 0.0;
     }
     if (reset) { g_st_frames = 0; g_st_late = 0; g_st_long = 0; g_st_max_ticks = 0; }
+}
+
+void frame_limiter_late_poll(long* late, long* frames) {
+    *late = InterlockedExchange(&g_rc_late, 0);
+    *frames = InterlockedExchange(&g_rc_frames, 0);
 }
 
 long frame_limiter_total_frames() { return g_st_total; }

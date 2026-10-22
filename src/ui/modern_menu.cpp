@@ -1427,9 +1427,9 @@ void modern_menu_draw(float sw, float sh) {
             int dr = cycler(cx, cy, colw, rl);
             if (dr) cmdf("seta cod1x_render_hz %d\n", rates[(rsel + dr + nr) % nr]);
             cy += 48;
-            hint(cx, cy, "The screen gets exactly that many frames, evenly spaced, while the game keeps 250");
+            hint(cx, cy, "Evenly spaced frames on screen, the game keeps its 250 commands. Above 250 = extra");
             cy += 18;
-            hint(cx, cy, "commands a second: no judder on a 144 / 240 / 320 Hz screen. Applies at once.");
+            hint(cx, cy, "CPU work: falls back to 250 by itself when frames start coming late. Applies at once.");
             cy += 30;
         }
 
