@@ -104,6 +104,7 @@ void heap_build(int first, int count) {
 // ---- per-frame and per-window accounting --------------------------------------------------
 struct Frame { long calls; long dropped; LONGLONG ticks; };
 Frame g_cur = {};
+volatile long g_fb_calls = 0; LONGLONG g_fb_ticks = 0;   // since the last stall_trace poll
 int   g_cur_frame = -1;
 struct Window { long frames; long calls; long calls_max; long dropped; double ms_sum; double ms_max; };
 Window g_win = {};
@@ -163,6 +164,7 @@ extern "C" int __cdecl smodel_find_slot(const uint8_t* ent) {
     }
     QueryPerformanceCounter(&t1);
     g_cur.ticks += t1.QuadPart - t0.QuadPart;
+    g_fb_calls++; g_fb_ticks += t1.QuadPart - t0.QuadPart;
     return r;
 }
 
@@ -240,6 +242,12 @@ void smodel_fast_report(char* buf, size_t n, bool reset) {
                      "%.3f ms/image moy, %.2f ms max, %s",
              w.frames, w.calls, w.calls_max, w.dropped, w.ms_sum / w.frames, w.ms_max,
              g_fast ? (g_keep ? "tas + proches gardes" : "tas") : "scan moteur");
+}
+
+void smodel_fast_poll_frame(long* calls, double* ms) {
+    *calls = g_fb_calls;
+    *ms = g_freq.QuadPart ? (double)g_fb_ticks * 1000.0 / (double)g_freq.QuadPart : 0.0;
+    g_fb_calls = 0; g_fb_ticks = 0;
 }
 
 }  // namespace patches

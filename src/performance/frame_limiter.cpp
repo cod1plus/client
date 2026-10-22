@@ -59,6 +59,7 @@
 
 #include "performance/frame_limiter.h"
 #include "performance/pacing_stats.h"
+#include "performance/stall_trace.h"
 #include "performance/render_clock.h"
 #include "performance/process_priority.h"
 #include "core/logger.h"
@@ -145,6 +146,7 @@ void end_of_wait(const FrameLimiterEngine& e, LONGLONG now, bool reloop, LONGLON
         }
         g_prev_end = now;
         pacing_note_frame(now);
+        stall_trace_frame(now, step_ticks);   // one line per long frame, with its make-up
     }
     if (g_frame_limiter_config.late_input && e.late_input) e.late_input();
 }

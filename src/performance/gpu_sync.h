@@ -29,6 +29,7 @@ void gpu_sync_start();   // DllMain: IAT-hook gdi32!SwapBuffers in CoDMP.exe
 void gpu_sync_stats(double* avg_us, double* max_us, long* frames, bool reset);
 // "on", "off", or "auto-off" (switched itself off: the GPU sets the fps)
 const char* gpu_sync_state();
+double gpu_sync_last_us();   // the last frame's glFinish wait (stall_trace)
 
 }  // namespace patches
 

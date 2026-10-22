@@ -170,10 +170,12 @@ int WINAPI hk_sendto(UINT_PTR s, const char* buf, int len, int flags, const void
     return r;
 }
 
+volatile long g_rx_total = 0;   // packets from the game server since the start (stall_trace)
+
 int WINAPI hk_recvfrom(UINT_PTR s, char* buf, int len, int flags, void* from, int* fromlen) {
     const int r = g_orig_recvfrom(s, buf, len, flags, from, fromlen);
     if (r > 0 && g_peer && addr_key(from, fromlen ? *fromlen : 0) == g_peer)
-        on_packet(g_rx, g_tx, r, now_qpc());
+        { on_packet(g_rx, g_tx, r, now_qpc()); InterlockedIncrement(&g_rx_total); }
     return r;
 }
 
@@ -240,5 +242,7 @@ void net_diag_tick() {
     check_open(g_rx, g_tx, t);
     check_open(g_tx, g_rx, t);
 }
+
+long net_diag_rx_total() { return g_rx_total; }
 
 }  // namespace patches

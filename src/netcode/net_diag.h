@@ -27,6 +27,7 @@ struct NetDiagStats {
 void net_diag_start();                               // DllMain: hook the two imports
 void net_diag_stats(NetDiagStats* out, bool reset);  // session report
 void net_diag_tick();                                // watcher: warns while a silence is still open
+long net_diag_rx_total();                            // packets from the game server since the start
 
 }  // namespace patches
 

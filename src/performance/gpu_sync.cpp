@@ -23,6 +23,7 @@ bool          g_auto_off = false;
 // the window's statistics: time spent in glFinish (read by session_report.cpp)
 LARGE_INTEGER g_freq = {};
 LONGLONG g_sum_ticks = 0, g_max_ticks = 0;
+LONGLONG g_last_ticks = 0;                 // the last frame's wait (stall_trace)
 long     g_frames = 0;
 
 // auto: the wait against the frame period, over 5 s windows
@@ -50,6 +51,7 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
     if (wait && !g_resolve_tried) resolve_glfinish();
     if (!wait || !g_glFinish) {
         QueryPerformanceCounter(&t1);
+        g_last_ticks = 0;
         pacing_note_present(t1.QuadPart);          // without the wait: when the swap was queued
         return r;
     }
@@ -60,6 +62,7 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
 
     const LONGLONG d = t1.QuadPart - t0.QuadPart;
     g_sum_ticks += d;
+    g_last_ticks = d;
     if (d > g_max_ticks) g_max_ticks = d;
     ++g_frames;
 
@@ -117,6 +120,10 @@ void gpu_sync_start() {
     g_hooked = true;
     logger::logf("gpu_sync: SwapBuffers hooked (%s; glFinish resolved at the first frame)",
                  g_gpu_sync_config.mode == GPU_SYNC_AUTO ? "auto" : "on");
+}
+
+double gpu_sync_last_us() {
+    return g_freq.QuadPart ? (double)g_last_ticks * 1e6 / (double)g_freq.QuadPart : 0.0;
 }
 
 }  // namespace patches

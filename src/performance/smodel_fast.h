@@ -27,6 +27,7 @@ namespace patches {
 void smodel_fast_install();                                    // after the frame limiter, CoDMP at 0x400000 only
 void smodel_fast_tick();                                       // cvar poll, ~1/s (watcher)
 void smodel_fast_report(char* buf, size_t n, bool reset);      // "" when no frame overflowed
+void smodel_fast_poll_frame(long* calls, double* ms);         // since the last poll (stall_trace)
 
 }  // namespace patches
 
