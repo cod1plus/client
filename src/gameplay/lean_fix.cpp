@@ -1,6 +1,7 @@
 // cod2x aimwalk fix ported to CoD1. single hook at call site cgame+0x51d8.
 
 #include "gameplay/lean_fix.h"
+#include "core/hook_prof.h"
 #include "features/hitbox_view.h"
 #include "core/logger.h"
 #include "core/patches.h"
@@ -176,6 +177,7 @@ static lc_ctx_t g_lc_ctx  = {};
 extern "C" void apply_lean_adjust(float* controllers,
                                   const void* client_info,
                                   const void* entity) {
+    PROF_SCOPE(PROF_LEAN);
     g_lc_sampled = false;   // before every return path, so the "smooth" stage below can
                             // never fire on a stale sample from an earlier entity
     if (!g_lean_fix_config.enable) return;

@@ -1,5 +1,6 @@
 // session_report.cpp - see session_report.h
 #include "core/session_report.h"
+#include "core/hook_prof.h"
 #include "core/logger.h"
 #include "performance/frame_limiter.h"
 #include "performance/gpu_sync.h"
@@ -88,6 +89,14 @@ void report(const char* tag, DWORD now) {
     char scene[200];
     smodel_fast_report(scene, sizeof(scene), true);
     if (scene[0]) logger::logf("%s %s", tag, scene);
+    // the DLL's own hooks (hook_prof.h): what of each frame was ours, and the worst frame's leader
+    double p_avg = 0, p_max = 0, p_slot[PROF_COUNT] = {};
+    int p_lead = -1;
+    prof_window_stats(&p_avg, &p_max, &p_lead, p_slot, true);
+    if (fs.frames > 0)
+        logger::logf("dll %s: %.3f ms par image (pire %.2f ms: %s) | bone %.3f lean %.3f inspect %.3f overlay %.3f rcdraw %.3f",
+                     tag, p_avg, p_max, prof_slot_name(p_lead), p_slot[PROF_BONE], p_slot[PROF_LEAN],
+                     p_slot[PROF_INSPECT], p_slot[PROF_OVERLAY], p_slot[PROF_RCDRAW]);
 }
 
 }  // namespace

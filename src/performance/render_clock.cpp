@@ -21,6 +21,7 @@
 //   cg.time 0x20af00, cg.predictedPlayerState 0x20af14: commandTime +0, origin +0x14,
 //             velocity +0x20, viewangles +0xc0.
 #include "performance/render_clock.h"
+#include "core/hook_prof.h"
 #include "performance/frame_limiter.h"   // CODMP_MOUSE_ACTIVE_VA / _INITIALIZED_VA
 #include "input/rinput.h"
 #include "core/logger.h"
@@ -137,7 +138,8 @@ void draw(LONGLONG now, bool between) {
     cl_server_time() = show;
     g_between = between;
     g_draw_qpc = now;
-    ((VoidFn_t)VA_SCR_UPDATESCREEN)();
+    if (between) { PROF_SCOPE(PROF_RCDRAW); ((VoidFn_t)VA_SCR_UPDATESCREEN)(); }
+    else ((VoidFn_t)VA_SCR_UPDATESCREEN)();
     cl_server_time() = saved;
     g_between = false;
     QueryPerformanceCounter(&t1);

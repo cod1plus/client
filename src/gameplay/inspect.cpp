@@ -1,5 +1,6 @@
 // inspect.cpp - see inspect.h
 #include "gameplay/inspect.h"
+#include "core/hook_prof.h"
 #include "gameplay/inspect_grips.h"   // how the left hand holds each magazine (from the reload anims)
 #include "netcode/protocol_patch.h"      // CODMP_CVAR_GET_VA
 #include "netcode/competitive.h"         // CODMP_CVAR_SET_VA
@@ -530,6 +531,7 @@ void start(int mode, int weapon, int state, const uint8_t* ref) {
 }
 
 __attribute__((force_align_arg_pointer)) void __cdecl inspect_apply(uint8_t* ref, const uint8_t* ps) {
+    PROF_SCOPE(PROF_INSPECT);
     if (!g_cv_go) {
         g_cv_go    = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect", "0", 0);
         g_cv_pivot = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_inspect_pivot", "0 0 0", 0);

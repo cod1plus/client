@@ -21,6 +21,7 @@
 //   engine is fixed-function GL1.x, so immediate mode is both safe and simplest.
 
 #include "ui/gl_overlay.h"
+#include "core/hook_prof.h"
 #include "ui/ui_draw.h"
 #include "core/wndhub.h"
 #include "features/news.h"
@@ -505,7 +506,7 @@ void draw_news_card(HWND wnd) {
 }
 
 // ------------------------------------------------------------------- swap
-BOOL WINAPI hk_swapbuffers(HDC dc) {
+void swap_frame_work(HDC dc) {
     InterlockedIncrement(&g_swap_calls);
     attach_window(dc);
     demo_seek_frame();                            // demo fast-forward to a kill (ui/demo_seek)
@@ -639,6 +640,10 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
             }
         }
     }
+}
+
+BOOL WINAPI hk_swapbuffers(HDC dc) {
+    { PROF_SCOPE(PROF_OVERLAY); swap_frame_work(dc); }   // our per-frame work, timed apart from the real swap
     return g_orig_swap ? g_orig_swap(dc) : FALSE;
 }
 

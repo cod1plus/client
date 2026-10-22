@@ -60,6 +60,7 @@ set(COD1RELOADED_SOURCES
     src/performance/stall_trace.cpp
     src/performance/gpu_sync.cpp
     src/core/session_report.cpp
+    src/core/hook_prof.cpp
     src/core/ini_lock.cpp
     src/netcode/net_diag.cpp
     src/features/demo_index.cpp

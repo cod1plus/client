@@ -22,6 +22,7 @@
 // Every call hands hitbox_view the bone frames in WORLD space, so the tested hit boxes are
 // drawn on the body the client draws, for everyone on screen, with no server traffic.
 #include "gameplay/bone_probe.h"
+#include "core/hook_prof.h"
 #include "features/hitbox_view.h"
 #include "gameplay/hitbox_client.h"
 #include "gameplay/inspect.h"
@@ -88,6 +89,7 @@ uintptr_t g_cents = 0;                // cg_entities, learned from the first ren
 unsigned  g_seen[64] = {};            // log once per client and placement source
 
 __attribute__((force_align_arg_pointer)) void __cdecl bone_probe(const void* dobj, const void* esi) {
+    PROF_SCOPE(PROF_BONE);
     inspect_on_skeleton(dobj);        // weapon inspect: bolt / magazine of the view weapon (idle: one compare)
     const uint8_t* d = (const uint8_t*)dobj;
     const int count = d[0x17];
