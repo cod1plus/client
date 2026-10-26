@@ -152,7 +152,7 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
 
 }  // namespace
 
-extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
+extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     switch (reason) {
         case DLL_PROCESS_ATTACH:
             DisableThreadLibraryCalls(hModule);
@@ -262,6 +262,15 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
         case DLL_PROCESS_DETACH:
             patches::session_report_final("fin");
             logger::flush();                 // ExitProcess already killed the writer thread
+            if (reserved) {
+                // PROCESS TERMINATION (ExitProcess / a crash): every other thread is already dead. Anything that
+                // joins a thread or goes through Windows subsystems here hangs the dying process forever - the
+                // gamma restore (SetDeviceGammaRamp -> mscms -> DisplayColorManagement, waits on a worker that
+                // no longer exists) turned a map-load crash into a frozen full-screen window (10-26). Leave it:
+                // Windows resets the gamma ramp with the process.
+                patches::fps_cap_shutdown();     // timeEndPeriod only
+                break;
+            }
             patches::demo_seek_restore_now();
             patches::rinput_shutdown();      // unregister the raw input device + join its thread
             patches::gamma_fix_shutdown();   // never leave the desktop gamma modified
