@@ -23,6 +23,7 @@
 #include "video/display_probe.h"
 #include "video/mode_guard.h"
 #include "input/rinput.h"
+#include "input/sensitivity_mg.h"
 #include "gameplay/bone_probe.h"
 #include "features/hitbox_view.h"
 #include "performance/fps_cap.h"
@@ -137,6 +138,7 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::session_report_tick();      // one 'bilan' line a minute in the log
             patches::render_clock_tick();        // cod1x_render_hz
             patches::smodel_fast_tick();         // cod1x_smodel_fast
+            patches::sensitivity_mg_tick();      // sensitivity_mg
             patches::ini_lock_tick();            // r_fullscreen read-only, r_displayRefresh at max
             patches::net_diag_tick();            // a network silence still open gets its line
         }
@@ -239,6 +241,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
             patches::apply_frame_limiter_patch();
             patches::render_clock_install();     // CL_Frame's draw: on the render clock when cod1x_render_hz > 0
             patches::smodel_fast_install();      // scene overflow (> 1021 models): heap, not the engine's sqrt scan
+            patches::sensitivity_mg_install();   // CL_MouseMove's turret branch: sensitivity_mg
             patches::bone_probe_install();      // DEV DIAGNOSTIC: drawn bone positions (2026-09-29)
 
             // one frame in flight: glFinish after every SwapBuffers (gpu_sync = off to skip)

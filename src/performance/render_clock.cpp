@@ -24,6 +24,7 @@
 #include "core/hook_prof.h"
 #include "performance/frame_limiter.h"   // CODMP_MOUSE_ACTIVE_VA / _INITIALIZED_VA
 #include "input/rinput.h"
+#include "input/sensitivity_mg.h"
 #include "core/logger.h"
 #include "features/settings_menu.h"      // CODMP_CVAR_FINDVAR_VA
 #include "netcode/protocol_patch.h"      // CODMP_CVAR_GET_VA
@@ -198,10 +199,11 @@ void adjust_view() {
     long mx = 0, my = 0;
     rinput_peek_delta(&mx, &my);
     if (!mx && !my) return;
-    const float k = cvf(g_cv_sens, 5.0f) * *(const float*)VA_CL_CGAMESENS;
+    float kx, ky;                                          // on a mounted MG: sensitivity_mg's factors
+    if (!sensitivity_mg_active(&kx, &ky)) kx = ky = cvf(g_cv_sens, 5.0f) * *(const float*)VA_CL_CGAMESENS;
     float* ang = (float*)(cg + RVA_REF_ANGLES);
-    ang[1] -= cvf(g_cv_myaw, 0.022f) * k * (float)mx;
-    if (cvi(g_cv_freelook, 1)) ang[0] += cvf(g_cv_mpitch, 0.022f) * k * (float)my;
+    ang[1] -= cvf(g_cv_myaw, 0.022f) * kx * (float)mx;
+    if (cvi(g_cv_freelook, 1)) ang[0] += cvf(g_cv_mpitch, 0.022f) * ky * (float)my;
     angles_to_axis(ang, (float*)(cg + RVA_REF_AXIS));
 }
 

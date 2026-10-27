@@ -37,6 +37,7 @@ set(COD1RELOADED_SOURCES
     src/core/wndhub.cpp
     src/features/news.cpp
     src/input/rinput.cpp
+    src/input/sensitivity_mg.cpp
     src/netcode/version_patch.cpp
     src/netcode/protocol_patch.cpp
     src/netcode/competitive.cpp
