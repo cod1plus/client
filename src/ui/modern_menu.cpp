@@ -1528,6 +1528,21 @@ void modern_menu_draw(float sw, float sh) {
         ui_text(cx + colw - 50, cy + 8, 17, 600, UI_TEXT, sv);
         if (ns != s10) cmdf("seta sensitivity %.1f\n", ns / 10.0);
         cy += 50;
+        // mounted MG (input/sensitivity_mg.cpp): the game turns a turret like sensitivity 2.5
+        // whatever the above says; 1 = that, sensitivity / 2.5 = the same feel on yaw
+        char ml[96];
+        snprintf(ml, sizeof(ml), "Mounted MG (sensitivity_mg)  -  %.2f turns like the above",
+                 ns / 10.0 / 2.5);
+        ui_text(cx, cy, 14, 400, UI_MUTED, ml);
+        cy += 20;
+        int g20 = (int)(atof(cv_str("sensitivity_mg", "1")) * 20 + 0.5f);
+        if (g20 < 1) g20 = 1;
+        if (g20 > 100) g20 = 100;
+        int ng = slider(cx, cy, colw - 70, 1, 100, g20);
+        char gv[16]; snprintf(gv, sizeof(gv), "%.2f", ng / 20.0);
+        ui_text(cx + colw - 50, cy + 8, 17, 600, UI_TEXT, gv);
+        if (ng != g20) cmdf("seta sensitivity_mg %.2f\n", ng / 20.0);
+        cy += 48;
 
         section(cx, cy, colw, "ACCELERATION"); cy += 24;
         int a10 = (int)(atof(cv_str("cl_mouseAccel", "0")) * 10 + 0.5f);
