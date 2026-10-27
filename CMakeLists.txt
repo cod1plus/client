@@ -58,6 +58,11 @@ set(COD1RELOADED_SOURCES
     src/performance/pacing_stats.cpp
     src/performance/render_clock.cpp
     src/performance/smodel_fast.cpp
+    src/performance/trace_cull.cpp
+    src/performance/smodel_light.cpp
+    src/performance/bench.cpp
+    src/performance/smodel_lod.cpp
+    src/performance/smodel_path.cpp
     src/performance/stall_trace.cpp
     src/performance/gpu_sync.cpp
     src/core/session_report.cpp

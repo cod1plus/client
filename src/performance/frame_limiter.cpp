@@ -62,6 +62,7 @@
 #include "performance/stall_trace.h"
 #include "performance/render_clock.h"
 #include "performance/process_priority.h"
+#include "performance/bench.h"
 #include "core/logger.h"
 #include "netcode/version_patch.h" // CODMP_PREFERRED_BASE
 
@@ -135,6 +136,7 @@ const FrameLimiterEngine g_engine = {
 
 // bookkeeping at every return to Com_Frame, then the late input sampling
 void end_of_wait(const FrameLimiterEngine& e, LONGLONG now, bool reloop, LONGLONG step_ticks) {
+    bench_frame_end(now);                    // the next frame's work starts now (bench.cpp)
     if (reloop) {
         ++g_st_late;
         InterlockedIncrement(&g_rc_late);
@@ -278,6 +280,7 @@ int frame_wait(const FrameLimiterEngine& e) {
 
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
+    bench_frame_begin(now.QuadPart);         // the frame's work ends here (bench.cpp: budget line, camera benchmark)
     if (!g_epoch_set || (++g_calls & 1023) == 0) calibrate(now.QuadPart, e);
 
     const int maxfps = e.maxfps();

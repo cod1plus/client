@@ -30,6 +30,10 @@
 #include "performance/frame_limiter.h"
 #include "performance/render_clock.h"
 #include "performance/smodel_fast.h"
+#include "performance/trace_cull.h"
+#include "performance/smodel_light.h"
+#include "performance/smodel_lod.h"
+#include "performance/smodel_path.h"
 #include "performance/gpu_sync.h"
 #include "core/session_report.h"
 #include "core/ini_lock.h"
@@ -139,6 +143,10 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::render_clock_tick();        // cod1x_render_hz
             patches::smodel_fast_tick();         // cod1x_smodel_fast
             patches::sensitivity_mg_tick();      // sensitivity_mg
+            patches::trace_cull_tick();          // inline-model trace bounds test: the 10 s line
+            patches::smodel_light_tick();        // DIAGNOSTIC: static-model surfaces relit, the 10 s line
+            patches::smodel_lod_tick();          // detail clusters culled at their distance, the 10 s line
+            patches::smodel_path_tick();         // DIAGNOSTIC: static-model surfaces on the CPU path
             patches::ini_lock_tick();            // r_fullscreen read-only, r_displayRefresh at max
             patches::net_diag_tick();            // a network silence still open gets its line
         }
@@ -242,6 +250,10 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
             patches::render_clock_install();     // CL_Frame's draw: on the render clock when cod1x_render_hz > 0
             patches::smodel_fast_install();      // scene overflow (> 1021 models): heap, not the engine's sqrt scan
             patches::sensitivity_mg_install();   // CL_MouseMove's turret branch: sensitivity_mg
+            patches::trace_cull_install();       // CM_BoxTrace: bounds test before an inline model's leaf trace
+            patches::smodel_light_install();     // DIAGNOSTIC: count the static-model surface lighting (0x513ded)
+            patches::smodel_lod_install();       // <map>_dtNNN detail clusters: distance cull under r_lodscale 0 (0x513d1f)
+            patches::smodel_path_install();      // DIAGNOSTIC: rb_surfaceTable[11] (RB_SurfaceStaticModel) wrapped
             patches::bone_probe_install();      // DEV DIAGNOSTIC: drawn bone positions (2026-09-29)
 
             // one frame in flight: glFinish after every SwapBuffers (gpu_sync = off to skip)

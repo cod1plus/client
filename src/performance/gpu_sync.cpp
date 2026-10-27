@@ -17,6 +17,11 @@
 
 #include <cstdlib>
 
+extern "C" {
+long long cod1x_swap_ticks = 0;    // QPC ticks inside SwapBuffers (accumulated; bench.cpp reads and resets)
+long long cod1x_fence_ticks = 0;   // QPC ticks in the GPU fence wait after it
+}
+
 namespace patches {
 
 GpuSyncConfig g_gpu_sync_config = {
@@ -121,9 +126,11 @@ void gpu_wait() {
 }
 
 BOOL WINAPI hk_swapbuffers(HDC dc) {
-    LARGE_INTEGER t0, t1;
+    LARGE_INTEGER t0, t1, ts;
     QueryPerformanceCounter(&t0);
     const BOOL r = g_orig_swap ? g_orig_swap(dc) : FALSE;
+    QueryPerformanceCounter(&ts);
+    cod1x_swap_ticks += ts.QuadPart - t0.QuadPart;     // bench.cpp: time blocked in the driver's present
     const bool wait = g_gpu_sync_config.mode != GPU_SYNC_OFF && !g_auto_off;
     if (wait && !g_resolve_tried) resolve_gl();
     if (!wait || (!g_glFinish && !g_use_fence)) {
@@ -135,6 +142,7 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
 
     gpu_wait();
     QueryPerformanceCounter(&t1);
+    cod1x_fence_ticks += t1.QuadPart - ts.QuadPart;    // bench.cpp: time waiting for the GPU (previous frame's fence)
     pacing_note_present(t1.QuadPart);              // the frame is on its way to the screen
 
     const LONGLONG d = t1.QuadPart - t0.QuadPart;
@@ -184,6 +192,14 @@ const char* gpu_sync_state() {
 }
 
 void gpu_sync_start() {
+    // TEST ONLY: COD1X_GPU_SYNC_OFF=1 in the environment (the bench script sets it for one launch) - ini_lock keeps
+    // the file at auto, this does not touch the file
+    if (const char* ev = getenv("COD1X_GPU_SYNC_OFF")) {
+        if (ev[0] == '1') {
+            g_gpu_sync_config.mode = GPU_SYNC_OFF;
+            logger::logf("gpu_sync: COD1X_GPU_SYNC_OFF=1 in the environment (benchmark) - off for this launch");
+        }
+    }
     if (g_gpu_sync_config.mode == GPU_SYNC_OFF) {
         logger::logf("gpu_sync: disabled in config");
         return;
