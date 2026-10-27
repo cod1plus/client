@@ -1,5 +1,14 @@
 # cod1reloaded — Changelog
 
+## 1.6.19 (2026-11-09, pre-release) — armes au sol : munitions avec la touche d'action seulement
+
+- **Armes au sol : plus de ramassage prédit en marchant dessus** (`use_pickup`, cvar `cod1x_use_pickup`, 1 par
+  défaut). Moitié client de `use_pickup` du serveur (cod1plus.so), qui ne donne plus les munitions d'une arme
+  au contact, seulement avec la touche d'action. Le jeu prédisait encore ce ramassage chez le joueur qui
+  passe dessus : son de ramassage et arme cachée alors que le serveur ne donne rien. Les medkits gardent leur
+  prédiction. Sur un serveur qui donne encore les munitions au contact, elles arrivent avec l'événement du
+  serveur (comme `cg_predictItems 0`, pour les armes seulement). `cod1x_use_pickup 0` = prédiction du jeu.
+
 ## 1.6.18 (2026-11-03) — exec / vstr interdits, bind grenade dans Ctrl+M
 
 - **`exec` et `vstr` ne sont plus utilisables par les joueurs.** Un bind qui lance `exec` ou `vstr` est refusé avec

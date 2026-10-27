@@ -13,6 +13,7 @@
 #include "gameplay/viewheight_fix.h"
 #include "gameplay/lean_fix.h"
 #include "gameplay/inspect.h"
+#include "gameplay/use_pickup.h"
 #include "core/logger.h"
 #include "netcode/version_patch.h"
 #include "netcode/protocol_patch.h"
@@ -105,6 +106,8 @@ bool apply_cgame_patches(HMODULE cgame, bool fresh) {
     // weapon inspect (cod1x_inspect): the view weapon's call site, on every cgame load
     patches::inspect_install(cgame);
 #endif
+    // weapons on the ground: no walk-over pickup predicted (cod1x_use_pickup), on every cgame load
+    patches::use_pickup_install(cgame);
 
     const bool ok = patches::apply_to_cgame(cgame);
     logger::logf("  [%s] cgame patches applied (lean=%d)", ok ? "OK" : "RETRY",
@@ -151,6 +154,7 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::smodel_light_tick();        // DIAGNOSTIC: static-model surfaces relit, the 10 s line
             patches::smodel_lod_tick();          // detail clusters culled at their distance, the 10 s line
             patches::smodel_path_tick();         // DIAGNOSTIC: static-model surfaces on the CPU path
+            patches::use_pickup_tick();          // cod1x_use_pickup
             patches::ini_lock_tick();            // r_fullscreen read-only, r_displayRefresh at max
             patches::net_diag_tick();            // a network silence still open gets its line
         }
