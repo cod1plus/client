@@ -420,6 +420,15 @@ bool stock_pak(const std::string& f) {
     return _strnicmp(f.c_str(), "localized_", 10) == 0;
 }
 
+// a file of a "hud" item (the minimap's radar images): <name>.png / <name>.json, nothing else
+bool hud_file(const std::string& f) {
+    if (f.size() < 6 || f.size() > 64) return false;
+    for (char c : f) if (!(isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.')) return false;
+    const size_t dot = f.find('.');
+    if (dot == 0 || dot != f.rfind('.')) return false;
+    return !_stricmp(f.c_str() + dot, ".png") || !_stricmp(f.c_str() + dot, ".json");
+}
+
 bool parse_catalog(const std::string& text, const std::string& base, bool base_is_file,
                    std::string& title, std::vector<WsItem>& items, std::string& err) {
     JVal root;
@@ -440,7 +449,7 @@ bool parse_catalog(const std::string& text, const std::string& base, bool base_i
         it.description = jstr(o, "description", 1500);
         it.folder      = jstr(o, "folder", 48);
         it.thumb_url   = resolve_url(base, jstr(o, "thumbnail", 512));
-        if (it.type != "mod") it.type = "map";
+        if (it.type != "mod" && it.type != "hud") it.type = "map";
         if (it.folder.empty()) it.folder = "main";
         if (it.name.empty()) it.name = it.id;
 
@@ -479,10 +488,11 @@ bool parse_catalog(const std::string& text, const std::string& base, bool base_i
         const char* bad = nullptr;
         if (!valid_id(it.id)) bad = "id";
         else if (!pkg_valid_folder(it.folder.c_str())) bad = "folder";
+        else if (it.type == "hud" && _stricmp(it.folder.c_str(), "minimaps") != 0) bad = "folder (a hud item goes to minimaps)";
         else if (it.files.empty()) bad = "files";
         for (size_t k = 0; !bad && k < it.files.size(); ++k) {
             const WsFile& w = it.files[k];
-            if (!pkg_valid_pk3_name(w.file.c_str()) || stock_pak(w.file)) bad = "file";
+            if (it.type == "hud" ? !hud_file(w.file) : (!pkg_valid_pk3_name(w.file.c_str()) || stock_pak(w.file))) bad = "file";
             else if (w.size == 0) bad = "size";
             else if (w.sha256.size() != 64 || w.sha256.find_first_not_of("0123456789abcdef") != std::string::npos) bad = "sha256";
             else if (!(is_http_url(w.url) || (is_file_url(w.url) && base_is_file))) bad = "url";

@@ -106,6 +106,8 @@ set(COD1RELOADED_SOURCES
     src/ui/streamer_hud.cpp
     src/ui/game_image.cpp
     src/ui/radar_map.cpp
+    src/ui/minimap.cpp
+    src/ui/hud_editor.cpp
     src/ui/workshop_tab.cpp
 )
 
@@ -231,6 +233,21 @@ target_compile_options(hud_preview PRIVATE -Wall -Wextra -Wno-unused-parameter -
 target_link_options(hud_preview PRIVATE -static -static-libgcc -static-libstdc++)
 target_link_libraries(hud_preview PRIVATE user32 gdi32 gdiplus opengl32 ole32)
 set_target_properties(hud_preview PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${COD1RELOADED_OUTPUT_DIR}")
+
+# Offline render of the minimap (tools/minimap_preview/main.cpp): the same drawing code as
+# the DLL, on a game screenshot, from a map's BSP or a minimaps pack - how it is tuned.
+#     mingw32-make minimap_preview && build/minimap_preview.exe scene.txt
+add_executable(minimap_preview EXCLUDE_FROM_ALL
+    tools/minimap_preview/main.cpp
+    src/ui/ui_draw.cpp
+    src/ui/minimap.cpp
+    src/ui/radar_map.cpp
+)
+target_include_directories(minimap_preview PRIVATE src)
+target_compile_options(minimap_preview PRIVATE -Wall -Wextra -Wno-unused-parameter -O2)
+target_link_options(minimap_preview PRIVATE -static -static-libgcc -static-libstdc++)
+target_link_libraries(minimap_preview PRIVATE user32 gdi32 gdiplus opengl32 ole32)
+set_target_properties(minimap_preview PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${COD1RELOADED_OUTPUT_DIR}")
 
 # Offline render of the Ctrl+M > Workshop tab (tools/workshop_preview/main.cpp) against a real
 # catalog; it installs into its own folder, so copy the exe to a scratch folder first.

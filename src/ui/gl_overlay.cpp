@@ -32,6 +32,8 @@
 #include "ui/eye_debug.h"
 #include "features/hitbox_view.h"
 #include "ui/streamer_hud.h"
+#include "ui/minimap.h"
+#include "ui/hud_editor.h"
 #include "core/iat.h"
 #include "core/logger.h"
 #include "input/rinput.h"
@@ -297,7 +299,8 @@ bool overlay_listener(HWND w, UINT m, WPARAM wp, LPARAM lp, LRESULT* res) {
     switch (m) {
     case WM_KEYDOWN:
         if (wp == VK_ESCAPE) {
-            if (g_mode == 1 && g_came_from_home) set_mode(2, false);   // settings -> home
+            if (g_mode == 1 && hud_editor_active()) hud_editor_open(false);   // editor -> Display tab
+            else if (g_mode == 1 && g_came_from_home) set_mode(2, false);   // settings -> home
             else if (g_mode == 2) home_menu_escape();                  // quit confirm on/off
             else overlay_toggle(false);
             return true;
@@ -513,6 +516,7 @@ void swap_frame_work(HDC dc) {
     pkg_install_frame();                          // package cvars + cod1x_install (features/pkg_frame)
     eye_debug_frame();                            // player_debugEyePosition (ui/eye_debug)
     hitbox_view_frame();                          // cod1x_drawhitbox (features/hitbox_view)
+    minimap_frame();                              // cod1x_minimap: cvars, the radar job (ui/minimap)
     HWND wnd = wndhub_window();                   // this frame's window
     hotkey_poll(wnd);
     if (g_wndproc_dead && g_mode != 0) g_in.down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
@@ -601,7 +605,19 @@ void swap_frame_work(HDC dc) {
         // no menu open: the announcement card, main menu only (no cgame = no game loaded)
         draw_news_card(wnd);
         // in game, PAM streamer team: the native caster overlay (ui/streamer_hud.cpp)
-        if (streamer_hud_frame()) {
+        const bool streamer = streamer_hud_frame();
+        // in game: the CoD4-style radar (ui/minimap.cpp); the caster overlay has its own
+        if (!streamer && minimap_active()) {
+            RECT rc;
+            GetClientRect(wnd, &rc);
+            if (rc.right > 0 && rc.bottom > 0) {
+                ui_begin_2d(rc.right, rc.bottom);
+                minimap_draw((float)rc.right, (float)rc.bottom);
+                ui_alpha(1.0f);
+                ui_end_2d();
+            }
+        }
+        if (streamer) {
             RECT rc;
             GetClientRect(wnd, &rc);
             g_vw = rc.right; g_vh = rc.bottom;
@@ -644,6 +660,11 @@ void swap_frame_work(HDC dc) {
 
 BOOL WINAPI hk_swapbuffers(HDC dc) {
     { PROF_SCOPE(PROF_OVERLAY); swap_frame_work(dc); }   // our per-frame work, timed apart from the real swap
+    {
+        HWND w = wndhub_window();
+        RECT rc;
+        if (w && GetClientRect(w, &rc) && rc.right > 0 && rc.bottom > 0) minimap_test_frame(rc.right, rc.bottom);   // dev captures
+    }
     return g_orig_swap ? g_orig_swap(dc) : FALSE;
 }
 

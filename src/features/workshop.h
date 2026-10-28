@@ -18,6 +18,9 @@
 // A pack of several pk3s (the HD textures) lists them instead of file/size/sha256/url:
 //     "files": [ { "file": "zcod1.pk3", "size": ..., "sha256": "...", "url": "..." }, ... ],
 //     "cvars": { "com_hunkMegs": "512" }       (seta'd on the main thread once installed)
+// "type": "hud" = files of the 1.6X HUD itself, not pk3s: <name>.png / <name>.json only,
+// folder "minimaps" only (the radar images ui/minimap.cpp reads, live, no restart; a pure
+// server never sees them).
 // tools/workshop/make_catalog.py writes it from the pk3s (size + sha256 computed).
 // A file:// link inside a catalog is only followed when the catalog itself is a local
 // file (a test catalog, a LAN share): an online catalog cannot make the client copy

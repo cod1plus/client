@@ -30,6 +30,7 @@
 #include "ui/demo_seek.h"
 #include "ui/demo_mod.h"
 #include "ui/workshop_tab.h"
+#include "ui/hud_editor.h"
 #include "features/demo_index.h"
 
 #include <cstdio>
@@ -509,6 +510,19 @@ float keychip(float x, float y, const char* k) {
     return w;
 }
 
+}  // namespace
+
+// the widgets, for the panels drawn inside the menu (ui/hud_editor.cpp)
+bool menu_button(float x, float y, float w, float h, const char* label, bool primary) { return button(x, y, w, h, label, primary); }
+int  menu_segmented(float x, float y, float w, const char* const* opts, int n, int sel) { return segmented(x, y, w, opts, n, sel); }
+int  menu_slider(float x, float y, float w, int lo, int hi, int v) { return slider(x, y, w, lo, hi, v); }
+bool menu_toggle(float x, float y, const char* label, bool on) { return toggle(x, y, label, on); }
+void menu_section(float x, float y, float w, const char* s) { section(x, y, w, s); }
+void menu_hint(float x, float y, const char* s) { hint(x, y, s); }
+bool menu_hit(float x, float y, float w, float h) { return hit(x, y, w, h); }
+
+namespace {
+
 // ------------------------------------------------------- rail glyph icons
 // Drawn with primitives (the flat direction bans textures); c follows the label.
 void icon_tab(int id, float x, float y, DWORD c) {
@@ -665,7 +679,7 @@ void brackets(float sx, float sy, float w, float h) {
     ui_rect(sx + w - in - th,  sy + h - in - a,   th, a,  c);
 }
 
-void draw_preview(float x, float y, float w, const Mode& m, int dmode, int vmode) {
+float draw_preview(float x, float y, float w, const Mode& m, int dmode, int vmode) {
     const float pad = 12, header = 34, caph = 30;
     float sw2 = w - pad * 2;
     float sh2 = sw2 * g_desk_h / g_desk_w;
@@ -731,6 +745,7 @@ void draw_preview(float x, float y, float w, const Mode& m, int dmode, int vmode
     static const char* views[] = { "Shapes", "Player model" };
     g_pv_view = segmented(x, y + cardh + 14, 260, views, 2, g_pv_view);
     hint(x + 274, y + cardh + 24, "sway + scan follow the selected refresh rate");
+    return y + cardh + 54;
 }
 
 void apply_display() {
@@ -1315,8 +1330,10 @@ void modern_menu_draw(float sw, float sh) {
     // entrance: fade in, content rises a few pixels
     static DWORD s_lastdraw = 0;
     DWORD nowt = GetTickCount();
-    if (nowt - s_lastdraw > 250) ui_anim_set(8000, 0.0f);
+    if (nowt - s_lastdraw > 250) { ui_anim_set(8000, 0.0f); hud_editor_open(false); }
     s_lastdraw = nowt;
+    // Display > HUD > Edit: the menu steps aside, the game stays on screen
+    if (hud_editor_active()) { ui_alpha(1.0f); hud_editor_draw(sw, sh); return; }
     float ot = ui_smooth(8000, 1.0f, 9.0f);
     ui_alpha(ot);
 
@@ -1517,8 +1534,9 @@ void modern_menu_draw(float sw, float sh) {
         }
         float pvw = pw - 120 - colw - 70;
         if (pvw > 560) pvw = 560;
-        draw_preview(px + 36 + colw + 70, py + 122, pvw,
-                     g_modes[g_sel], g_display_mode, g_view_mode);
+        const float pv_bottom = draw_preview(px + 36 + colw + 70, py + 122, pvw,
+                                             g_modes[g_sel], g_display_mode, g_view_mode);
+        hud_editor_block(px + 36 + colw + 70, pv_bottom + 26, pvw);
     } else if (g_tab == 1) {
         section(cx, cy, colw, "RAW INPUT"); cy += 26;
         bool ri = cv_int("m_rinput", 0) != 0;

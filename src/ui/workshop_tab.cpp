@@ -198,7 +198,8 @@ std::string status_line(const WsItem& it, DWORD& col) {
     case WS_ABSENT:    return "Not installed  -  " + fmt_size(it.size) + " download" +
                               (it.files.size() > 1 ? " (" + std::to_string(it.files.size()) + " files)" : "");
     case WS_INSTALLED: col = UI_TEXT;
-                       return it.installed_now ? "Installed and verified - restart the game to play it"
+                       return it.installed_now ? (it.type == "hud" ? "Installed and verified - on screen now, no restart"
+                                                                   : "Installed and verified - restart the game to play it")
                                                : "Installed, identical to the catalog (SHA-256)";
     case WS_OUTDATED:  col = WS_AMBER;
                        return it.local_version.empty() ? "Another version is installed - v" + it.version + " available"
@@ -236,7 +237,7 @@ void draw_detail(const WsItem& it, float dx, float dy, float dw, float bottom) {
         dy += 30;
     }
     float cx = dx;
-    cx += chip(cx, dy, it.type == "mod" ? "MOD" : "MAP", UI_TEXT, UI_ROW, UI_LINE) + 8;
+    cx += chip(cx, dy, it.type == "mod" ? "MOD" : it.type == "hud" ? "HUD" : "MAP", UI_TEXT, UI_ROW, UI_LINE) + 8;
     if (!it.version.empty()) cx += chip(cx, dy, ("v" + it.version).c_str(), UI_TEXT, UI_ROW, UI_LINE) + 8;
     cx += chip(cx, dy, fmt_size(it.size).c_str(), UI_TEXT, UI_ROW, UI_LINE) + 8;
     const Look lk = look_of(it);
@@ -301,7 +302,10 @@ void draw_detail(const WsItem& it, float dx, float dy, float dw, float bottom) {
     }
     dy += 10;
     if (dy + 40 > bottom) return;
-    if (it.installed_now) {
+    if (it.type == "hud") {
+        ui_text(dx, dy, 13, 400, UI_HINT, "Pictures the minimap reads itself (not pk3s): no restart, nothing");
+        ui_text(dx, dy + 20, 13, 400, UI_HINT, "for a pure server to refuse. The radar switches to them at once.");
+    } else if (it.installed_now) {
         ui_text(dx, dy, 13, 400, UI_HINT, "CoD1 lists its pk3s when it starts: restart the game (or join a");
         ui_text(dx, dy + 20, 13, 400, UI_HINT, "server running it) and the new content is there.");
     } else {
@@ -401,7 +405,7 @@ void workshop_tab_draw(float x, float y, float w, float bottom) {
         ui_text(tx + 16, ty + th + 14, 17, 600, UI_TEXT, fit(it.name, 17, 600, tw - 32).c_str());
         if (!it.author.empty())
             ui_text(tx + 16, ty + th + 40, 13, 400, UI_MUTED, fit("by " + it.author, 13, 400, tw - 32).c_str());
-        std::string meta = std::string(it.type == "mod" ? "MOD" : "MAP") + DOT + fmt_size(it.size);
+        std::string meta = std::string(it.type == "mod" ? "MOD" : it.type == "hud" ? "HUD" : "MAP") + DOT + fmt_size(it.size);
         if (!it.version.empty()) meta += std::string(DOT) + "v" + it.version;
         ui_text(tx + 16, ty + th + 64, 12, 600, UI_EYEB, meta.c_str());
         if (over && ui_input().clicked) s_sel = it.id;

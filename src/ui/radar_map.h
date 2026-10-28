@@ -30,6 +30,12 @@ struct RadarMap {
 // `max_w` x `max_h`: the box the radar is shown in, in screen pixels. The image fits it
 // with the playable area's own shape.
 bool radar_map_build(const unsigned char* bsp, int len, int max_w, int max_h, RadarMap& out);
+// The same drawing for a zoomed minimap (ui/minimap.cpp): `units_per_px` world units per
+// pixel whatever the map's size (raised only when the long side would pass `max_side`),
+// walls `wall_units` thick so they stay visible once scaled down on screen. Drawn by
+// strips: a 2048 px radar needs tens of MB, not hundreds.
+bool radar_map_build_detail(const unsigned char* bsp, int len, float units_per_px, int max_side,
+                            float wall_units, RadarMap& out);
 
 }  // namespace patches
 

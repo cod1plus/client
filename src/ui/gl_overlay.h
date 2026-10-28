@@ -112,6 +112,15 @@ void ui_rect_hgrad(float x, float y, float w, float h, DWORD left, DWORD right);
 bool ui_tex_known(const char* key);
 bool ui_tex_upload(const char* key, int w, int h, const void* rgba, bool repeat, bool mipmap);
 bool ui_tex_size(const char* key, int* w, int* h);
+// A mip chain built by the caller (a worker thread can do the filtering): levels[0] is
+// w x h, each next one halves (at least 1), down to 1 x 1 for trilinear filtering.
+bool ui_tex_upload_levels(const char* key, int w, int h, const unsigned char* const* levels, int nlevels);
+// The next level of such a chain: box filter, colour weighted by alpha (no dark fringe at
+// transparent edges). Pure CPU, any thread; dst holds max(1, w/2) x max(1, h/2) pixels.
+void ui_mip_half(const unsigned char* src, int w, int h, unsigned char* dst);
+// Binds a cached texture for raw GL drawing (glTexCoord2f / glVertex2f), modulated by the
+// current colour. False when the key is unknown or failed.
+bool ui_tex_bind(const char* key);
 bool ui_tex_draw(const char* key, float x, float y, float w, float h,
                  float u0, float v0, float u1, float v1, DWORD rgba);
 

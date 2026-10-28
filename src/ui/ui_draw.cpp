@@ -695,6 +695,25 @@ void ui_rect_hgrad(float x, float y, float w, float h, DWORD left, DWORD right) 
     glEnd();
 }
 
+void ui_mip_half(const unsigned char* src, int cw, int ch, unsigned char* dst) {
+    const int nw = cw > 1 ? cw / 2 : 1, nh = ch > 1 ? ch / 2 : 1;
+    for (int y = 0; y < nh; ++y)
+        for (int x = 0; x < nw; ++x) {
+            float acc[4] = { 0, 0, 0, 0 };
+            for (int dy = 0; dy < 2; ++dy)
+                for (int dx = 0; dx < 2; ++dx) {
+                    const int sx = x * 2 + dx < cw ? x * 2 + dx : cw - 1;
+                    const int sy = y * 2 + dy < ch ? y * 2 + dy : ch - 1;
+                    const unsigned char* s = &src[((size_t)sy * cw + sx) * 4];
+                    const float a = s[3];
+                    acc[0] += s[0] * a; acc[1] += s[1] * a; acc[2] += s[2] * a; acc[3] += a;
+                }
+            unsigned char* d = &dst[((size_t)y * nw + x) * 4];
+            for (int c = 0; c < 3; ++c) d[c] = (unsigned char)(acc[3] > 0 ? acc[c] / acc[3] : 0);
+            d[3] = (unsigned char)(acc[3] / 4 + 0.5f);
+        }
+}
+
 bool ui_tex_known(const char* key) { return g_tex.find(key) != g_tex.end(); }
 
 bool ui_tex_upload(const char* key, int w, int h, const void* rgba, bool repeat, bool mipmap) {
@@ -711,21 +730,7 @@ bool ui_tex_upload(const char* key, int w, int h, const void* rgba, bool repeat,
             while (cw > 1 || ch > 1) {
                 const int nw = cw > 1 ? cw / 2 : 1, nh = ch > 1 ? ch / 2 : 1;
                 std::vector<unsigned char> nxt((size_t)nw * nh * 4);
-                for (int y = 0; y < nh; ++y)
-                    for (int x = 0; x < nw; ++x) {
-                        float acc[4] = { 0, 0, 0, 0 };
-                        for (int dy = 0; dy < 2; ++dy)
-                            for (int dx = 0; dx < 2; ++dx) {
-                                const int sx = x * 2 + dx < cw ? x * 2 + dx : cw - 1;
-                                const int sy = y * 2 + dy < ch ? y * 2 + dy : ch - 1;
-                                const unsigned char* s = &cur[((size_t)sy * cw + sx) * 4];
-                                const float a = s[3];
-                                acc[0] += s[0] * a; acc[1] += s[1] * a; acc[2] += s[2] * a; acc[3] += a;
-                            }
-                        unsigned char* d = &nxt[((size_t)y * nw + x) * 4];
-                        for (int c = 0; c < 3; ++c) d[c] = (unsigned char)(acc[3] > 0 ? acc[c] / acc[3] : 0);
-                        d[3] = (unsigned char)(acc[3] / 4 + 0.5f);
-                    }
+                ui_mip_half(cur.data(), cw, ch, nxt.data());
                 cur.swap(nxt);
                 cw = nw; ch = nh;
                 glTexImage2D(GL_TEXTURE_2D, ++level, GL_RGBA, cw, ch, 0, GL_RGBA, GL_UNSIGNED_BYTE, cur.data());
@@ -747,6 +752,43 @@ bool ui_tex_upload(const char* key, int w, int h, const void* rgba, bool repeat,
         g_tex.emplace(key, t);                    // a failure (no pixels) is remembered too
     }
     return t.id != 0;
+}
+
+bool ui_tex_upload_levels(const char* key, int w, int h, const unsigned char* const* levels, int nlevels) {
+    TextTex t;
+    if (levels && nlevels > 0 && levels[0] && w > 0 && h > 0) {
+        glGenTextures(1, &t.id);
+        glBindTexture(GL_TEXTURE_2D, t.id);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        int cw = w, ch = h;
+        for (int l = 0; l < nlevels; ++l) {
+            glTexImage2D(GL_TEXTURE_2D, l, GL_RGBA, cw, ch, 0, GL_RGBA, GL_UNSIGNED_BYTE, levels[l]);
+            cw = cw > 1 ? cw / 2 : 1; ch = ch > 1 ? ch / 2 : 1;
+        }
+        const bool full = cw == 1 && ch == 1;   // complete chain: else GL would sample nothing
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, nlevels > 1 && full ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        t.w = w; t.h = h;
+    }
+    auto it = g_tex.find(key);
+    if (it != g_tex.end()) {
+        if (it->second.id) glDeleteTextures(1, &it->second.id);
+        it->second = t;
+    } else {
+        g_tex.emplace(key, t);
+    }
+    return t.id != 0;
+}
+
+bool ui_tex_bind(const char* key) {
+    auto it = g_tex.find(key);
+    if (it == g_tex.end() || !it->second.id) return false;
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, it->second.id);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    return true;
 }
 
 bool ui_tex_size(const char* key, int* w, int* h) {

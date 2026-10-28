@@ -20,6 +20,8 @@ constexpr float BODY_LOW = 18.0f, BODY_HIGH = 56.0f;   // above the floor: lower
 constexpr float MAX_STEP = 44.0f;                       // height change between neighbouring floor pixels
 constexpr int   WORK = 512;                             // analysis grid (framing, reach): long side
 constexpr int   SS = 3;                                 // drawing: supersampling per output pixel
+constexpr int   WORK_DETAIL = 1024;                     // the same for a zoomed minimap: finer outline
+constexpr int   SS_DETAIL = 2;
 
 // ---- look (straight RGB) ----
 struct RGB { float r, g, b; };
@@ -374,14 +376,15 @@ float smooth01(float e0, float e1, float x) {
     return t * t * (3 - 2 * t);
 }
 
-}  // namespace
+// The playable area and its frame: steps 1 and 2 of the method (see radar_map.h).
+struct Frame {
+    float lox = 0, loy = 0, hix = 0, hiy = 0, zcut = 0;
+    Grid g;                          // analysis grid over the frame
+    Layers L;
+    std::vector<unsigned char> play; // reachable, dilated
+};
 
-bool radar_map_build(const unsigned char* data, int len, int max_w, int max_h, RadarMap& out) {
-    out = RadarMap();
-    Bsp b;
-    if (!load_bsp(data, len, b, out.error)) return false;
-    for (int k = 0; k < 2; ++k) { out.site[k] = b.site[k]; out.site_x[k] = b.site_x[k]; out.site_y[k] = b.site_y[k]; }
-
+void analyse(const Bsp& b, int work, Frame& f) {
     float zcut = -1e9f, slox = 1e9f, sloy = 1e9f, shix = -1e9f, shiy = -1e9f;
     for (const Pt& p : b.pts) {
         zcut = std::max(zcut, p.z);
@@ -394,7 +397,7 @@ bool radar_map_build(const unsigned char* data, int len, int max_w, int max_h, R
     // 1. loose frame around the spawns and bombsites, where the reachable area is measured
     float pad = std::max(1200.0f, 0.35f * sext);
     float lox = slox - pad, loy = sloy - pad, hix = shix + pad, hiy = shiy + pad;
-    Grid g = Grid::fit(lox, loy, hix, hiy, std::max(hix - lox, hiy - loy) / WORK);
+    Grid g = Grid::fit(lox, loy, hix, hiy, std::max(hix - lox, hiy - loy) / work);
     Layers L;
     raster(b, g, zcut, 0.7f, true, L);
     std::vector<unsigned char> reach = reachable(L, g, b);
@@ -429,99 +432,147 @@ bool radar_map_build(const unsigned char* data, int len, int max_w, int max_h, R
         sx = std::max(sx, sy / 3.0f); sy = std::max(sy, sx / 3.0f);
         lox = cx - sx / 2; hix = cx + sx / 2; loy = cy - sy / 2; hiy = cy + sy / 2;
     }
-    g = Grid::fit(lox, loy, hix, hiy, std::max(hix - lox, hiy - loy) / WORK);
-    raster(b, g, zcut, 0.7f, true, L);
-    reach = reachable(L, g, b);
-    const std::vector<unsigned char> play = dilate(reach, g.nx, g.ny, 3);
+    f.g = Grid::fit(lox, loy, hix, hiy, std::max(hix - lox, hiy - loy) / work);
+    raster(b, f.g, zcut, 0.7f, true, f.L);
+    reach = reachable(f.L, f.g, b);
+    f.play = dilate(reach, f.g.nx, f.g.ny, 3);
+    f.lox = lox; f.loy = loy; f.hix = hix; f.hiy = hiy; f.zcut = zcut;
+}
 
-    // 3. the drawing, at the size it is shown (SS x SS samples per output pixel)
-    const float wx = hix - lox, wy = hiy - loy;
-    const float fit = std::min(max_w / wx, max_h / wy);
-    const int ow = std::max(16, (int)(wx * fit + 0.5f)), oh = std::max(16, (int)(wy * fit + 0.5f));
-    const float vpx = std::max(wx / ow, wy / oh) / SS;
-    const Grid v = Grid::exact((lox + hix) / 2, (loy + hiy) / 2, ow * SS, oh * SS, vpx);
-    Layers V;
-    raster(b, v, zcut, WALL_PX * SS * 0.5f, false, V);
+// 3. the drawing: ow x oh pixels over the frame, ss x ss samples per pixel, wall lines
+//    `wall_px` output pixels wide. Rasterised by strips of rows (with one sample row of
+//    margin for the ledge test), so a large picture never holds more than ~2 M samples.
+void draw(const Bsp& b, const Frame& f, int ow, int oh, int ss, float wall_px, RadarMap& out) {
+    const Grid& g = f.g;
+    const float wx = f.hix - f.lox, wy = f.hiy - f.loy;
+    const float vpx = std::max(wx / ow, wy / oh) / ss;
+    const Grid full = Grid::exact((f.lox + f.hix) / 2, (f.loy + f.hiy) / 2, ow * ss, oh * ss, vpx);
+    const float top = full.y0 + full.span_y;
 
-    // play mask at drawing resolution: the analysis mask, bilinear, soft threshold
-    const size_t vn = (size_t)v.nx * v.ny;
-    std::vector<float> pm(vn);
-    for (int y = 0; y < v.ny; ++y) {
-        const float wyy = v.y0 + v.span_y - (y + 0.5f) * v.px;
-        const float gy = g.ty(wyy) - 0.5f;
-        for (int x = 0; x < v.nx; ++x) {
-            const float wxx = v.x0 + (x + 0.5f) * v.px;
-            const float gx = g.tx(wxx) - 0.5f;
-            const int x0 = (int)floorf(gx), y0 = (int)floorf(gy);
-            const float fx = gx - x0, fy = gy - y0;
-            float acc = 0;
-            for (int dy = 0; dy < 2; ++dy)
-                for (int dx = 0; dx < 2; ++dx) {
-                    const int xx = x0 + dx, yy = y0 + dy;
-                    const float m = (xx >= 0 && yy >= 0 && xx < g.nx && yy < g.ny) ? play[(size_t)yy * g.nx + xx] : 0.0f;
-                    acc += m * (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy);
-                }
-            pm[(size_t)y * v.nx + x] = smooth01(0.3f, 0.7f, acc);
-        }
-    }
-
-    // height range of the playable floor (2nd..98th percentile)
+    // height range of the playable floor (2nd..98th percentile), on the analysis grid
     std::vector<float> hs;
-    for (size_t i = 0; i < vn; i += 3)
-        if (pm[i] > 0.5f && V.height[i] > -1e8f && !V.water[i]) hs.push_back(V.height[i]);
+    for (size_t i = 0; i < f.play.size(); ++i)
+        if (f.play[i] && f.L.height[i] > -1e8f && !f.L.water[i]) hs.push_back(f.L.height[i]);
     const float hmin = hs.size() > 20 ? percentile(hs, 2) : 0;
     const float hmax = hs.size() > 20 ? percentile(hs, 98) : 1;
     const float hr = std::max(1.0f, hmax - hmin);
 
-    // compose (straight colour + alpha per sample), then box-filter SS x SS, premultiplied
     out.w = ow; out.h = oh;
     out.rgba.assign((size_t)ow * oh * 4, 0);
-    std::vector<float> acc((size_t)ow * oh * 4, 0.0f);
-    for (int y = 0; y < v.ny; ++y) {
-        for (int x = 0; x < v.nx; ++x) {
-            const size_t i = (size_t)y * v.nx + x;
-            const float a = pm[i];
-            if (a <= 0) continue;
-            RGB c;
-            const float h = V.height[i];
-            if (V.walls[i]) c = WALL;
-            else if (h <= -1e8f) c = VOID_;
-            else if (V.water[i]) c = WATER;
-            else {
-                const float t = std::min(1.0f, std::max(0.0f, (h - hmin) / hr));
-                const float sh = 0.86f + 0.20f * std::min(1.0f, std::max(0.0f, V.shade[i]));
-                c = { (FLOOR_LO.r + (FLOOR_HI.r - FLOOR_LO.r) * t) * sh,
-                      (FLOOR_LO.g + (FLOOR_HI.g - FLOOR_LO.g) * t) * sh,
-                      (FLOOR_LO.b + (FLOOR_HI.b - FLOOR_LO.b) * t) * sh };
-                // a step in the floor (ledge, stairs edge): a dark line on the lower side
-                float dz = 0;
-                if (x + 1 < v.nx && V.height[i + 1] > -1e8f) dz = std::max(dz, V.height[i + 1] - h);
-                if (x > 0 && V.height[i - 1] > -1e8f) dz = std::max(dz, V.height[i - 1] - h);
-                if (y + 1 < v.ny && V.height[i + v.nx] > -1e8f) dz = std::max(dz, V.height[i + v.nx] - h);
-                if (y > 0 && V.height[i - v.nx] > -1e8f) dz = std::max(dz, V.height[i - v.nx] - h);
-                if (dz > LEDGE_DZ) {
-                    c.r *= 1 - LEDGE_A; c.g *= 1 - LEDGE_A; c.b *= 1 - LEDGE_A;
-                }
+    const int strip = std::max(1, (1 << 21) / std::max(1, ow * ss * ss));   // output rows per strip
+    std::vector<float> pm, acc;
+    Layers V;
+    for (int r0 = 0; r0 < oh; r0 += strip) {
+        const int r1 = std::min(oh, r0 + strip);
+        const int s0 = r0 * ss - 1, s1 = r1 * ss + 1, ns = s1 - s0;   // sample rows of this strip
+        Grid v = full;
+        v.ny = ns; v.span_y = ns * vpx; v.y0 = top - s1 * vpx;
+        raster(b, v, f.zcut, wall_px * ss * 0.5f, false, V);
+
+        // play mask at drawing resolution: the analysis mask, bilinear, soft threshold
+        const size_t vn = (size_t)v.nx * v.ny;
+        pm.assign(vn, 0.0f);
+        for (int y = 0; y < v.ny; ++y) {
+            const float wyy = v.y0 + v.span_y - (y + 0.5f) * v.px;
+            const float gy = g.ty(wyy) - 0.5f;
+            for (int x = 0; x < v.nx; ++x) {
+                const float wxx = v.x0 + (x + 0.5f) * v.px;
+                const float gx = g.tx(wxx) - 0.5f;
+                const int x0 = (int)floorf(gx), y0 = (int)floorf(gy);
+                const float fx = gx - x0, fy = gy - y0;
+                float a = 0;
+                for (int dy = 0; dy < 2; ++dy)
+                    for (int dx = 0; dx < 2; ++dx) {
+                        const int xx = x0 + dx, yy = y0 + dy;
+                        const float m = (xx >= 0 && yy >= 0 && xx < g.nx && yy < g.ny) ? f.play[(size_t)yy * g.nx + xx] : 0.0f;
+                        a += m * (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy);
+                    }
+                pm[(size_t)y * v.nx + x] = smooth01(0.3f, 0.7f, a);
             }
-            float* o = &acc[((size_t)(y / SS) * ow + (x / SS)) * 4];
-            o[0] += c.r * a; o[1] += c.g * a; o[2] += c.b * a; o[3] += a;
+        }
+
+        // compose (straight colour + alpha per sample), then box-filter ss x ss, premultiplied
+        acc.assign((size_t)ow * (r1 - r0) * 4, 0.0f);
+        for (int y = 1; y + 1 < v.ny; ++y) {
+            const int oy = (s0 + y) / ss - r0;
+            for (int x = 0; x < v.nx; ++x) {
+                const size_t i = (size_t)y * v.nx + x;
+                const float a = pm[i];
+                if (a <= 0) continue;
+                RGB c;
+                const float h = V.height[i];
+                if (V.walls[i]) c = WALL;
+                else if (h <= -1e8f) c = VOID_;
+                else if (V.water[i]) c = WATER;
+                else {
+                    const float t = std::min(1.0f, std::max(0.0f, (h - hmin) / hr));
+                    const float sh = 0.86f + 0.20f * std::min(1.0f, std::max(0.0f, V.shade[i]));
+                    c = { (FLOOR_LO.r + (FLOOR_HI.r - FLOOR_LO.r) * t) * sh,
+                          (FLOOR_LO.g + (FLOOR_HI.g - FLOOR_LO.g) * t) * sh,
+                          (FLOOR_LO.b + (FLOOR_HI.b - FLOOR_LO.b) * t) * sh };
+                    // a step in the floor (ledge, stairs edge): a dark line on the lower side
+                    float dz = 0;
+                    if (x + 1 < v.nx && V.height[i + 1] > -1e8f) dz = std::max(dz, V.height[i + 1] - h);
+                    if (x > 0 && V.height[i - 1] > -1e8f) dz = std::max(dz, V.height[i - 1] - h);
+                    if (V.height[i + v.nx] > -1e8f) dz = std::max(dz, V.height[i + v.nx] - h);
+                    if (V.height[i - v.nx] > -1e8f) dz = std::max(dz, V.height[i - v.nx] - h);
+                    if (dz > LEDGE_DZ) {
+                        c.r *= 1 - LEDGE_A; c.g *= 1 - LEDGE_A; c.b *= 1 - LEDGE_A;
+                    }
+                }
+                float* o = &acc[((size_t)oy * ow + (x / ss)) * 4];
+                o[0] += c.r * a; o[1] += c.g * a; o[2] += c.b * a; o[3] += a;
+            }
+        }
+        const float nsamp = (float)(ss * ss);
+        for (size_t i = 0; i < (size_t)ow * (r1 - r0); ++i) {
+            const float* s = &acc[i * 4];
+            unsigned char* d = &out.rgba[((size_t)r0 * ow) * 4 + i * 4];
+            if (s[3] > 0) {
+                d[0] = (unsigned char)std::min(255.0f, s[0] / s[3] + 0.5f);
+                d[1] = (unsigned char)std::min(255.0f, s[1] / s[3] + 0.5f);
+                d[2] = (unsigned char)std::min(255.0f, s[2] / s[3] + 0.5f);
+            } else {
+                d[0] = (unsigned char)FLOOR_LO.r; d[1] = (unsigned char)FLOOR_LO.g; d[2] = (unsigned char)FLOOR_LO.b;
+            }
+            d[3] = (unsigned char)std::min(255.0f, s[3] / nsamp * 255.0f + 0.5f);
         }
     }
-    const float nsamp = (float)(SS * SS);
-    for (size_t i = 0; i < (size_t)ow * oh; ++i) {
-        const float* s = &acc[i * 4];
-        unsigned char* d = &out.rgba[i * 4];
-        if (s[3] > 0) {
-            d[0] = (unsigned char)std::min(255.0f, s[0] / s[3] + 0.5f);
-            d[1] = (unsigned char)std::min(255.0f, s[1] / s[3] + 0.5f);
-            d[2] = (unsigned char)std::min(255.0f, s[2] / s[3] + 0.5f);
-        } else {
-            d[0] = (unsigned char)FLOOR_LO.r; d[1] = (unsigned char)FLOOR_LO.g; d[2] = (unsigned char)FLOOR_LO.b;
-        }
-        d[3] = (unsigned char)std::min(255.0f, s[3] / nsamp * 255.0f + 0.5f);
-    }
-    out.x0 = v.x0; out.y0 = v.y0; out.span_x = v.span_x; out.span_y = v.span_y;
+    out.x0 = full.x0; out.y0 = full.y0; out.span_x = full.span_x; out.span_y = full.span_y;
     out.ok = true;
+}
+
+bool load(const unsigned char* data, int len, Bsp& b, RadarMap& out) {
+    out = RadarMap();
+    if (!load_bsp(data, len, b, out.error)) return false;
+    for (int k = 0; k < 2; ++k) { out.site[k] = b.site[k]; out.site_x[k] = b.site_x[k]; out.site_y[k] = b.site_y[k]; }
+    return true;
+}
+
+}  // namespace
+
+bool radar_map_build(const unsigned char* data, int len, int max_w, int max_h, RadarMap& out) {
+    Bsp b;
+    if (!load(data, len, b, out)) return false;
+    Frame f;
+    analyse(b, WORK, f);
+    const float wx = f.hix - f.lox, wy = f.hiy - f.loy;
+    const float fit = std::min(max_w / wx, max_h / wy);
+    const int ow = std::max(16, (int)(wx * fit + 0.5f)), oh = std::max(16, (int)(wy * fit + 0.5f));
+    draw(b, f, ow, oh, SS, WALL_PX, out);
+    return true;
+}
+
+bool radar_map_build_detail(const unsigned char* data, int len, float units_per_px, int max_side,
+                            float wall_units, RadarMap& out) {
+    Bsp b;
+    if (!load(data, len, b, out)) return false;
+    Frame f;
+    analyse(b, WORK_DETAIL, f);
+    const float wx = f.hix - f.lox, wy = f.hiy - f.loy;
+    const float upp = std::max(units_per_px, std::max(wx, wy) / std::max(64, max_side));
+    const int ow = std::max(16, (int)ceilf(wx / upp)), oh = std::max(16, (int)ceilf(wy / upp));
+    draw(b, f, ow, oh, SS_DETAIL, wall_units / upp, out);
     return true;
 }
 
