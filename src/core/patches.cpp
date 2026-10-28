@@ -9,6 +9,7 @@
 #include "netcode/competitive.h"
 #include "netcode/ruleset_fetch.h"
 #include "features/pam_install.h"
+#include "features/workshop.h"
 #include "features/news.h"
 #include "netcode/version_gate.h"
 #include "video/window_patch.h"
@@ -277,6 +278,14 @@ void load_config(HMODULE self_module) {
         DWORD n = GetPrivateProfileStringA(
             "cod1reloaded", "hdtex_manifest_url", "", buf, sizeof(buf), ini_path);
         if (n > 0) snprintf(g_hdtex_install_config.manifest_url, sizeof(g_hdtex_install_config.manifest_url), "%s", buf);
+    }
+    g_workshop_config.enable = read_ini_bool(
+        ini_path, "workshop_enable", g_workshop_config.enable);
+    {
+        char buf[256];
+        DWORD n = GetPrivateProfileStringA(
+            "cod1reloaded", "workshop_manifest_url", "", buf, sizeof(buf), ini_path);
+        if (n > 0) snprintf(g_workshop_config.manifest_url, sizeof(g_workshop_config.manifest_url), "%s", buf);
     }
     g_frame_limiter_config.enable = read_ini_bool(
         ini_path, "frame_limiter_enable", g_frame_limiter_config.enable);

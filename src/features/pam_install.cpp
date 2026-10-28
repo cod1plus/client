@@ -205,10 +205,10 @@ bool file_sha256(const char* path, unsigned long long* size, std::string& hex) {
     if (!f) return false;
     Sha256 h;
     if (!h.ok) { fclose(f); return false; }
-    static char buf[1 << 16];
+    std::vector<char> buf(1 << 16);       // per call: the Workshop hashes on its own threads
     size_t n;
     unsigned long long total = 0;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) { h.update(buf, (DWORD)n); total += n; }
+    while ((n = fread(buf.data(), 1, buf.size(), f)) > 0) { h.update(buf.data(), (DWORD)n); total += n; }
     fclose(f);
     *size = total;
     hex = h.hex();
@@ -249,7 +249,7 @@ HINTERNET open_url(HINTERNET hi, const char* url, std::string& err,
     return hu;
 }
 
-bool http_get_text(const char* url, std::string& out, std::string& err) {
+bool http_get_text(const char* url, std::string& out, std::string& err, size_t max_bytes = MAX_MANIFEST_BYTES) {
     HINTERNET hi = open_inet();
     if (!hi) { err = "wininet unavailable"; return false; }
     HINTERNET hu = open_url(hi, url, err);
@@ -258,7 +258,7 @@ bool http_get_text(const char* url, std::string& out, std::string& err) {
     char buf[8192]; DWORD n = 0; bool ok = true;
     while (InternetReadFile(hu, buf, sizeof(buf), &n) && n > 0) {
         out.append(buf, n);
-        if (out.size() > MAX_MANIFEST_BYTES) { ok = false; err = "manifest too large"; break; }
+        if (out.size() > max_bytes) { ok = false; err = "manifest too large"; break; }
     }
     InternetCloseHandle(hu);
     InternetCloseHandle(hi);
@@ -270,10 +270,12 @@ bool http_get_text(const char* url, std::string& out, std::string& err) {
 // Resumable: a <name>.part left by an interrupted run is continued from its size
 // (a multi-GB texture pack over a flaky link must not start over), its bytes are
 // hashed first so the SHA-256 still covers the whole file. A server that ignores
-// the Range request (200) makes us start over.
+// the Range request (200) makes us start over. `cb` set (pkg_fetch_file): progress goes
+// there instead of a package job's status.
 bool http_get_file(const char* url, const char* path, unsigned long long expect_size,
                    unsigned long long done_base, unsigned long long total,
-                   const char* label, std::string& sha_out, std::string& err) {
+                   const char* label, std::string& sha_out, std::string& err,
+                   PkgProgressFn cb = nullptr, void* cb_user = nullptr) {
     HINTERNET hi = open_inet();
     if (!hi) { err = "wininet unavailable"; return false; }
     Sha256 h;
@@ -293,8 +295,8 @@ bool http_get_file(const char* url, const char* path, unsigned long long expect_
         FILE* pf = fopen(path, "rb");
         unsigned long long hashed = 0;
         if (pf) {
-            static char hb[1 << 16]; size_t k;
-            while ((k = fread(hb, 1, sizeof(hb), pf)) > 0) { h.update(hb, (DWORD)k); hashed += k; }
+            std::vector<char> hb(1 << 16); size_t k;
+            while ((k = fread(hb.data(), 1, hb.size(), pf)) > 0) { h.update(hb.data(), (DWORD)k); hashed += k; }
             fclose(pf);
         }
         if (hashed != have) { have = 0; InternetCloseHandle(hu); hu = open_url(hi, url, err, 0, &status); if (!hu) { InternetCloseHandle(hi); return false; } }
@@ -302,14 +304,15 @@ bool http_get_file(const char* url, const char* path, unsigned long long expect_
     FILE* f = fopen(path, have ? "ab" : "wb");
     if (!f) { err = "cannot write to the mod folder"; InternetCloseHandle(hu); InternetCloseHandle(hi); return false; }
     if (!have) { Sha256 fresh; std::swap(h.prov, fresh.prov); std::swap(h.hash, fresh.hash); std::swap(h.ok, fresh.ok); }
-    if (have) logger::logf("%s: resuming %s at %.1f MB", t_job->tag, label, have / 1048576.0);
-    static char buf[1 << 16];
+    if (have) logger::logf("%s: resuming %s at %.1f MB", t_job ? t_job->tag : "fetch", label, have / 1048576.0);
+    std::vector<char> bufv(1 << 16);
+    char* buf = bufv.data();
     DWORD n = 0;
     unsigned long long got = have;
     bool ok = true;
     DWORD last_ui = 0, t0 = GetTickCount();
     const unsigned long long got0 = got;
-    while (InternetReadFile(hu, buf, sizeof(buf), &n) && n > 0) {
+    while (InternetReadFile(hu, buf, (DWORD)bufv.size(), &n) && n > 0) {
         if (fwrite(buf, 1, n, f) != n) { ok = false; err = "disk write failed"; break; }
         h.update(buf, n);
         got += n;
@@ -318,6 +321,7 @@ bool http_get_file(const char* url, const char* path, unsigned long long expect_
         if (now - last_ui > 100) {
             last_ui = now;
             const double secs = (now - t0) / 1000.0;
+            if (cb) { cb(cb_user, got, expect_size, secs > 0.2 ? (got - got0) / 1048576.0 / secs : 0.0); continue; }
             char txt[160];
             snprintf(txt, sizeof(txt), "%s  %.1f / %.1f MB  %.1f MB/s", label,
                      got / 1048576.0, expect_size / 1048576.0, secs > 0.2 ? (got - got0) / 1048576.0 / secs : 0.0);
@@ -545,5 +549,31 @@ void pam_install_swap_pending() {
     FindClose(h);
     if (swapped) logger::logf("pkg_install: %d staged pk3(s) swapped in from the previous session", swapped);
 }
+
+// ---------------------------------------------------------------- shared with the Workshop
+bool pkg_fetch_text(const char* url, size_t max_bytes, std::string& out, std::string& err) {
+    return http_get_text(url, out, err, max_bytes);
+}
+
+bool pkg_fetch_file(const char* url, const char* path, unsigned long long expect_size,
+                    PkgProgressFn progress, void* user, char sha_hex[65], std::string& err) {
+    std::string hex;
+    sha_hex[0] = 0;
+    if (!http_get_file(url, path, expect_size, 0, expect_size, "", hex, err, progress, user)) return false;
+    snprintf(sha_hex, 65, "%s", hex.c_str());
+    return true;
+}
+
+bool pkg_file_sha256(const char* path, unsigned long long* size, char sha_hex[65]) {
+    std::string hex;
+    sha_hex[0] = 0;
+    if (!file_sha256(path, size, hex)) return false;
+    snprintf(sha_hex, 65, "%s", hex.c_str());
+    return true;
+}
+
+bool pkg_game_dir(char* out, size_t n) { return game_dir(out, n); }
+bool pkg_valid_pk3_name(const char* s) { return s && valid_name(s); }
+bool pkg_valid_folder(const char* s) { return s && valid_mod(s); }
 
 }  // namespace patches

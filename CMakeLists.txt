@@ -47,6 +47,7 @@ set(COD1RELOADED_SOURCES
     src/netcode/ruleset_fetch.cpp
     src/features/pam_install.cpp
     src/features/pkg_frame.cpp
+    src/features/workshop.cpp
     src/netcode/ruleset.cpp
     src/netcode/version_gate.cpp
     src/video/window_patch.cpp
@@ -105,6 +106,7 @@ set(COD1RELOADED_SOURCES
     src/ui/streamer_hud.cpp
     src/ui/game_image.cpp
     src/ui/radar_map.cpp
+    src/ui/workshop_tab.cpp
 )
 
 add_library(cod1reloaded SHARED
@@ -229,3 +231,19 @@ target_compile_options(hud_preview PRIVATE -Wall -Wextra -Wno-unused-parameter -
 target_link_options(hud_preview PRIVATE -static -static-libgcc -static-libstdc++)
 target_link_libraries(hud_preview PRIVATE user32 gdi32 gdiplus opengl32 ole32)
 set_target_properties(hud_preview PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${COD1RELOADED_OUTPUT_DIR}")
+
+# Offline render of the Ctrl+M > Workshop tab (tools/workshop_preview/main.cpp) against a real
+# catalog; it installs into its own folder, so copy the exe to a scratch folder first.
+#     mingw32-make workshop_preview && workshop_preview.exe <catalog url> out.png [w h] [--install]
+add_executable(workshop_preview EXCLUDE_FROM_ALL
+    tools/workshop_preview/main.cpp
+    src/ui/ui_draw.cpp
+    src/ui/workshop_tab.cpp
+    src/features/workshop.cpp
+    src/features/pam_install.cpp
+)
+target_include_directories(workshop_preview PRIVATE src)
+target_compile_options(workshop_preview PRIVATE -Wall -Wextra -Wno-unused-parameter -O2)
+target_link_options(workshop_preview PRIVATE -static -static-libgcc -static-libstdc++)
+target_link_libraries(workshop_preview PRIVATE user32 gdi32 gdiplus opengl32 ole32 wininet advapi32)
+set_target_properties(workshop_preview PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${COD1RELOADED_OUTPUT_DIR}")

@@ -29,6 +29,7 @@
 #include "ui/demo_library.h"
 #include "ui/demo_seek.h"
 #include "ui/demo_mod.h"
+#include "ui/workshop_tab.h"
 #include "features/demo_index.h"
 
 #include <cstdio>
@@ -547,6 +548,13 @@ void icon_tab(int id, float x, float y, DWORD c) {
     case 6:                                             // demos: frame + play
         ui_rect_border(x, y + 2, 18, 14, 0, 1.5f, c);
         ui_triangle(x + 7, y + 5.5f, x + 7, y + 12.5f, x + 12.5f, y + 9, c);
+        break;
+    case 7:                                             // workshop: arrow down into a tray
+        ui_rect(x + 8, y, 2, 8, c);
+        ui_triangle(x + 4, y + 7, x + 14, y + 7, x + 9, y + 12, c);
+        ui_rect(x, y + 11, 1.5f, 6, c);
+        ui_rect(x + 16.5f, y + 11, 1.5f, 6, c);
+        ui_rect(x, y + 15.5f, 18, 1.5f, c);
         break;
     default:                                            // about: the letter i
         ui_ellipse(x + 9, y + 9, 8.5f, 8.5f, 1.5f, c);
@@ -1323,7 +1331,8 @@ void modern_menu_draw(float sw, float sh) {
     ui_text(38, 88, 11, 600, UI_MUTED, "C O D 1  R E L O A D E D");
     ui_rect(36, 118, rail - 72, 1, UI_LINE);
 
-    static const char* tabs[] = { "Display", "Mouse", "Keys", "Game", "Inspect", "Files", "Demos", "About" };
+    static const char* tabs[] = { "Display", "Mouse", "Keys", "Game", "Inspect", "Files", "Demos", "Workshop", "About" };
+    constexpr int NTABS = (int)(sizeof(tabs) / sizeof(tabs[0]));
     static const char* subs[] = {
         "Resolution, refresh rate and how the image reaches the screen.",
         "Raw input and aim feel. What your hand does is what the game gets.",
@@ -1332,24 +1341,25 @@ void modern_menu_draw(float sw, float sh) {
         "Weapon inspection: one key per animation. Click a row, press a key. Play tries it.",
         "Configs and demos - Main and every mod folder. One click to run.",
         "Every demo, every kill in it. Click a kill: the demo plays from just before.",
+        "Maps and mods from the 1.6X catalog. One click: downloaded, verified, installed.",
         "What this client is and what runs under the hood.",
     };
-    // the rail lists tab ids; a tab left out of the build keeps its id (g_tab, icon_tab and
-    // the bodies below are untouched), only its place in the rail goes
-#ifdef COD1RELOADED_WEAPON_INSPECT
-    static const int rail_ids[] = { 0, 1, 2, 3, 4, 5, 6, 7 };
-#else
-    static const int rail_ids[] = { 0, 1, 2, 3, 5, 6, 7 };    // weapon inspect: a later version
+    // a tab left out of the build keeps its id (g_tab, icon_tab and the bodies below are
+    // untouched), only its place in the rail goes
+    auto in_rail = [](int id) {
+#ifndef COD1RELOADED_WEAPON_INSPECT
+        if (id == 4) return false;                      // weapon inspect: a later version
 #endif
-    const int nrail = (int)(sizeof(rail_ids) / sizeof(rail_ids[0]));
+        return id >= 0;
+    };
     int gslot = 0;
-    for (int j = 0; j < nrail; ++j)
-        if (rail_ids[j] == g_tab) gslot = j;
+    for (int i = 0, j = 0; i < NTABS; ++i)
+        if (in_rail(i)) { if (i == g_tab) gslot = j; ++j; }
     float taby = 150;
     float tsel = ui_smooth(8002, (float)gslot, 13.0f);
     ui_rect_rounded(20, 150 + tsel * 54 - 6, rail - 40, 46, 10, UI_ACCENT);
-    for (int j = 0; j < nrail; ++j) {
-        const int i = rail_ids[j];
+    for (int i = 0, j = 0; i < NTABS; ++i) {
+        if (!in_rail(i)) continue;
         bool over = hit(20, taby - 6, rail - 40, 46);
         float prox = 1.0f - (tsel > j ? tsel - j : j - tsel);
         if (prox < 0) prox = 0;
@@ -1360,6 +1370,7 @@ void modern_menu_draw(float sw, float sh) {
         ui_text(72, taby + 4, 18, 600, tc, tabs[i]);
         if (over && ui_input().clicked) g_tab = i;
         taby += 54;
+        ++j;
     }
     // leaving the Keys tab mid-capture must release the keyboard, or every key
     // would keep vanishing into a bind that no longer has a visible target
@@ -1875,6 +1886,8 @@ void modern_menu_draw(float sw, float sh) {
              "demo loads that mod first (fs_game + renderer restart), then plays it.");
     } else if (g_tab == 6) {
         draw_demos_tab(cx, cy, pw - 120, sh - 36);
+    } else if (g_tab == 7) {
+        workshop_tab_draw(cx, cy, pw - 120, sh - 36);
     } else {
         // ABOUT: what 1.6X actually is - the feature list doubles as a changelog
         ui_text(cx, cy, 22, 600, UI_TEXT, "cod1reloaded  -  the 1.6X competitive client");

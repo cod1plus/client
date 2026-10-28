@@ -33,6 +33,7 @@
 // pk3s just means the engine downloads the difference at connect, as before.
 
 #include <windows.h>
+#include <string>
 
 namespace patches {
 
@@ -73,6 +74,19 @@ inline void pam_install_start()                { pkg_install_start(PKG_PAM); }
 inline void pam_install_status(PamStatus* out) { pkg_install_status(PKG_PAM, out); }
 inline bool pam_install_running()              { return pkg_install_running(PKG_PAM); }
 void pam_install_swap_pending();          // DllMain: apply <folder>\*.pk3.new left by a locked install
+
+// The same transfer for other features (the Workshop tab, features/workshop.cpp), on the
+// caller's thread. pkg_fetch_file streams `url` into `path` (a .part: resumed when one is
+// left over, refused past `expect_size`), hashing on the fly; `progress` is called ~10x/s.
+// sha_hex receives 64 lowercase hex digits. Errors come back as one line in `err`.
+typedef void (*PkgProgressFn)(void* user, unsigned long long got, unsigned long long total, double mb_per_s);
+bool pkg_fetch_text(const char* url, size_t max_bytes, std::string& out, std::string& err);
+bool pkg_fetch_file(const char* url, const char* path, unsigned long long expect_size,
+                    PkgProgressFn progress, void* user, char sha_hex[65], std::string& err);
+bool pkg_file_sha256(const char* path, unsigned long long* size, char sha_hex[65]);
+bool pkg_game_dir(char* out, size_t n);           // "<folder of mss32.dll>\"
+bool pkg_valid_pk3_name(const char* s);           // a bare *.pk3 name: no separator, no traversal
+bool pkg_valid_folder(const char* s);             // a bare folder name: letters, digits, _ -
 
 }  // namespace patches
 
