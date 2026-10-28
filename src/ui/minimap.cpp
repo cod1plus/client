@@ -4,6 +4,7 @@
 #include "ui/ui_draw.h"
 #include "ui/radar_map.h"
 #include "ui/hud_editor.h"
+#include "ui/hud_layout.h"
 #include "core/logger.h"
 
 #include <GL/gl.h>
@@ -956,23 +957,29 @@ bool load_steps() {
         char word[64] = "";
         sscanf(line.c_str(), "%63s", word);
         if (!strcmp(word, "quit")) { g_tquit = true; continue; }
-        if (!strcmp(word, "editor") || !strcmp(word, "menu") || !strcmp(word, "close")) { st.kind = word; g_steps.push_back(st); continue; }
-        if (!strcmp(word, "wait")) {                          // a demo: no setviewpos, a shot S seconds on
-            st.kind = word;
-            sscanf(line.c_str() + 4, "%f", &st.secs);
-            g_steps.push_back(st);
-            continue;
-        }
         int used = 0;
-        if (sscanf(line.c_str(), "%f %f %f %f%n", &st.x, &st.y, &st.z, &st.yaw, &used) < 4) continue;
-        st.kind = "view";
+        if (!strcmp(word, "editor") || !strcmp(word, "menu") || !strcmp(word, "close") || !strcmp(word, "wait")) {
+            // wait S: a demo (no setviewpos), a shot S seconds on; editor N: the element picked
+            st.kind = word;
+            st.secs = !strcmp(word, "editor") ? -1.0f : 0.0f;
+            sscanf(line.c_str(), "%*s %f%n", &st.secs, &used);
+            if (!used) sscanf(line.c_str(), "%*s%n", &used);
+        } else {
+            if (sscanf(line.c_str(), "%f %f %f %f%n", &st.x, &st.y, &st.z, &st.yaw, &used) < 4) continue;
+            st.kind = "view";
+        }
+        // then cvar=value tokens (commas in a value = spaces: cod1x_hud_ammo=1,-40,0,0)
         const char* p = line.c_str() + used;
         char tok[96];
         int n = 0;
         while (sscanf(p, "%95s%n", tok, &n) == 1) {
             p += n;
             char* eq = strchr(tok, '=');
-            if (eq) { *eq = 0; st.sets.push_back(std::string("seta ") + tok + " " + (eq + 1) + "\n"); }
+            if (!eq) continue;
+            *eq = 0;
+            std::string v = eq + 1;
+            for (char& c : v) if (c == ',') c = ' ';
+            st.sets.push_back(std::string("seta ") + tok + " \"" + v + "\"\n");
         }
         g_steps.push_back(st);
     }
@@ -1026,8 +1033,9 @@ void minimap_test_frame(int vw, int vh) {
     static DWORD s_step_at = 0;
     if (g_tframe == 0) {
         s_step_at = GetTickCount();
+        for (const std::string& c : st.sets) g_io->command(c.c_str());
+        if (g_step == 0) hud_layout_log();                 // the HUD's menus, once
         if (st.kind == "view") {
-            for (const std::string& c : st.sets) g_io->command(c.c_str());
             char cmd[128];
             snprintf(cmd, sizeof(cmd), "setviewpos %.0f %.0f %.0f %.0f\n", st.x, st.y, st.z, st.yaw);
             g_io->command(cmd);
@@ -1038,7 +1046,10 @@ void minimap_test_frame(int vw, int vh) {
             overlay_toggle(false);
         }
     }
-    if (st.kind == "editor" && g_tframe == 10) hud_editor_open(true);
+    if (st.kind == "editor" && g_tframe == 10) {
+        hud_editor_open(true);
+        hud_editor_select((int)st.secs);
+    }
     if (++g_tframe < settle) return;
     if (st.kind == "wait" && GetTickCount() - s_step_at < (DWORD)(st.secs * 1000)) return;
     if (st.kind != "close") {

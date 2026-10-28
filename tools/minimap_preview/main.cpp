@@ -48,6 +48,8 @@ namespace patches {
 HWND overlay_game_window() { return nullptr; }
 bool ruleset_active() { return false; }
 void hud_editor_open(bool) {}
+void hud_editor_select(int) {}
+void hud_layout_log() {}
 void overlay_toggle(bool) {}
 }  // namespace patches
 

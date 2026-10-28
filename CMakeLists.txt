@@ -108,6 +108,7 @@ set(COD1RELOADED_SOURCES
     src/ui/radar_map.cpp
     src/ui/minimap.cpp
     src/ui/hud_editor.cpp
+    src/ui/hud_layout.cpp
     src/ui/workshop_tab.cpp
 )
 

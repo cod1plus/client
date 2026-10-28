@@ -34,6 +34,7 @@
 #include "ui/streamer_hud.h"
 #include "ui/minimap.h"
 #include "ui/hud_editor.h"
+#include "ui/hud_layout.h"
 #include "core/iat.h"
 #include "core/logger.h"
 #include "input/rinput.h"
@@ -517,6 +518,7 @@ void swap_frame_work(HDC dc) {
     eye_debug_frame();                            // player_debugEyePosition (ui/eye_debug)
     hitbox_view_frame();                          // cod1x_drawhitbox (features/hitbox_view)
     minimap_frame();                              // cod1x_minimap: cvars, the radar job (ui/minimap)
+    hud_layout_frame();                           // the game's HUD moved / hidden, fps clock (ui/hud_layout)
     HWND wnd = wndhub_window();                   // this frame's window
     hotkey_poll(wnd);
     if (g_wndproc_dead && g_mode != 0) g_in.down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
@@ -613,6 +615,17 @@ void swap_frame_work(HDC dc) {
             if (rc.right > 0 && rc.bottom > 0) {
                 ui_begin_2d(rc.right, rc.bottom);
                 minimap_draw((float)rc.right, (float)rc.bottom);
+                ui_alpha(1.0f);
+                ui_end_2d();
+            }
+        }
+        // the 1.6X fps counter / lagometer, where the HUD editor put them (ui/hud_layout.cpp)
+        if (hud_layout_active()) {
+            RECT rc;
+            GetClientRect(wnd, &rc);
+            if (rc.right > 0 && rc.bottom > 0) {
+                ui_begin_2d(rc.right, rc.bottom);
+                hud_layout_draw((float)rc.right, (float)rc.bottom);
                 ui_alpha(1.0f);
                 ui_end_2d();
             }
