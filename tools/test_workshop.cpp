@@ -84,9 +84,9 @@ int main(int argc, char** argv) {
     if (items.empty()) { printf("cannot go on\n"); return 1; }
     const WsItem first = items[0];
     CHECK(first.id == "mp_liberation" && first.name == "Liberation" && first.type == "map" && first.version == "27");
-    CHECK(first.folder == "main" && first.file == "zz_mp_liberation.pk3");
-    CHECK(first.size > 1000000 && first.sha256.size() == 64);
-    CHECK(first.url.compare(0, 8, "file:///") == 0);
+    CHECK(first.folder == "main" && first.files.size() == 1 && first.files[0].file == "zz_mp_liberation.pk3");
+    CHECK(first.size > 1000000 && first.files[0].sha256.size() == 64 && first.size == first.files[0].size);
+    CHECK(first.files[0].url.compare(0, 8, "file:///") == 0);
     CHECK(first.local == WS_ABSENT);
     CHECK(!first.thumb_path.empty() && exists(first.thumb_path) && fsize(first.thumb_path) > 1000);
     printf("   thumbnail cached at %s\n", first.thumb_path.c_str());
@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
     CHECK(it.job == WSJ_DONE && it.local == WS_INSTALLED && it.installed_now);
     CHECK(fsize(pk3) == (long long)first.size);
     CHECK(!exists(pk3 + ".part") && !exists(pk3 + ".new"));
-    CHECK(slurp(game + "cod1reloaded\\workshop\\installed.txt").find("mp_liberation 27 " + first.sha256) != std::string::npos);
+    CHECK(slurp(game + "cod1reloaded\\workshop\\installed.txt").find("mp_liberation 27 " + first.files[0].sha256) != std::string::npos);
 
     printf("3. refresh: installed, from the hash memo\n");
     load(fbase + "workshop.json", info, items);
@@ -137,7 +137,7 @@ int main(int argc, char** argv) {
     load(hbase + "workshop.json", info, items);
     CHECK(info.state == WSC_READY && !info.local && items.size() == 1);
     if (!items.empty()) {
-        CHECK(items[0].url == hbase + "zz_mp_liberation.pk3");
+        CHECK(items[0].files[0].url == hbase + "zz_mp_liberation.pk3");
         CHECK(items[0].local == WS_ABSENT);
         CHECK(!items[0].thumb_path.empty() && exists(items[0].thumb_path) && items[0].thumb_path != first.thumb_path);
     }
@@ -162,7 +162,36 @@ int main(int argc, char** argv) {
     load("http://127.0.0.1:1/workshop.json", info, items);
     CHECK(info.state == WSC_CACHED && items.size() == 1);
 
-    printf("10. no catalog configured\n");
+    printf("10. a pack of several pk3s with a cvar (the HD textures' shape)\n");
+    load(fbase + "pack.json", info, items);
+    CHECK(info.state == WSC_READY && items.size() == 1);
+    if (items.size() == 1) {
+        CHECK(items[0].files.size() == 2 && items[0].local == WS_ABSENT);
+        CHECK(items[0].size == items[0].files[0].size + items[0].files[1].size);
+        CHECK(items[0].cvars.size() == 1 && items[0].cvars[0].first == "com_hunkMegs" && items[0].cvars[0].second == "512");
+    }
+    CHECK(workshop_take_cvars().empty());
+    it = install("hdpack");
+    CHECK(it.job == WSJ_DONE && it.local == WS_INSTALLED);
+    CHECK(fsize(game + "main\\zz_pack_a.pk3") > 0 && fsize(game + "main\\zz_pack_b.pk3") > 0);
+    {
+        auto cv = workshop_take_cvars();
+        CHECK(cv.size() == 1 && cv[0].first == "com_hunkMegs" && cv[0].second == "512");
+        CHECK(workshop_take_cvars().empty());            // handed out once
+    }
+    {   // one file of the pack changes on disk: update, and only that file comes back
+        FILE* f = fopen((game + "main\\zz_pack_b.pk3").c_str(), "wb");
+        fputs("not the pack", f);
+        fclose(f);
+    }
+    load(fbase + "pack.json", info, items);
+    CHECK(items.size() == 1 && items[0].local == WS_OUTDATED);
+    it = install("hdpack");
+    CHECK(it.job == WSJ_DONE && it.local == WS_INSTALLED);
+    load(fbase + "pack_badcvar.json", info, items);
+    CHECK(items.size() == 1 && items[0].cvars.empty());
+
+    printf("11. no catalog configured\n");
     g_workshop_config.manifest_url[0] = 0;
     workshop_refresh();
     workshop_snapshot(info, items);

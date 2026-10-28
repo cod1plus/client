@@ -315,6 +315,32 @@ unsigned fnv1a(const std::string& s) {
     return h;
 }
 
+// The memo is kept on disk too (hashes.txt, "size mtime_hi mtime_lo sha path" per line,
+// appended; a later line wins): the HD pack is 5.6 GB, hashed once, not at every launch.
+bool g_memo_loaded = false;
+
+void load_memo() {
+    if (g_memo_loaded) return;
+    g_memo_loaded = true;
+    std::string text, err;
+    if (!read_file(data_dir() + "hashes.txt", 4 * 1024 * 1024, text, err)) return;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t eol = text.find('\n', pos);
+        if (eol == std::string::npos) eol = text.size();
+        const std::string line = text.substr(pos, eol - pos);
+        pos = eol + 1;
+        unsigned long long size = 0;
+        unsigned long hi = 0, lo = 0;
+        char sha[72] = "";
+        int off = 0;
+        if (sscanf(line.c_str(), "%llu %lu %lu %71s %n", &size, &hi, &lo, sha, &off) >= 4 && off > 0 && strlen(sha) == 64) {
+            FILETIME ft; ft.dwHighDateTime = hi; ft.dwLowDateTime = lo;
+            g_hashes[line.substr(off)] = HashMemo{ size, ft, sha };
+        }
+    }
+}
+
 // SHA-256 of a file, memoised on (size, mtime)
 bool hash_file(const std::string& path, std::string& sha) {
     WIN32_FILE_ATTRIBUTE_DATA d;
@@ -322,6 +348,7 @@ bool hash_file(const std::string& path, std::string& sha) {
     const unsigned long long size = ((unsigned long long)d.nFileSizeHigh << 32) | d.nFileSizeLow;
     {
         Lock l;
+        load_memo();
         auto it = g_hashes.find(path);
         if (it != g_hashes.end() && it->second.size == size &&
             !CompareFileTime(&it->second.mtime, &d.ftLastWriteTime)) { sha = it->second.sha; return true; }
@@ -332,7 +359,22 @@ bool hash_file(const std::string& path, std::string& sha) {
     sha = hex;
     Lock l;
     g_hashes[path] = HashMemo{ got, d.ftLastWriteTime, sha };
+    if (FILE* f = fopen((data_dir() + "hashes.txt").c_str(), "ab")) {
+        fprintf(f, "%llu %lu %lu %s %s\n", got, d.ftLastWriteTime.dwHighDateTime, d.ftLastWriteTime.dwLowDateTime,
+                sha.c_str(), path.c_str());
+        fclose(f);
+    }
     return true;
+}
+
+// what installed.txt records for an item: its sha256, or for a pack one key over all files
+std::string set_key(const std::vector<std::string>& shas) {
+    if (shas.size() == 1) return shas[0];
+    std::string all;
+    for (size_t i = 0; i < shas.size(); ++i) all += shas[i];
+    char k[24];
+    snprintf(k, sizeof(k), "set-%08x%02x", fnv1a(all), (unsigned)shas.size());
+    return k;
 }
 
 // installed.txt: "<id> <version> <sha256>" per line, what our installs put on disk
@@ -397,25 +439,56 @@ bool parse_catalog(const std::string& text, const std::string& base, bool base_i
         it.version     = jstr(o, "version", 24);
         it.description = jstr(o, "description", 1500);
         it.folder      = jstr(o, "folder", 48);
-        it.file        = jstr(o, "file", 96);
-        it.sha256      = jstr(o, "sha256", 64);
-        it.url         = resolve_url(base, jstr(o, "url", 512));
         it.thumb_url   = resolve_url(base, jstr(o, "thumbnail", 512));
-        const JVal* sz = o.get("size");
-        if (sz && sz->t == JVal::NUM && sz->n > 0) it.size = (unsigned long long)sz->n;
-        else if (sz && sz->t == JVal::STR) it.size = _strtoui64(sz->s.c_str(), nullptr, 10);
         if (it.type != "mod") it.type = "map";
         if (it.folder.empty()) it.folder = "main";
         if (it.name.empty()) it.name = it.id;
-        for (size_t k = 0; k < it.sha256.size(); ++k) it.sha256[k] = (char)tolower((unsigned char)it.sha256[k]);
+
+        // the pk3(s): a "files" list, or the item's own file/size/sha256/url
+        auto read_file_entry = [&](const JVal& f) {
+            WsFile w;
+            w.file   = jstr(f, "file", 96);
+            w.sha256 = jstr(f, "sha256", 64);
+            w.url    = resolve_url(base, jstr(f, "url", 512));
+            const JVal* sz = f.get("size");
+            if (sz && sz->t == JVal::NUM && sz->n > 0) w.size = (unsigned long long)sz->n;
+            else if (sz && sz->t == JVal::STR) w.size = _strtoui64(sz->s.c_str(), nullptr, 10);
+            for (size_t k = 0; k < w.sha256.size(); ++k) w.sha256[k] = (char)tolower((unsigned char)w.sha256[k]);
+            it.files.push_back(w);
+        };
+        const JVal* fl = o.get("files");
+        if (fl && fl->t == JVal::ARR) { for (size_t k = 0; k < fl->a.size() && k < 32; ++k) if (fl->a[k].t == JVal::OBJ) read_file_entry(fl->a[k]); }
+        else read_file_entry(o);
+        // cvars: plain tokens only (as pam_install's manifest): nothing a console line could hide in
+        const JVal* cv = o.get("cvars");
+        if (cv && cv->t == JVal::OBJ) {
+            for (size_t k = 0; k < cv->o.size() && it.cvars.size() < 4; ++k) {
+                const std::string& n = cv->o[k].first;
+                const JVal& jv = cv->o[k].second;
+                std::string v;
+                if (jv.t == JVal::STR) v = jv.s;
+                else if (jv.t == JVal::NUM) { char b[32]; snprintf(b, sizeof(b), "%lld", (long long)jv.n); v = b; }
+                bool ok = pkg_valid_folder(n.c_str()) && !v.empty() && v.size() < 32;
+                for (size_t c = 0; ok && c < v.size(); ++c)
+                    ok = isalnum((unsigned char)v[c]) || v[c] == '.' || v[c] == '-' || v[c] == '_';
+                if (ok) it.cvars.push_back(std::make_pair(n, v));
+                else logger::logf("workshop: %s: cvar %s refused", it.id.c_str(), n.c_str());
+            }
+        }
 
         const char* bad = nullptr;
         if (!valid_id(it.id)) bad = "id";
         else if (!pkg_valid_folder(it.folder.c_str())) bad = "folder";
-        else if (!pkg_valid_pk3_name(it.file.c_str()) || stock_pak(it.file)) bad = "file";
-        else if (it.size == 0) bad = "size";
-        else if (it.sha256.size() != 64 || it.sha256.find_first_not_of("0123456789abcdef") != std::string::npos) bad = "sha256";
-        else if (!(is_http_url(it.url) || (is_file_url(it.url) && base_is_file))) bad = "url";
+        else if (it.files.empty()) bad = "files";
+        for (size_t k = 0; !bad && k < it.files.size(); ++k) {
+            const WsFile& w = it.files[k];
+            if (!pkg_valid_pk3_name(w.file.c_str()) || stock_pak(w.file)) bad = "file";
+            else if (w.size == 0) bad = "size";
+            else if (w.sha256.size() != 64 || w.sha256.find_first_not_of("0123456789abcdef") != std::string::npos) bad = "sha256";
+            else if (!(is_http_url(w.url) || (is_file_url(w.url) && base_is_file))) bad = "url";
+            for (size_t j = 0; !bad && j < k; ++j) if (!_stricmp(it.files[j].file.c_str(), w.file.c_str())) bad = "file (listed twice)";
+            it.size += w.size;
+        }
         if (!bad) for (size_t k = 0; k < items.size(); ++k) if (items[k].id == it.id) bad = "id (duplicate)";
         if (bad) { logger::logf("workshop: catalog item %d (%s) skipped - bad %s", (int)i, it.id.c_str(), bad); continue; }
         if (!it.thumb_url.empty() && !(is_http_url(it.thumb_url) || (is_file_url(it.thumb_url) && base_is_file)))
@@ -426,18 +499,29 @@ bool parse_catalog(const std::string& text, const std::string& base, bool base_i
     return true;
 }
 
-// what is on disk for this item, by hash
+// what is on disk for this item, by hash: every file right = installed, the missing
+// ones only staged (.new) = restart, nothing there = absent, anything else = update
 void check_local(WsItem& it, const std::map<std::string, std::pair<std::string, std::string>>& noted) {
     char base[MAX_PATH];
     if (!pkg_game_dir(base, sizeof(base))) { it.local = WS_ABSENT; return; }
-    const std::string path = std::string(base) + it.folder + "\\" + it.file;
-    std::string sha;
-    if (exists(path + ".new") && hash_file(path + ".new", sha) && sha == it.sha256) { it.local = WS_STAGED; return; }
-    if (!exists(path)) { it.local = WS_ABSENT; return; }
-    if (!hash_file(path, sha)) { it.local = WS_OUTDATED; return; }
-    it.local = sha == it.sha256 ? WS_INSTALLED : WS_OUTDATED;
-    auto n = noted.find(it.id);
-    if (n != noted.end() && n->second.second == sha && n->second.first != "-") it.local_version = n->second.first;
+    int ok = 0, staged = 0, present = 0;
+    std::vector<std::string> local_shas;
+    for (size_t i = 0; i < it.files.size(); ++i) {
+        const std::string path = std::string(base) + it.folder + "\\" + it.files[i].file;
+        std::string sha;
+        if (exists(path + ".new") && hash_file(path + ".new", sha) && sha == it.files[i].sha256) { ++staged; ++present; continue; }
+        if (!exists(path)) continue;
+        ++present;
+        if (hash_file(path, sha)) {
+            local_shas.push_back(sha);
+            if (sha == it.files[i].sha256) ++ok;
+        }
+    }
+    const int n = (int)it.files.size();
+    it.local = ok == n ? WS_INSTALLED : (ok + staged == n ? WS_STAGED : (present == 0 ? WS_ABSENT : WS_OUTDATED));
+    auto rec = noted.find(it.id);
+    if (rec != noted.end() && (int)local_shas.size() == n && rec->second.second == set_key(local_shas) && rec->second.first != "-")
+        it.local_version = rec->second.first;
 }
 
 void publish_local(unsigned gen, const WsItem& it) {
@@ -523,12 +607,7 @@ DWORD WINAPI catalog_worker(LPVOID p) {
         g_info.local = local;
     }
 
-    // states (hashing), then pictures - both published item by item
-    const auto noted = read_installed();
-    for (size_t i = 0; i < items.size(); ++i) {
-        check_local(items[i], noted);
-        publish_local(gen, items[i]);
-    }
+    // pictures, then states (hashing: the HD pack is 5.6 GB the first time) - item by item
     if (!dir.empty()) {
         const std::string tdir = dir + "thumbs\\";
         CreateDirectoryA(tdir.c_str(), NULL);
@@ -541,23 +620,34 @@ DWORD WINAPI catalog_worker(LPVOID p) {
             if (WsItem* t = find_item(items[i].id)) t->thumb_path = ansi_to_utf8(path);
         }
     }
+    const auto noted = read_installed();
+    for (size_t i = 0; i < items.size(); ++i) {
+        check_local(items[i], noted);
+        publish_local(gen, items[i]);
+    }
     Lock l;
     if (gen == g_gen) g_refreshing = false;
     return 0;
 }
 
 // ---------------------------------------------------------------- installs
-struct Progress { std::string id; };
+std::vector<std::pair<std::string, std::string>> g_cvars_out;   // installed items' cvars, for the main thread
+
+// one transfer of a job: `base` bytes of the job done before it, `all` = the job's total
+struct Progress { std::string id; unsigned long long base, all; int index, count; };
 
 void on_progress(void* user, unsigned long long got, unsigned long long total, double mbps) {
     const Progress* pr = (const Progress*)user;
-    char txt[96];
-    if (mbps > 0) snprintf(txt, sizeof(txt), "%.1f / %.1f MB  -  %.1f MB/s", got / 1048576.0, total / 1048576.0, mbps);
-    else snprintf(txt, sizeof(txt), "%.1f / %.1f MB", got / 1048576.0, total / 1048576.0);
+    const unsigned long long all = pr->all ? pr->all : total, done = pr->base + got;
+    char lead[24] = "";
+    if (pr->count > 1) snprintf(lead, sizeof(lead), "%d/%d  ", pr->index + 1, pr->count);
+    char txt[128];
+    if (mbps > 0) snprintf(txt, sizeof(txt), "%s%.1f / %.1f MB  -  %.1f MB/s", lead, done / 1048576.0, all / 1048576.0, mbps);
+    else snprintf(txt, sizeof(txt), "%s%.1f / %.1f MB", lead, done / 1048576.0, all / 1048576.0);
     Lock l;
     if (WsItem* t = find_item(pr->id)) {
         t->job = WSJ_DOWNLOADING;
-        t->progress = total ? (float)((double)got / (double)total) : 0.f;
+        t->progress = all ? (float)((double)done / (double)all) : 0.f;
         t->job_text = txt;
     }
 }
@@ -577,17 +667,16 @@ DWORD CALLBACK copy_progress(LARGE_INTEGER total, LARGE_INTEGER done, LARGE_INTE
     return PROGRESS_CONTINUE;
 }
 
-// fetch into `part`; sha_hex = what arrived
-bool fetch_pk3(const WsItem& it, const std::string& part, char sha_hex[65], std::string& err) {
-    Progress pr{ it.id };
-    if (is_http_url(it.url))
-        return pkg_fetch_file(it.url.c_str(), part.c_str(), it.size, on_progress, &pr, sha_hex, err);
+// fetch one file into `part`; sha_hex = what arrived
+bool fetch_pk3(const WsFile& f, Progress& pr, const std::string& part, char sha_hex[65], std::string& err) {
+    if (is_http_url(f.url))
+        return pkg_fetch_file(f.url.c_str(), part.c_str(), f.size, on_progress, &pr, sha_hex, err);
     // file:// (a local test catalog or a LAN share): a plain copy, then the same hash check
-    const std::string src = file_url_path(it.url);
+    const std::string src = file_url_path(f.url);
     WIN32_FILE_ATTRIBUTE_DATA d;
     if (!GetFileAttributesExA(src.c_str(), GetFileExInfoStandard, &d)) { err = "source file not found"; return false; }
     const unsigned long long size = ((unsigned long long)d.nFileSizeHigh << 32) | d.nFileSizeLow;
-    if (size != it.size) { err = "the source file is not the size the catalog says"; return false; }
+    if (size != f.size) { err = "the source file is not the size the catalog says"; return false; }
     CopyCtx ctx{ &pr, GetTickCount(), 0 };
     if (!CopyFileExA(src.c_str(), part.c_str(), copy_progress, &ctx, NULL, 0)) {
         char b[64]; snprintf(b, sizeof(b), "copy failed (err %lu)", GetLastError());
@@ -613,40 +702,61 @@ void install_one(const WsItem& it) {
     if (!pkg_game_dir(base, sizeof(base))) { set_job(it.id, WSJ_ERROR, "cannot locate the game folder"); return; }
     const std::string dir = std::string(base) + it.folder + "\\";
     CreateDirectoryA(dir.c_str(), NULL);
-    const std::string path = dir + it.file, part = path + ".part", staged = path + ".new";
-    logger::logf("workshop: installing %s v%s -> %s%s (%.1f MB)", it.id.c_str(), it.version.c_str(),
-                 it.folder.c_str(), ("\\" + it.file).c_str(), it.size / 1048576.0);
+    logger::logf("workshop: installing %s v%s -> %s\\ (%d file(s), %.1f MB)", it.id.c_str(), it.version.c_str(),
+                 it.folder.c_str(), (int)it.files.size(), it.size / 1048576.0);
     set_job(it.id, WSJ_DOWNLOADING, "Starting...", 0.f);
-    char sha[65];
-    std::string err;
-    if (!fetch_pk3(it, part, sha, err)) {
-        logger::logf("workshop: %s: %s (%s)", it.id.c_str(), err.c_str(), it.url.c_str());
-        set_job(it.id, WSJ_ERROR, err);
-        return;
+
+    // what is already right stays (a pack updated by one file fetches that file only)
+    std::vector<int> todo;
+    unsigned long long all = 0;
+    for (size_t i = 0; i < it.files.size(); ++i) {
+        const std::string path = dir + it.files[i].file;
+        std::string sha;
+        if (hash_file(path, sha) && sha == it.files[i].sha256) continue;
+        if (exists(path + ".new") && hash_file(path + ".new", sha) && sha == it.files[i].sha256) continue;
+        todo.push_back((int)i);
+        all += it.files[i].size;
     }
-    set_job(it.id, WSJ_VERIFYING, "Verifying SHA-256...", 1.f);
-    if (it.sha256 != sha) {
-        DeleteFileA(part.c_str());
-        logger::logf("workshop: %s: checksum mismatch (got %.16s, catalog %.16s) - discarded", it.id.c_str(), sha, it.sha256.c_str());
-        set_job(it.id, WSJ_ERROR, "Checksum mismatch - the download was discarded");
-        return;
+    int staged_n = 0;
+    unsigned long long done = 0;
+    for (size_t k = 0; k < todo.size(); ++k) {
+        const WsFile& f = it.files[todo[k]];
+        const std::string path = dir + f.file, part = path + ".part", staged = path + ".new";
+        Progress pr{ it.id, done, all, (int)k, (int)todo.size() };
+        char sha[65];
+        std::string err;
+        if (!fetch_pk3(f, pr, part, sha, err)) {
+            logger::logf("workshop: %s: %s: %s (%s)", it.id.c_str(), f.file.c_str(), err.c_str(), f.url.c_str());
+            set_job(it.id, WSJ_ERROR, todo.size() > 1 ? f.file + ": " + err : err);
+            return;
+        }
+        set_job(it.id, WSJ_VERIFYING, "Verifying SHA-256...", -1.f);
+        if (f.sha256 != sha) {
+            DeleteFileA(part.c_str());
+            logger::logf("workshop: %s: %s checksum mismatch (got %.16s, catalog %.16s) - discarded",
+                         it.id.c_str(), f.file.c_str(), sha, f.sha256.c_str());
+            set_job(it.id, WSJ_ERROR, "Checksum mismatch - the download was discarded");
+            return;
+        }
+        if (MoveFileExA(part.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+            // an older staged copy would overwrite this one at the next launch
+            if (exists(staged)) DeleteFileA(staged.c_str());
+        } else if (MoveFileExA(part.c_str(), staged.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+            ++staged_n;                    // the engine holds the old pk3 open
+            logger::logf("workshop: %s is in use, staged as .new (applied at next launch)", f.file.c_str());
+        } else {
+            DeleteFileA(part.c_str());
+            set_job(it.id, WSJ_ERROR, "Cannot place " + f.file + " (folder not writable?)");
+            return;
+        }
+        std::string dummy;
+        hash_file(exists(staged) ? staged : path, dummy);   // memo the new file: no rehash on refresh
+        done += f.size;
     }
-    int local;
-    if (MoveFileExA(part.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        // an older staged copy would overwrite this one at the next launch
-        if (exists(staged)) DeleteFileA(staged.c_str());
-        local = WS_INSTALLED;
-    } else if (MoveFileExA(part.c_str(), staged.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        local = WS_STAGED;                 // the engine holds the old pk3 open
-        logger::logf("workshop: %s is in use, staged as .new (applied at next launch)", it.file.c_str());
-    } else {
-        DeleteFileA(part.c_str());
-        set_job(it.id, WSJ_ERROR, "Cannot place the file (folder not writable?)");
-        return;
-    }
-    note_installed(it.id, it.version, it.sha256);
-    std::string dummy;
-    hash_file(local == WS_INSTALLED ? path : staged, dummy);   // memo the new file: no rehash on refresh
+    std::vector<std::string> shas;
+    for (size_t i = 0; i < it.files.size(); ++i) shas.push_back(it.files[i].sha256);
+    note_installed(it.id, it.version, set_key(shas));
+    const int local = staged_n ? WS_STAGED : WS_INSTALLED;
     char b[160];
     if (local == WS_INSTALLED)
         snprintf(b, sizeof(b), "Installed - %.1f MB, SHA-256 verified", it.size / 1048576.0);
@@ -654,6 +764,7 @@ void install_one(const WsItem& it) {
         snprintf(b, sizeof(b), "Downloaded and verified - restart the game to finish (the pk3 is in use)");
     logger::logf("workshop: %s: %s", it.id.c_str(), b);
     Lock l;
+    for (size_t i = 0; i < it.cvars.size(); ++i) g_cvars_out.push_back(it.cvars[i]);
     if (WsItem* t = find_item(it.id)) {
         t->job = WSJ_DONE;
         t->job_text = b;
@@ -735,6 +846,13 @@ void workshop_install(const std::string& id) {
 bool workshop_busy() {
     Lock l;
     return g_installing;
+}
+
+std::vector<std::pair<std::string, std::string>> workshop_take_cvars() {
+    Lock l;
+    std::vector<std::pair<std::string, std::string>> out;
+    out.swap(g_cvars_out);
+    return out;
 }
 
 }  // namespace patches

@@ -7,6 +7,7 @@
 //   - `set cod1x_install hdtex` / `set cod1x_install pam` (console or command line): the
 //     same job as the menu button, without the menu.
 #include "features/pam_install.h"
+#include "features/workshop.h"
 #include "features/settings_menu.h"   // CODMP_CVAR_FINDVAR_VA, CODMP_CBUF_EXECTEXT_VA
 #include "netcode/competitive.h"      // CODMP_CVAR_SET_VA
 #include "core/logger.h"
@@ -69,6 +70,15 @@ void pkg_install_frame() {
             g_last_state[id] = ps.state;
             if (ps.state == PAM_ERROR) logger::logf("pkg_install: package %d failed: %s", id, ps.text);
         }
+    }
+
+    // the Workshop's installed items (the HD pack: com_hunkMegs 512), same treatment
+    const auto wcv = workshop_take_cvars();
+    for (size_t i = 0; i < wcv.size(); ++i) {
+        char line[128];
+        snprintf(line, sizeof(line), "seta %s %s\n", wcv[i].first.c_str(), wcv[i].second.c_str());
+        ((Cbuf_ExecuteText_t)CODMP_CBUF_EXECTEXT_VA)(EXEC_APPEND, line);
+        logger::logf("workshop: cvar applied: seta %s %s", wcv[i].first.c_str(), wcv[i].second.c_str());
     }
 }
 

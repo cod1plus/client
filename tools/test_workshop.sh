@@ -43,6 +43,17 @@ variant(id="evil6", size=0)
 variant(id="good", name="Libération")
 variant(id="good", name="duplicate")
 open(srv + "/bad_items.json", "w", encoding="utf-8").write(json.dumps({"items": items}))
+# a pack: two pk3s and a cvar, then the same with a cvar nothing may accept
+import hashlib, os
+files = []
+for n, size in (("zz_pack_a.pk3", 300000), ("zz_pack_b.pk3", 120000)):
+    data = os.urandom(size)
+    open(srv + "/" + n, "wb").write(data)
+    files.append({"file": n, "size": size, "sha256": hashlib.sha256(data).hexdigest(), "url": n})
+pack = {"id": "hdpack", "type": "mod", "name": "Pack", "files": files, "cvars": {"com_hunkMegs": "512"}}
+json.dump({"items": [pack]}, open(srv + "/pack.json", "w"))
+pack["cvars"] = {"com_hunkMegs": "512;quit"}
+json.dump({"items": [pack]}, open(srv + "/pack_badcvar.json", "w"))
 EOF
 g++ -std=c++17 -O1 -I src tools/test_workshop.cpp src/features/workshop.cpp src/features/pam_install.cpp \
     src/core/logger.cpp -lwininet -ladvapi32 -static -o "$GAME/test_workshop.exe"

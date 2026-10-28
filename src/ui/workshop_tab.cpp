@@ -195,7 +195,8 @@ std::string status_line(const WsItem& it, DWORD& col) {
     if (it.job == WSJ_ERROR) { col = UI_DANGER; return it.job_text; }
     if (it.job == WSJ_QUEUED || it.job == WSJ_DOWNLOADING || it.job == WSJ_VERIFYING) { col = UI_TEXT; return it.job_text; }
     switch (it.local) {
-    case WS_ABSENT:    return "Not installed  -  " + fmt_size(it.size) + " download";
+    case WS_ABSENT:    return "Not installed  -  " + fmt_size(it.size) + " download" +
+                              (it.files.size() > 1 ? " (" + std::to_string(it.files.size()) + " files)" : "");
     case WS_INSTALLED: col = UI_TEXT;
                        return it.installed_now ? "Installed and verified - restart the game to play it"
                                                : "Installed, identical to the catalog (SHA-256)";
@@ -262,7 +263,8 @@ void draw_detail(const WsItem& it, float dx, float dy, float dw, float bottom) {
     dy += 18;
 
     // the page below the action: description, then the file facts (kept above `bottom`)
-    const float facts_h = 3 * 24 + 34 + 46;
+    const int nfacts = it.cvars.empty() ? 3 : 4;
+    const float facts_h = nfacts * 24 + 34 + 46;
     if (!it.description.empty() && dy + 60 < bottom - facts_h) {
         section(dx, dy, dw, "ABOUT");
         dy += 28;
@@ -281,12 +283,18 @@ void draw_detail(const WsItem& it, float dx, float dy, float dw, float bottom) {
     if (dy + facts_h - 46 > bottom) return;
     section(dx, dy, dw, "FILE");
     dy += 28;
-    const std::string where = it.folder + "\\" + it.file;
-    const std::string sha = it.sha256.substr(0, 16) + "\xE2\x80\xA6";
-    const std::string src = host_of(it.url);
-    const char* labels[3] = { "Installs to", "SHA-256", "Source" };
-    const std::string* vals[3] = { &where, &sha, &src };
-    for (int i = 0; i < 3; ++i) {
+    if (it.files.empty()) return;
+    const size_t nf = it.files.size();
+    const std::string where = it.folder + "\\" + it.files[0].file +
+                              (nf > 1 ? "  + " + std::to_string(nf - 1) + " more" : "");
+    const std::string sha = nf > 1 ? std::to_string(nf) + " files, each checked"
+                                   : it.files[0].sha256.substr(0, 16) + "\xE2\x80\xA6";
+    const std::string src = host_of(it.files[0].url);
+    std::string sets;
+    for (size_t i = 0; i < it.cvars.size(); ++i) sets += (i ? ", " : "") + it.cvars[i].first + " " + it.cvars[i].second;
+    const char* labels[4] = { "Installs to", "SHA-256", "Source", "Sets" };
+    const std::string* vals[4] = { &where, &sha, &src, &sets };
+    for (int i = 0; i < nfacts; ++i) {
         ui_text(dx, dy, 13, 400, UI_HINT, labels[i]);
         ui_text(dx + 110, dy, 13, 600, UI_TEXT, fit(*vals[i], 13, 600, dw - 110).c_str());
         dy += 24;

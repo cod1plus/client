@@ -15,6 +15,9 @@
 //                    "url": "https://.../zz_mp_liberation.pk3",
 //                    "thumbnail": "liberation.jpg" } ] }
 // url / thumbnail may be relative to the catalog's own address. folder defaults to main.
+// A pack of several pk3s (the HD textures) lists them instead of file/size/sha256/url:
+//     "files": [ { "file": "zcod1.pk3", "size": ..., "sha256": "...", "url": "..." }, ... ],
+//     "cvars": { "com_hunkMegs": "512" }       (seta'd on the main thread once installed)
 // tools/workshop/make_catalog.py writes it from the pk3s (size + sha256 computed).
 // A file:// link inside a catalog is only followed when the catalog itself is a local
 // file (a test catalog, a LAN share): an online catalog cannot make the client copy
@@ -49,10 +52,17 @@ extern WorkshopConfig g_workshop_config;
 enum WsLocal { WS_CHECKING = 0, WS_ABSENT, WS_INSTALLED, WS_OUTDATED, WS_STAGED };
 enum WsJob   { WSJ_NONE = 0, WSJ_QUEUED, WSJ_DOWNLOADING, WSJ_VERIFYING, WSJ_DONE, WSJ_ERROR };
 
+struct WsFile {
+    std::string file, sha256, url;
+    unsigned long long size = 0;
+};
+
 struct WsItem {
     std::string id, type, name, author, version, description;
-    std::string folder, file, sha256, url, thumb_url;
-    unsigned long long size = 0;
+    std::string folder, thumb_url;
+    std::vector<WsFile> files;    // one pk3 for a map, several for a pack
+    std::vector<std::pair<std::string, std::string>> cvars;   // seta'd once installed
+    unsigned long long size = 0;  // all files
     std::string thumb_path;       // cached copy (UTF-8 path), "" until fetched
     int  local = WS_CHECKING;
     std::string local_version;    // the version our last install of the file on disk had, "" = unknown
@@ -75,6 +85,9 @@ void workshop_refresh();                               // (re)load the catalog, 
 void workshop_snapshot(WsCatalogInfo& info, std::vector<WsItem>& items);   // for the menu (any thread)
 void workshop_install(const std::string& id);          // queue a download; no-op if queued / running
 bool workshop_busy();                                  // a download is queued or running
+// The cvars of the items installed since the last call, handed out once ("seta <name>
+// <value>" lines for the main thread: features/pkg_frame.cpp applies them every frame).
+std::vector<std::pair<std::string, std::string>> workshop_take_cvars();
 
 }  // namespace patches
 
