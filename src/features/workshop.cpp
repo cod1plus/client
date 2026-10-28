@@ -19,9 +19,10 @@ namespace patches {
 
 WorkshopConfig g_workshop_config = {
     /* enable       */ true,
-    // No public catalog yet: where the maps are hosted is still to be decided. Empty =
-    // the tab says how to point it at one.
-    /* manifest_url */ "",
+    // The public catalog: workshop.json in the cod1plus/workshop repository, the pk3s as
+    // its release assets (one release per item version). The ini key overrides it (a
+    // test catalog, a mirror); an empty key keeps this.
+    /* manifest_url */ "https://raw.githubusercontent.com/cod1plus/workshop/main/workshop.json",
 };
 
 namespace {

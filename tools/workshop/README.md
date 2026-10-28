@@ -1,8 +1,10 @@
 # Workshop catalog (Ctrl+M > Workshop)
 
 The client lists what one JSON catalog describes (format: `src/features/workshop.h`) and
-installs each pk3 after checking its SHA-256. Point a client at a catalog with
-`workshop_manifest_url` in `cod1reloaded.ini` (http, https or `file:///C:/...`).
+installs each pk3 after checking its SHA-256. The public catalog is the repository
+`cod1plus/workshop` (workshop.json + thumbs/, pk3s as release assets tagged `<id>-<version>`,
+its README says how to add a map); `workshop_manifest_url` in `cod1reloaded.ini` points a
+client at another one (http, https or `file:///C:/...`), e.g. a local test catalog.
 
 Add or update an item (size and SHA-256 are computed from the pk3):
 

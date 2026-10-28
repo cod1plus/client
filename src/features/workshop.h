@@ -5,7 +5,8 @@
 // catalog, download one, get it verified and dropped where the game reads it - the Steam
 // Workshop idea, for pk3s.
 //
-// THE CATALOG is one JSON file (ini `workshop_manifest_url`, http(s) or file://):
+// THE CATALOG is one JSON file (ini `workshop_manifest_url`, http(s) or file://; default =
+// workshop.json of the cod1plus/workshop repository, pk3s as its release assets):
 //     { "title": "1.6X Workshop",
 //       "items": [ { "id": "mp_liberation", "type": "map", "name": "Liberation",
 //                    "author": "...", "version": "26", "description": "...",
