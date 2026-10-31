@@ -379,6 +379,27 @@ void demo_play_in(const std::string& dir, const std::string& name) {
                  active.c_str(), want.c_str(), cvar_str("fs_game").c_str(), name.c_str());
 }
 
+void play_in_mod(const std::string& dir, const std::string& cmds, bool rescan) {
+    const std::string want = _stricmp(dir.c_str(), "Main") == 0 ? std::string() : dir;
+    const std::string active = cvar_str("fs_game");
+    const bool sw = _stricmp(want.c_str(), active.c_str()) != 0;
+    std::string c;
+    if (sw || rescan) {
+        // the same restart as demo_play_in; with the folder already active, fs_game goes
+        // through another value and back so it still reads as modified for vid_restart.
+        // A game in progress is left first: the file system restarts with no server attached
+        if (GetModuleHandleA("cgame_mp_x86.dll")) c += "disconnect\n";
+        demo_maps_forget();
+        if (!sw) ((Cvar_SetForce_t)CODMP_CVAR_SET_VA)("fs_game", want.empty() ? "main" : "");
+        ((Cvar_SetForce_t)CODMP_CVAR_SET_VA)("fs_game", want.c_str());
+        c += "vid_restart\n";
+    }
+    c += cmds;
+    ((Cbuf_ExecuteText_t)CODMP_CBUF_EXECTEXT_VA)(EXEC_APPEND, c.c_str());
+    logger::logf("demo_mod: play in '%s' (fs_game was '%s', reads back '%s'%s): %s", want.c_str(), active.c_str(),
+                 cvar_str("fs_game").c_str(), sw || rescan ? ", file system restarted" : "", cmds.c_str());
+}
+
 void demo_mod_install() {
     uint8_t* site = (uint8_t*)VA_PLAYDEMO;
     if (memcmp(site, PROLOGUE, sizeof(PROLOGUE)) != 0) {

@@ -21,6 +21,9 @@
 // "type": "hud" = files of the 1.6X HUD itself, not pk3s: <name>.png / <name>.json only,
 // folder "minimaps" only (the radar images ui/minimap.cpp reads, live, no restart; a pure
 // server never sees them).
+// A map may say how to play it alone - the tab's PLAY button once it is installed:
+//     "play": { "map": "mp_aim_rooms", "gametype": "dm" }      (devmap, in the item's folder)
+// plain tokens only, like the cvars: the client builds the console lines itself.
 // tools/workshop/make_catalog.py writes it from the pk3s (size + sha256 computed).
 // A file:// link inside a catalog is only followed when the catalog itself is a local
 // file (a test catalog, a LAN share): an online catalog cannot make the client copy
@@ -39,7 +42,8 @@
 //
 // HONEST LIMIT: CoD1 lists its pk3s when its filesystem starts (launch, or a server
 // connect that restarts it); a pk3 added while the game runs is there on disk but the
-// engine sees it after a restart. The tab says so.
+// engine sees it after a restart. The tab says so. PLAY on such a map restarts the file
+// system first (ui/demo_mod.cpp, play_in_mod), so the new pk3 is listed without quitting.
 
 #include <string>
 #include <vector>
@@ -65,6 +69,7 @@ struct WsItem {
     std::string folder, thumb_url;
     std::vector<WsFile> files;    // one pk3 for a map, several for a pack
     std::vector<std::pair<std::string, std::string>> cvars;   // seta'd once installed
+    std::string play_map, play_gametype;   // "play": devmap play_map (g_gametype first), "" = no PLAY
     unsigned long long size = 0;  // all files
     std::string thumb_path;       // cached copy (UTF-8 path), "" until fetched
     int  local = WS_CHECKING;

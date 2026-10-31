@@ -8,6 +8,7 @@
 
 #include "ui/workshop_tab.h"
 #include "ui/gl_overlay.h"
+#include "ui/demo_mod.h"
 #include "features/workshop.h"
 
 #include <cstdio>
@@ -198,6 +199,9 @@ std::string status_line(const WsItem& it, DWORD& col) {
     case WS_ABSENT:    return "Not installed  -  " + fmt_size(it.size) + " download" +
                               (it.files.size() > 1 ? " (" + std::to_string(it.files.size()) + " files)" : "");
     case WS_INSTALLED: col = UI_TEXT;
+                       if (!it.play_map.empty())
+                           return it.installed_now ? "Installed and verified - PLAY loads it and starts it alone"
+                                                   : "Installed (SHA-256 checked) - PLAY starts it alone, in devmap";
                        return it.installed_now ? (it.type == "hud" ? "Installed and verified - on screen now, no restart"
                                                                    : "Installed and verified - restart the game to play it")
                                                : "Installed, identical to the catalog (SHA-256)";
@@ -215,6 +219,17 @@ std::string host_of(const std::string& url) {
     if (s == std::string::npos) return url;
     const size_t e = url.find('/', s + 3);
     return url.substr(s + 3, e == std::string::npos ? std::string::npos : e - s - 3);
+}
+
+// PLAY: the map alone in devmap, in the item's own folder (Main for the catalog's maps: a
+// mod's gametype scripts - PAM's ready-up - would get in its way). A pk3 placed this session
+// is not listed yet: the file system restarts first. The menu closes on the loading screen.
+void play(const WsItem& it) {
+    std::string c;
+    if (!it.play_gametype.empty()) c += "g_gametype " + it.play_gametype + "\n";
+    c += "devmap " + it.play_map + "\n";
+    play_in_mod(it.folder, c, it.installed_now);
+    overlay_toggle(false);
 }
 
 std::string s_sel;          // selected item id
@@ -244,7 +259,13 @@ void draw_detail(const WsItem& it, float dx, float dy, float dw, float bottom) {
     if (lk.badge) chip(cx, dy, lk.badge, lk.badge_fg, lk.badge_bg, 0);
     dy += 40;
 
-    if (button(dx, dy, 240, 46, lk.action, lk.style) && lk.style == 1) workshop_install(it.id);
+    const bool can_play = !it.play_map.empty() && it.local == WS_INSTALLED &&
+                          (it.job == WSJ_NONE || it.job == WSJ_DONE);
+    if (can_play) {
+        if (button(dx, dy, 240, 46, "PLAY", 1)) play(it);
+    } else if (button(dx, dy, 240, 46, lk.action, lk.style) && lk.style == 1) {
+        workshop_install(it.id);
+    }
     DWORD col;
     const std::string st = status_line(it, col);
     if (dw - 258 >= 320) {                 // beside the button when the column is wide enough
@@ -305,6 +326,9 @@ void draw_detail(const WsItem& it, float dx, float dy, float dw, float bottom) {
     if (it.type == "hud") {
         ui_text(dx, dy, 13, 400, UI_HINT, "Pictures the minimap reads itself (not pk3s): no restart, nothing");
         ui_text(dx, dy + 20, 13, 400, UI_HINT, "for a pure server to refuse. The radar switches to them at once.");
+    } else if (it.installed_now && !it.play_map.empty()) {
+        ui_text(dx, dy, 13, 400, UI_HINT, "CoD1 lists its pk3s when its file system starts: PLAY restarts it");
+        ui_text(dx, dy + 20, 13, 400, UI_HINT, "first (a few seconds, like a vid_restart), then loads the map.");
     } else if (it.installed_now) {
         ui_text(dx, dy, 13, 400, UI_HINT, "CoD1 lists its pk3s when it starts: restart the game (or join a");
         ui_text(dx, dy + 20, 13, 400, UI_HINT, "server running it) and the new content is there.");

@@ -28,6 +28,12 @@ void demo_mod_install();      // DLL start (main thread, before the first frame)
 // vid_restart restarts the file system before `demo <name>`. Main thread.
 void demo_play_in(const std::string& dir, const std::string& name);
 
+// Runs <cmds> (console lines, "\n" ended) in game folder <dir> ("Main" or a mod), the same
+// way: a different folder is switched to first. rescan = restart the file system even when
+// <dir> is already the active mod, for a pk3 placed while the game runs (the Workshop's PLAY
+// right after a download). Main thread.
+void play_in_mod(const std::string& dir, const std::string& cmds, bool rescan);
+
 // Playback over: the recorded server's pure list (if one was applied) is removed, so the menu
 // and the next game search every pk3 again. Main thread.
 void demo_pure_release();

@@ -484,6 +484,18 @@ bool parse_catalog(const std::string& text, const std::string& base, bool base_i
                 else logger::logf("workshop: %s: cvar %s refused", it.id.c_str(), n.c_str());
             }
         }
+        // play: a map name and a gametype, plain tokens - the tab writes the devmap line itself
+        const JVal* pl = o.get("play");
+        if (pl && pl->t == JVal::OBJ && it.type == "map") {
+            auto token = [](const std::string& s, size_t maxlen) {
+                if (s.empty() || s.size() > maxlen) return false;
+                for (char c : s) if (!(isalnum((unsigned char)c) || c == '_')) return false;
+                return true;
+            };
+            const std::string m = jstr(*pl, "map", 64), g = jstr(*pl, "gametype", 16);
+            if (token(m, 63) && (g.empty() || token(g, 15))) { it.play_map = m; it.play_gametype = g; }
+            else logger::logf("workshop: %s: play refused", it.id.c_str());
+        }
 
         const char* bad = nullptr;
         if (!valid_id(it.id)) bad = "id";
