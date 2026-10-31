@@ -467,7 +467,7 @@ float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v
 MinimapLayout read_layout() {
     const MinimapLayout d;
     MinimapLayout l;
-    l.on     = cv_int("cod1x_minimap", d.on) != 0;
+    l.on     = cv_int("cod1x_minimap_on", d.on) != 0;
     l.x      = clampf(cv_float("cod1x_minimap_x", d.x), 0, 1);
     l.y      = clampf(cv_float("cod1x_minimap_y", d.y), 0, 1);
     l.size   = clampi(cv_int("cod1x_minimap_size", d.size), 120, 640);
@@ -482,7 +482,7 @@ MinimapLayout read_layout() {
 void register_cvars() {
     const MinimapLayout d;
     char b[32];
-    g_io->reg("cod1x_minimap", "1");
+    g_io->reg("cod1x_minimap_on", "0");
     snprintf(b, sizeof(b), "%.4f", d.x); g_io->reg("cod1x_minimap_x", b);
     snprintf(b, sizeof(b), "%.4f", d.y); g_io->reg("cod1x_minimap_y", b);
     snprintf(b, sizeof(b), "%d", d.size);  g_io->reg("cod1x_minimap_size", b);
@@ -739,7 +739,7 @@ void minimap_layout_set(const MinimapLayout& l) {
     char b[96];
     auto seti = [&](const char* n, int a, int was) { if (a != was) { snprintf(b, sizeof(b), "seta %s %d\n", n, a); g_io->command(b); } };
     auto setf = [&](const char* n, float a, float was) { if (fabsf(a - was) > 1e-5f) { snprintf(b, sizeof(b), "seta %s %.4f\n", n, a); g_io->command(b); } };
-    seti("cod1x_minimap", l.on, c.on);
+    seti("cod1x_minimap_on", l.on, c.on);
     setf("cod1x_minimap_x", l.x, c.x);
     setf("cod1x_minimap_y", l.y, c.y);
     seti("cod1x_minimap_size", l.size, c.size);

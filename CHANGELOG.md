@@ -1,9 +1,16 @@
 # cod1reloaded — Changelog
 
+## 1.6.14 (2026-10-31) — la minimap désactivée par défaut
+
+- **La minimap est désactivée par défaut** : on l'active dans Ctrl+M > Display (cvar `cod1x_minimap_on`, sauvegardée).
+  La 1.6.13 l'affichait d'office et sa cvar `cod1x_minimap` était sauvegardée dans chaque `config_mp.cfg` (un par
+  mod) : l'interrupteur porte désormais un autre nom, ces anciens « 1 » ne font plus rien. `cod1x_minimap` reste la
+  clé du serveur (0 / 1 / 2, serverinfo / systeminfo).
+
 ## 1.6.13 (2026-10-31) — des fps stables à 250, une minimap, un éditeur de HUD et le Workshop
 
 ### 🗺️ Minimap (radar façon CoD4)
-- En haut à droite par défaut (le chat de CoD1 est en haut à gauche), **toi et tes coéquipiers seulement, jamais
+- En haut à droite (le chat de CoD1 est en haut à gauche), **toi et tes coéquipiers seulement, jamais
   un ennemi**. Zoomée sur toi (`cod1x_minimap_range`), tourne avec la vue ou nord en haut, carrée arrondie ou
   ronde, sites de bombe épinglés au bord quand ils sont hors champ ; réglages dans Ctrl+M > Display.
 - Le serveur décide avec la clé `cod1x_minimap` (serverinfo / systeminfo) : 0 = rien, 1 = toi seul, 2 = + tes

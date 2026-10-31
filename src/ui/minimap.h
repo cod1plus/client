@@ -1,6 +1,6 @@
 #ifndef COD1RELOADED_MINIMAP_H
 #define COD1RELOADED_MINIMAP_H
-// minimap - a CoD4-style radar in the CoD1 HUD (cod1x_minimap 1).
+// minimap - a CoD4-style radar in the CoD1 HUD (cod1x_minimap_on 1, off by default).
 //
 // Zoomed on the player: only `cod1x_minimap_range` units around him are shown, the map
 // turning with the view (or north up), in a round or rounded-square frame. Everything is
@@ -50,7 +50,8 @@ void minimap_set_io(const MinimapIO* io);
 
 // The layout, from / to the cvars (seta: archived).
 struct MinimapLayout {
-    int   on = 1;          // cod1x_minimap
+    int   on = 0;          // cod1x_minimap_on: off until the player turns it on (1.6.14; 1.6.13's
+                           // cod1x_minimap 1, archived in every config that ran it, is ignored)
     float x = 0.99f;       // cod1x_minimap_x / _y: place in the room the box leaves, 0 = left /
     float y = 0.07f;       // top edge, 1 = right / bottom edge. Top right under a fps line by
                            // default: CoD1's chat is top left.
