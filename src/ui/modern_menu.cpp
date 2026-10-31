@@ -1334,12 +1334,24 @@ void modern_menu_draw(float sw, float sh) {
         "Every demo, every kill in it. Click a kill: the demo plays from just before.",
         "What this client is and what runs under the hood.",
     };
+    // the rail lists tab ids; a tab left out of the build keeps its id (g_tab, icon_tab and
+    // the bodies below are untouched), only its place in the rail goes
+#ifdef COD1RELOADED_WEAPON_INSPECT
+    static const int rail_ids[] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+#else
+    static const int rail_ids[] = { 0, 1, 2, 3, 5, 6, 7 };    // weapon inspect: a later version
+#endif
+    const int nrail = (int)(sizeof(rail_ids) / sizeof(rail_ids[0]));
+    int gslot = 0;
+    for (int j = 0; j < nrail; ++j)
+        if (rail_ids[j] == g_tab) gslot = j;
     float taby = 150;
-    float tsel = ui_smooth(8002, (float)g_tab, 13.0f);
+    float tsel = ui_smooth(8002, (float)gslot, 13.0f);
     ui_rect_rounded(20, 150 + tsel * 54 - 6, rail - 40, 46, 10, UI_ACCENT);
-    for (int i = 0; i < 8; ++i) {
+    for (int j = 0; j < nrail; ++j) {
+        const int i = rail_ids[j];
         bool over = hit(20, taby - 6, rail - 40, 46);
-        float prox = 1.0f - (tsel > i ? tsel - i : i - tsel);
+        float prox = 1.0f - (tsel > j ? tsel - j : j - tsel);
         if (prox < 0) prox = 0;
         if (i != g_tab && over)
             ui_rect_rounded(20, taby - 6, rail - 40, 46, 10, 0x33242424);
@@ -1375,9 +1387,9 @@ void modern_menu_draw(float sw, float sh) {
     ui_rect(px + 36, py + 84, pw - 120, 1, 0xFF2A2A2A);
 
     // tab content slides horizontally between tabs
-    float tt = ui_smooth(8001, (float)g_tab, 12.0f);
-    float slide = (tt - g_tab) * 46.0f;
-    float frac = tt - g_tab; if (frac < 0) frac = -frac;
+    float tt = ui_smooth(8001, (float)gslot, 12.0f);
+    float slide = (tt - gslot) * 46.0f;
+    float frac = tt - gslot; if (frac < 0) frac = -frac;
     ui_alpha(ot * (1.0f - (frac > 1 ? 1 : frac) * 0.85f));
     float cx = px + 36 + slide, cy = py + 122;
     const float colw = 430;

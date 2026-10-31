@@ -34,9 +34,6 @@
 - Ligne `scene` quand une fenêtre a eu des images au-delà des 1021 modèles.
 
 ### 🖥️ Ctrl+M
-- **Onglet Inspect** : les six inspections d'arme (`cod1x_inspect` 1 à 6 : tour, complète, moulinet du pistolet,
-  lancer du chargeur, le tour propre à l'arme, essuyage de la manche), touche à lier par animation (BACKSPACE
-  efface, ESC annule), bouton Play en jeu, vitesse 50 à 200 %. Mode 7 = le choix du menu (`cod1x_inspect_mode`).
 - **Display > RENDER CLOCK** (`cod1x_render_hz`, **0 = off par défaut, comportement moteur inchangé**) : N images
   par seconde régulièrement espacées à l'écran pendant que le jeu garde ses 250 commandes ; -1 = suit l'écran.
   Au-dessus de 250 c'est du travail CPU en plus : si plus de 5 % des frames de commande arrivent en retard,

@@ -146,6 +146,17 @@ if (COD1RELOADED_NO_RINPUT)
     message(STATUS "cod1reloaded: output -> ${COD1RELOADED_OUTPUT_DIR}")
 endif()
 
+# Weapon inspect (gameplay/inspect.cpp, `cod1x_inspect`, Ctrl+M > Inspect) waits for a later
+# version: OFF = the view weapon hook is never installed, its cvars are never registered and
+# the Inspect tab is not in the rail. The code still compiles, so it cannot rot meanwhile.
+#     cmake -S . -B build-inspect -DCOD1RELOADED_WEAPON_INSPECT=ON ...
+option(COD1RELOADED_WEAPON_INSPECT "Weapon inspect (cod1x_inspect) and the Ctrl+M Inspect tab" OFF)
+if (COD1RELOADED_WEAPON_INSPECT)
+    target_compile_definitions(cod1reloaded PRIVATE COD1RELOADED_WEAPON_INSPECT=1)
+    target_compile_definitions(mss32 PRIVATE COD1RELOADED_WEAPON_INSPECT=1)
+    message(STATUS "cod1reloaded: weapon inspect ON")
+endif()
+
 # Dev builds only: core/ini_lock.cpp imposes nothing - the seven locked keys are taken as
 # written in cod1reloaded.ini (e.g. gpu_sync = on to force the sync instead of auto) and
 # r_fullscreen / r_displayRefresh are left to the engine. The log says so at every launch.

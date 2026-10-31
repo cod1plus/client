@@ -90,7 +90,9 @@ unsigned  g_seen[64] = {};            // log once per client and placement sourc
 
 __attribute__((force_align_arg_pointer)) void __cdecl bone_probe(const void* dobj, const void* esi) {
     PROF_SCOPE(PROF_BONE);
+#ifdef COD1RELOADED_WEAPON_INSPECT
     inspect_on_skeleton(dobj);        // weapon inspect: bolt / magazine of the view weapon (idle: one compare)
+#endif
     const uint8_t* d = (const uint8_t*)dobj;
     const int count = d[0x17];
     if (count < 56 || count > 130) return;
