@@ -1,6 +1,46 @@
 # cod1reloaded — Changelog
 
-## 1.6.13 (2026-10-31) — des fps stables à 250, sans rien retirer de l'écran
+## 1.6.13 (2026-10-31) — des fps stables à 250, une minimap, un éditeur de HUD et le Workshop
+
+### 🗺️ Minimap (radar façon CoD4)
+- En haut à droite par défaut (le chat de CoD1 est en haut à gauche), **toi et tes coéquipiers seulement, jamais
+  un ennemi**. Zoomée sur toi (`cod1x_minimap_range`), tourne avec la vue ou nord en haut, carrée arrondie ou
+  ronde, sites de bombe épinglés au bord quand ils sont hors champ ; réglages dans Ctrl+M > Display.
+- Le serveur décide avec la clé `cod1x_minimap` (serverinfo / systeminfo) : 0 = rien, 1 = toi seul, 2 = + tes
+  coéquipiers. Sans clé : coéquipiers, ou toi seul quand un ruleset compétitif est appliqué.
+- Le dessin de la carte vient du pack « Minimaps » du Workshop s'il est installé, sinon le client le trace
+  lui-même depuis le BSP de la carte. `cod1x_minimap 0` = plus de minimap.
+
+### 🧩 Éditeur de HUD (Ctrl+M > Display)
+- Boussole, posture, barre de vie, munitions, nom de l'arme, indications d'action et liste des armes (en haut
+  au changement d'arme) : déplacés à la souris ou masqués. Un élément jamais touché reste celui du jeu.
+- Compteur de fps et lagometer : ceux du jeu (`cg_drawFPS` / `cg_lagometer`, par défaut) ou ceux de 1.6X,
+  placés où l'on veut.
+
+### 📦 Workshop (Ctrl+M > Workshop)
+- Les maps et mods du catalogue 1.6X (dépôt GitHub cod1plus/workshop) : un clic = téléchargé, vérifié
+  (SHA-256) et installé au bon endroit ; mise à jour signalée quand une nouvelle version sort. Packs de
+  plusieurs fichiers (textures HD) et pack d'images de la minimap.
+- **PLAY** sur une map installée : la lance seul en devmap, dans Main (Aim Rooms, Liberation, Coastal). Juste
+  après un téléchargement, les fichiers du jeu sont rechargés d'abord : pas besoin de relancer le jeu.
+
+### 🖱️ Sensibilité sur MG montée : `sensitivity_mg`
+- Comme `sensitivity_MG` de cod2x (sauvegardée, 1 par défaut = le jeu à l'identique, 0,01 à 100). Sur une MG
+  montée le jeu ignore `sensitivity` et tourne à vitesse fixe ; cette vitesse est multipliée par
+  `sensitivity_mg` (plus `cl_mouseAccel`). Pour retrouver en horizontal sa sensibilité S : `sensitivity_mg` =
+  S / 2,5. Curseur « Mounted MG » dans Ctrl+M > Mouse > SENSITIVITY.
+
+### 🏙️ Grandes maps converties (Liberation, Coastal)
+- Les traces de collision ne parcourent plus chaque brosse d'un modèle de brosses que la trace ne touche pas
+  (`trace_cull`) : mêmes collisions, 120-170 → 217-246 fps mesurés sur Liberation.
+- `r_vbo_paranoia` (hérité d'une config de développeur d'Activision dans pak9) n'efface plus les buffers GPU
+  à chaque image.
+- Les petits décors des maps converties (grappes `<map>_dt*`) disparaissent à leur distance prévue même sous
+  `r_lodscale 0` (`cod1x_detail_scale`). Les maps stock ne sont pas concernées.
+- `cod1x_static_flatlight 1` (0 par défaut) : éclairage uniforme par modèle statique au lieu du calcul par
+  sommet, contre les saccades en tournant sur une très grosse map ; il change l'éclairage des modèles, d'où
+  le défaut à 0.
+- `cod1x_bench` : banc de mesure des images (diagnostic, inactif par défaut).
 
 ### 🎯 Ce qui faisait chuter les fps en 1.6.12 (mesuré sur les logs, lignes `bilan`)
 - **Le journal était écrit de façon synchrone sur le thread du jeu** : chaque ligne = fopen / fputs / fclose.

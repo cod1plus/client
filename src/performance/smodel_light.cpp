@@ -22,7 +22,8 @@ volatile long cod1x_sl_calls = 0;      // surfaces handed to the lighting
 volatile long cod1x_sl_verts = 0;      // their vertices (word [surface+0x12])
 volatile long cod1x_sl_big = 0;        // of which surfaces over 0x200 vertices (not cached by the engine)
 const void* cod1x_sl_target = (const void*)0x00506ae0;
-volatile long cod1x_sl_flat = 1;       // cvar cod1x_static_flatlight (default 1, bench 10-27: p99 3.67 / max 4.6 ms vs 4.04 / 34 ms with the cache - its 65 536 vertices overflow and relight on every turn): no per-vertex lighting of static-model surfaces at all - the
+volatile long cod1x_sl_flat = 0;       // cvar cod1x_static_flatlight (default 0 since the 1.6.13 release: it changes
+                                       // how every map's static models are lit, stock maps included; bench 10-27: p99 3.67 / max 4.6 ms vs 4.04 / 34 ms with the cache - its 65 536 vertices overflow and relight on every turn): no per-vertex lighting of static-model surfaces at all - the
                                        // call returns 0 (no cache entry), every surface takes the path the > 512-vertex ones already take
 volatile long cod1x_sl_flat_skipped = 0;
 }
@@ -116,7 +117,7 @@ static void* g_cv_flat = nullptr;
 
 void smodel_light_tick() {
     if (!g_installed) return;
-    if (!g_cv_flat) g_cv_flat = ((SlCvarGet_t)0x0043b880)("cod1x_static_flatlight", "1", 0x01);   // Cvar_Get, CVAR_ARCHIVE
+    if (!g_cv_flat) g_cv_flat = ((SlCvarGet_t)0x0043b880)("cod1x_static_flatlight", "0", 0x01);   // Cvar_Get, CVAR_ARCHIVE
     if (g_cv_flat) cod1x_sl_flat = *(const int*)((const uint8_t*)g_cv_flat + 0x20) ? 1 : 0;
     const ULONGLONG now = GetTickCount64();
     if (g_last_log && now - g_last_log < 10000) return;
