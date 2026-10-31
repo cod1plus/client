@@ -1,6 +1,6 @@
 # cod1reloaded — Changelog
 
-## 1.6.13 (2026-10-23) — des fps stables à 250, sans rien retirer de l'écran
+## 1.6.13 (2026-10-31) — des fps stables à 250, sans rien retirer de l'écran
 
 ### 🎯 Ce qui faisait chuter les fps en 1.6.12 (mesuré sur les logs, lignes `bilan`)
 - **Le journal était écrit de façon synchrone sur le thread du jeu** : chaque ligne = fopen / fputs / fclose.
