@@ -47,6 +47,8 @@
   compétitif du serveur n'est plus réappliqué en lecture (timescale libre).
 - anim_clamp : une valeur d'animation hors plage est jouée comme l'animation 0 à l'entrée du runner d'interpolation
   (plus de retour au menu sur une démo enregistrée sur un serveur moddé).
+- Un crash pendant le chargement d'une carte ne laisse plus une fenêtre plein écran figée : à la fermeture du
+  processus, la DLL ne restaure plus le gamma (l'appel attendait indéfiniment un thread déjà mort).
 
 ## Non publié (correctif 1.6.9, build de test du 2026-09-26)
 
