@@ -6,6 +6,10 @@
   accélération. Entre deux ticks, le RENDER CLOCK tournait la vue avec le curseur de Windows (sa vitesse et son
   accélération) alors que le jeu visait avec le raw input de RInput. Quand un outil externe a repris la souris du
   jeu, la vue ne tourne plus qu'avec les commandes du jeu (le RENDER CLOCK garde le déplacement fluide).
+- **RENDER CLOCK ne retombe plus à 250 sur un bon PC** : une seule demi-seconde avec quelques images en retard
+  suffisait (les à-coups juste après l'apparition, un pic isolé) et le plafond restait jusqu'au changement de
+  réglage. Les 3 premières secondes en jeu ne comptent plus, et il faut maintenant que le retard dure (3 demi-secondes
+  en retard de plus que de demi-secondes à l'heure) : un PC qui ne suit vraiment pas retombe toujours à 250.
 
 ## 1.6.15 (2026-11-01) — plus de chutes de fps quand des joueurs apparaissent
 
