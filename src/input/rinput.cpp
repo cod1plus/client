@@ -478,7 +478,12 @@ void rinput_peek_delta(long* dx, long* dy) {
         if (!s_checked || now - s_checked >= 2000) {
             s_checked = now ? now : 1;
             void* cur = iat_peek("user32.dll", "GetCursorPos");
-            const bool foreign = cur && cur != (void*)hk_GetCursorPos && cur != (void*)g_real_GetCursorPos;
+            // the no-rinput build never installs our hook (g_real_GetCursorPos stays null): Windows'
+            // own function in the slot is not a foreign hook either
+            static void* s_user32 = nullptr;
+            if (!s_user32) s_user32 = (void*)GetProcAddress(GetModuleHandleA("user32.dll"), "GetCursorPos");
+            const bool foreign = cur && cur != (void*)hk_GetCursorPos && cur != (void*)g_real_GetCursorPos &&
+                                 cur != s_user32;
             if (foreign != s_foreign)
                 logger::logf(foreign ? "rinput: GetCursorPos re-hooked by another tool (external RInput?) - the render clock no longer turns the view between commands"
                                      : "rinput: GetCursorPos back to ours - render clock view turning between commands restored");
