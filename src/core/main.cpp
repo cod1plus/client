@@ -97,7 +97,7 @@ bool apply_cgame_patches(HMODULE cgame, bool fresh) {
     // server-tested hit boxes overlay (cod1x_drawhitbox): needs the 'hb' server command
     // intercepted on EVERY cgame load, whatever else is enabled
     patches::hitbox_view_install(cgame);
-    // render clock: the view of frames drawn between two commands (inert while cod1x_render_hz 0)
+    // render clock: the view of frames drawn between two commands (inert while cod1x_render_clock 0)
     patches::render_clock_install_cgame(cgame);
 #ifdef COD1RELOADED_WEAPON_INSPECT
     // weapon inspect (cod1x_inspect): the view weapon's call site, on every cgame load
@@ -140,7 +140,8 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::rinput_tick();              // follow m_rinput, publish m_rinput_hz
             patches::netmode_tick();             // follow cod1x_masterlist (1.6 <-> legacy 1.5)
             patches::session_report_tick();      // one 'bilan' line a minute in the log
-            patches::render_clock_tick();        // cod1x_render_hz
+            patches::render_clock_tick();        // cod1x_render_clock
+            patches::process_priority_mmcss_tick();  // cod1x_mmcss
             patches::smodel_fast_tick();         // cod1x_smodel_fast
             patches::sensitivity_mg_tick();      // sensitivity_mg
             patches::trace_cull_tick();          // inline-model trace bounds test: the 10 s line
@@ -247,7 +248,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
             patches::apply_fullscreen_patch();
 
             patches::apply_frame_limiter_patch();
-            patches::render_clock_install();     // CL_Frame's draw: on the render clock when cod1x_render_hz > 0
+            patches::render_clock_install();     // CL_Frame's draw: on the render clock when cod1x_render_clock > 0
             patches::smodel_fast_install();      // scene overflow (> 1021 models): heap, not the engine's sqrt scan
             patches::sensitivity_mg_install();   // CL_MouseMove's turret branch: sensitivity_mg
             patches::trace_cull_install();       // CM_BoxTrace: bounds test before an inline model's leaf trace

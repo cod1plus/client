@@ -273,10 +273,8 @@ void frame_limiter_reset() {
 }
 
 int frame_wait(const FrameLimiterEngine& e) {
-    if (g_qpc_freq.QuadPart == 0) {
-        QueryPerformanceFrequency(&g_qpc_freq);
-        process_priority_mmcss_join();   // the game thread, out of DllMain: the first wait
-    }
+    if (g_qpc_freq.QuadPart == 0) QueryPerformanceFrequency(&g_qpc_freq);
+    process_priority_mmcss_join();       // the game thread: joins / leaves MMCSS as cod1x_mmcss asks (cheap when unchanged)
 
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
@@ -327,7 +325,7 @@ int frame_wait(const FrameLimiterEngine& e) {
     }
 
     const LONGLONG deadline = g_next_deadline;
-    // render clock (cod1x_render_hz): a screen frame due before this command frame is drawn
+    // render clock (cod1x_render_clock): a screen frame due before this command frame is drawn
     // at its own instant, in the middle of the wait
     LONGLONG slot;
     while (render_clock_slot_before(deadline, now.QuadPart, &slot)) {

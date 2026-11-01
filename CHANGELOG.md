@@ -1,5 +1,16 @@
 # cod1reloaded — Changelog
 
+## 1.6.15 (2026-11-01) — plus de chutes de fps quand des joueurs apparaissent
+
+- **RENDER CLOCK repasse sur OFF pour tout le monde** (Ctrl+M > Display, nouvelle cvar `cod1x_render_clock`).
+  Sa protection ne se déclenchait jamais en 1.6.13 / 1.6.14 : sur un CPU modeste, les images en plus faisaient
+  chuter les fps dès que des joueurs entraient dans le champ (chacun redessiné à chaque image en plus). Elle
+  réagit maintenant en une demi-seconde (2 % d'images en retard suffisent) et garde 250 images / s jusqu'à ce
+  qu'on change le réglage, plus de nouvel essai au milieu d'un combat.
+- **Priorité de jeu Windows (MMCSS) désactivée par défaut** : nouvel interrupteur « Windows game priority
+  (MMCSS) » dans Ctrl+M > Display (cvar `cod1x_mmcss`, sauvegardée, s'applique tout de suite). Activée d'office en
+  1.6.13, elle peut provoquer des saccades sur les processeurs de 4 à 6 cœurs.
+
 ## 1.6.14 (2026-10-31) — la minimap désactivée par défaut
 
 - **La minimap est désactivée par défaut** : on l'active dans Ctrl+M > Display (cvar `cod1x_minimap_on`, sauvegardée).

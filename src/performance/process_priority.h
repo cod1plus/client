@@ -33,13 +33,16 @@ extern ProcessPriorityConfig g_process_priority_config;
 // call from DllMain attach, main thread
 void process_priority_apply();
 
-// Once, from the GAME thread and outside DllMain (avrt.dll is loaded here, never under the
-// loader lock): register it with the Multimedia Class Scheduler's "Games" task. MMCSS then
-// schedules it in the real-time band while it stays within its quota (SystemResponsiveness
-// keeps 20 % of the CPU for everything else), with the task's I/O and GPU priorities - other
-// programs' threads (browser, Discord, updaters) stop preempting it on its core.
-// COD1RELOADED_MMCSS=0 leaves it out.
+// From the GAME thread at every frame wait, outside DllMain (avrt.dll is loaded here, never
+// under the loader lock): join or leave the Multimedia Class Scheduler's "Games" task as the
+// cvar cod1x_mmcss asks (0 = default since 1.6.15). MMCSS schedules the thread in the real-time
+// band while it stays within its quota, with the task's I/O and GPU priorities. 1.6.15: OFF by
+// default - with the frame limiter spinning the tail of every frame, a real-time game thread can
+// starve the GPU driver's own thread on a CPU with few cores, and 1.6.13 players reported fps
+// drops as soon as other players came into view. COD1RELOADED_MMCSS=0 forces it off.
 void process_priority_mmcss_join();
+// watcher thread: registers cod1x_mmcss (archived) and publishes its value
+void process_priority_mmcss_tick();
 
 }  // namespace patches
 

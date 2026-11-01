@@ -1,5 +1,7 @@
 #include "performance/process_priority.h"
 #include "core/logger.h"
+#include "features/settings_menu.h"      // CODMP_CVAR_FINDVAR_VA
+#include "netcode/protocol_patch.h"      // CODMP_CVAR_GET_VA
 
 #include <cstdlib>
 
@@ -104,34 +106,60 @@ void disable_power_throttling_impl() {
 
 }  // namespace
 
+namespace {
+volatile LONG g_mmcss_want = 0;          // cod1x_mmcss (watcher writes, game thread reads)
+HANDLE g_mmcss = nullptr;                // the game thread's MMCSS registration, when joined
+bool   g_mmcss_dead = false;             // avrt.dll missing / env override: never try again
+}
+
+void process_priority_mmcss_tick() {
+    typedef void* (__cdecl* Cvar_Get_t)(const char*, const char*, int);
+    typedef void* (__cdecl* Cvar_FindVar_t)(const char*);
+    static void* s_cv = nullptr;
+    if (!s_cv) s_cv = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_mmcss", "0", 1 /* archive */);
+    const LONG v = (s_cv && *(int*)((char*)s_cv + 0x20) != 0) ? 1 : 0;
+    if (v != g_mmcss_want) InterlockedExchange(&g_mmcss_want, v);
+}
+
 void process_priority_mmcss_join() {
-    static bool s_done = false;
-    if (s_done) return;
-    s_done = true;
-    if (!g_process_priority_config.mmcss_games) return;
-    const char* e = getenv("COD1RELOADED_MMCSS");
-    if (e && e[0] == '0' && e[1] == 0) {
-        logger::logf("process_priority: MMCSS off (COD1RELOADED_MMCSS=0)");
-        return;
-    }
     typedef HANDLE (WINAPI *AvSetMmThreadCharacteristicsW_t)(LPCWSTR, LPDWORD);
-    HMODULE avrt = LoadLibraryA("avrt.dll");                 // Vista+; absent = skip
-    AvSetMmThreadCharacteristicsW_t join = avrt
-        ? (AvSetMmThreadCharacteristicsW_t)GetProcAddress(avrt, "AvSetMmThreadCharacteristicsW") : nullptr;
-    if (!join) {
-        logger::logf("process_priority: MMCSS unavailable (avrt.dll)");
-        return;
+    typedef BOOL (WINAPI *AvRevertMmThreadCharacteristics_t)(HANDLE);
+    static AvSetMmThreadCharacteristicsW_t s_join = nullptr;
+    static AvRevertMmThreadCharacteristics_t s_revert = nullptr;
+    const bool want = g_mmcss_want != 0 && g_process_priority_config.mmcss_games && !g_mmcss_dead;
+    if (want == (g_mmcss != nullptr)) return;    // the common case: nothing to do
+    if (!s_join) {
+        const char* e = getenv("COD1RELOADED_MMCSS");
+        if (e && e[0] == '0' && e[1] == 0) {
+            logger::logf("process_priority: MMCSS off (COD1RELOADED_MMCSS=0)");
+            g_mmcss_dead = true;
+            return;
+        }
+        HMODULE avrt = LoadLibraryA("avrt.dll");                 // Vista+; absent = skip
+        s_join = avrt ? (AvSetMmThreadCharacteristicsW_t)GetProcAddress(avrt, "AvSetMmThreadCharacteristicsW") : nullptr;
+        s_revert = avrt ? (AvRevertMmThreadCharacteristics_t)GetProcAddress(avrt, "AvRevertMmThreadCharacteristics") : nullptr;
+        if (!s_join || !s_revert) {
+            logger::logf("process_priority: MMCSS unavailable (avrt.dll)");
+            g_mmcss_dead = true;
+            return;
+        }
     }
-    DWORD task = 0;
-    const HANDLE h = join(L"Games", &task);
-    if (h) {
-        logger::logf("process_priority: game thread in the MMCSS Games task (index %lu, now priority %d)",
-                     task, GetThreadPriority(GetCurrentThread()));
+    if (want) {
+        DWORD task = 0;
+        g_mmcss = s_join(L"Games", &task);
+        if (g_mmcss)
+            logger::logf("process_priority: game thread in the MMCSS Games task (cod1x_mmcss 1; index %lu, now priority %d)",
+                         task, GetThreadPriority(GetCurrentThread()));
+        else {
+            logger::logf("process_priority: MMCSS Games refused (err=%lu) - thread priority unchanged", GetLastError());
+            g_mmcss_dead = true;
+        }
     } else {
-        logger::logf("process_priority: MMCSS Games refused (err=%lu) - thread priority unchanged",
-                     GetLastError());
+        s_revert(g_mmcss);
+        g_mmcss = nullptr;
+        logger::logf("process_priority: game thread out of MMCSS (cod1x_mmcss 0; priority %d)",
+                     GetThreadPriority(GetCurrentThread()));
     }
-    // never reverted: the registration lasts as long as the thread, i.e. the game
 }
 
 void process_priority_apply() {

@@ -4,7 +4,7 @@
 //
 // CoD1's physics depend on the frame rate (one usercmd per frame, msec = 1000 / com_maxfps,
 // no pmove_fixed), so com_maxfps stays 250 - and a 250 fps game on a 144 / 240 / 320 Hz screen
-// shows some frames once and some twice: judder. With cod1x_render_hz N the frames are DRAWN
+// shows some frames once and some twice: judder. With cod1x_render_clock N the frames are DRAWN
 // N times a second at evenly spaced instants, while the commands (and so the physics, the
 // network, everything the server sees) stay exactly at com_maxfps:
 //   - CL_Frame's SCR_UpdateScreen (CoDMP 0x412915 -> 0x418b30) only draws when a render
@@ -17,7 +17,7 @@
 //     the predicted velocity over the time since that command (<= 12 ms) and turned by the
 //     mouse movement the engine has not read yet, converted exactly like CL_MouseMove
 //     (0x40bd60) will convert it for the next command - what you see is what you send.
-// cod1x_render_hz 0 (the default) = the engine's own behaviour, bit for bit.
+// cod1x_render_clock 0 (the default) = the engine's own behaviour, bit for bit.
 #include <windows.h>
 
 namespace patches {

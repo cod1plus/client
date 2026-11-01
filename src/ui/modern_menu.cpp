@@ -1451,13 +1451,13 @@ void modern_menu_draw(float sw, float sh) {
         if (dh) { int n = (int)g_hz.size() + 1;
                   g_hz_sel = (g_hz_sel + dh + n) % n; g_dirty = true; }
         cy += 58;
-        // render clock (cod1x_render_hz): N evenly spaced frames a second on screen while the
+        // render clock (cod1x_render_clock): N evenly spaced frames a second on screen while the
         // game keeps its 250 commands; live, no restart. -1 = follow the screen's rate.
         section(cx, cy, colw, "RENDER CLOCK  (frames shown per second)"); cy += 24;
         {
             static const int rates[] = { 0, -1, 60, 100, 120, 144, 165, 200, 240, 300, 320, 360, 480 };
             const int nr = (int)(sizeof(rates) / sizeof(rates[0]));
-            const int cur = cv_int("cod1x_render_hz", 0);
+            const int cur = cv_int("cod1x_render_clock", 0);
             int rsel = 0;
             for (int i = 0; i < nr; ++i) if (rates[i] == cur) rsel = i;
             char rl[48];
@@ -1465,11 +1465,19 @@ void modern_menu_draw(float sw, float sh) {
             else if (cur == -1) snprintf(rl, sizeof(rl), "Screen rate  (%d Hz now)", sel_hz());
             else                snprintf(rl, sizeof(rl), "%d frames / s", cur);
             int dr = cycler(cx, cy, colw, rl);
-            if (dr) cmdf("seta cod1x_render_hz %d\n", rates[(rsel + dr + nr) % nr]);
+            if (dr) cmdf("seta cod1x_render_clock %d\n", rates[(rsel + dr + nr) % nr]);
             cy += 48;
-            hint(cx, cy, "Evenly spaced frames on screen, the game keeps its 250 commands. Above 250 = extra");
-            cy += 18;
-            hint(cx, cy, "CPU work: falls back to 250 by itself when frames start coming late. Applies at once.");
+            hint(cx, cy, "Above 250 = extra CPU work; drops back to 250 by itself as soon as frames come late.");
+            cy += 26;
+        }
+        // MMCSS (cod1x_mmcss): the game thread in Windows' "Games" scheduling task. Off by default
+        // since 1.6.15: on a CPU with few cores it can starve the graphics driver's thread.
+        {
+            const bool mm = cv_int("cod1x_mmcss", 0) != 0;
+            const bool nmm = toggle(cx, cy, "Windows game priority (MMCSS)", mm);
+            if (nmm != mm) cmdf("seta cod1x_mmcss %d\n", nmm ? 1 : 0);
+            cy += 34;
+            hint(cx, cy, "Off = the safe default. On can help many-core CPUs, can stutter on 4-6 cores.");
             cy += 30;
         }
 

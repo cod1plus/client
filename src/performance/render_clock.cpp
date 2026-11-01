@@ -65,7 +65,7 @@ typedef void  (__cdecl* VoidFn_t)();
 typedef void* (__cdecl* Cvar_Get_t)(const char*, const char*, int);
 typedef void* (__cdecl* Cvar_FindVar_t)(const char*);
 
-volatile LONG g_hz = 0;                  // cod1x_render_hz (watcher writes, game thread reads)
+volatile LONG g_hz = 0;                  // cod1x_render_clock (watcher writes, game thread reads)
 volatile LONG g_msec = 4;                // 1000 / com_maxfps, for the between-frames clamp
 bool      g_installed = false;
 uintptr_t g_cgame = 0;                   // cgame base whose CG_CalcViewValues call we own
@@ -257,7 +257,7 @@ void render_clock_install() {
         return;
     }
     g_installed = true;
-    logger::logf("render_clock: installed (cod1x_render_hz 0 = off; N = the screen gets N evenly spaced "
+    logger::logf("render_clock: installed (cod1x_render_clock 0 = off; N = the screen gets N evenly spaced "
                  "frames a second, commands stay at com_maxfps)");
 }
 
@@ -280,11 +280,13 @@ void render_clock_tick() {
     static DWORD last_log = 0;
     static LONG last_hz = -1;
     if (!registered) {
-        ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_render_hz", "0", 1 /* archive */);
+        // 1.6.15: a new name, so every player starts OFF again - 1.6.13/1.6.14 archived
+        // cod1x_render_hz in each config_mp.cfg and its guard below never fired (see THE BUDGET)
+        ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_render_clock", "0", 1 /* archive */);
         registered = true;
     }
     Cvar_FindVar_t find = (Cvar_FindVar_t)CODMP_CVAR_FINDVAR_VA;
-    int hz = cvi(find("cod1x_render_hz"), 0);
+    int hz = cvi(find("cod1x_render_clock"), 0);
     bool follow = false;
     if (hz == -1) {                       // follow the screen: r_displayRefresh, else the mode in use
         follow = true;
@@ -314,30 +316,41 @@ void render_clock_tick() {
     // session had 0 late frames. When the command frames start coming late, the rate is
     // capped at com_maxfps (no extra draw: the clock-off work, the draws merely re-timed)
     // and the asked rate tried again 30 s later, three times a session.
+    // 1.6.15: that guard NEVER fired. This tick runs every ~5 ms and the late poll resets its
+    // counters at each call, so "frames >= 100" could not be met: 1.6.13/1.6.14 drew the extra
+    // frames whatever they cost - players on a modest CPU lost their fps as soon as players came
+    // into view (each one animated and drawn again for every extra frame). Now the counts are
+    // summed over half-second windows, 2 % of late command frames is enough, and the cap holds
+    // until the player changes the setting (no retry in the middle of a fight).
     static LONG  s_fit = 0;                 // 0 = none, else the cap in force
-    static DWORD s_fit_since = 0;
-    static int   s_fit_tries = 0;
-    static int   s_bad = 0;                 // consecutive seconds over budget
+    static int   s_fit_req = 0;             // the requested rate the cap was set for
+    static long  s_acc_late = 0, s_acc_frames = 0;
+    static DWORD s_acc_since = 0;
     long late = 0, frames = 0;
     frame_limiter_late_poll(&late, &frames);
     const DWORD tnow = GetTickCount();
     const int requested = hz;
+    if (s_fit && requested != s_fit_req) {  // the player changed the setting: the cap goes
+        s_fit = 0;
+        s_acc_late = s_acc_frames = 0; s_acc_since = tnow;
+    }
+    s_acc_late += late;
+    s_acc_frames += frames;
+    if (!s_acc_since) s_acc_since = tnow;
     if (s_fit && hz > s_fit) {
         hz = s_fit;
-        if (s_fit_tries < 3 && tnow - s_fit_since >= 30000) {
-            s_fit = 0; s_bad = 0; hz = requested;
-            logger::logf("render_clock: trying %d a second again", requested);
-        }
-    } else if (hz > maxfps && frames >= 100 && late * 20 > frames) {     // > 5 % of the command frames late
-        if (++s_bad >= 2) {
-            s_fit = maxfps; s_fit_since = tnow; ++s_fit_tries; s_bad = 0;
+    } else if (tnow - s_acc_since >= 500) {
+        if (hz > maxfps && s_acc_frames >= 60 && s_acc_late * 50 > s_acc_frames) {   // > 2 % late in half a second
+            s_fit = maxfps; s_fit_req = requested;
             hz = maxfps;
             logger::logf("render_clock: %d a second does not fit beside com_maxfps %d on this CPU (a draw costs %.2f ms; "
-                         "%ld of %ld command frames came late) - %d a second %s",
+                         "%ld of %ld command frames came late in %lu ms) - %d a second until the setting changes",
                          requested, maxfps, g_freq.QuadPart ? (double)g_cost * 1000.0 / (double)g_freq.QuadPart : 0.0,
-                         late, frames, maxfps, s_fit_tries >= 3 ? "for the rest of the session" : "until it does (retry in 30 s)");
+                         s_acc_late, s_acc_frames, (unsigned long)(tnow - s_acc_since), maxfps);
         }
-    } else s_bad = 0;
+        s_acc_late = s_acc_frames = 0;
+        s_acc_since = tnow;
+    }
     if (hz != last_hz) {
         InterlockedExchange(&g_hz, hz);
         if (hz) logger::logf("render_clock: ON - %d frames a second on screen%s, commands at com_maxfps %d", hz,
