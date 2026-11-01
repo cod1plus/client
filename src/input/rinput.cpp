@@ -464,6 +464,28 @@ void rinput_peek_delta(long* dx, long* dy) {
     // m_rinput 0: the engine reads GetCursorPos - centre and re-centres once a frame, so
     // the cursor's current offset IS the movement it has not read yet
     if (*g_center_x <= 0 || *g_center_y <= 0) return;
+    // ... unless an EXTERNAL raw-input tool (RInput) re-hooked the game's GetCursorPos after
+    // us: the engine then reads that tool's raw counts while the real cursor below moves with
+    // Windows' pointer speed and acceleration - the render clock turned the view between
+    // commands by a different amount than the command did ("feels like another sensitivity /
+    // acceleration", 1.6.14 report). Nothing is predicted then: the view turns with the
+    // commands only, exactly what the tool gives (its hook is never called from here: whether
+    // a read consumes its counts is not ours to know).
+    {
+        static DWORD s_checked = 0;
+        static bool  s_foreign = false;
+        const DWORD now = GetTickCount();
+        if (!s_checked || now - s_checked >= 2000) {
+            s_checked = now ? now : 1;
+            void* cur = iat_peek("user32.dll", "GetCursorPos");
+            const bool foreign = cur && cur != (void*)hk_GetCursorPos && cur != (void*)g_real_GetCursorPos;
+            if (foreign != s_foreign)
+                logger::logf(foreign ? "rinput: GetCursorPos re-hooked by another tool (external RInput?) - the render clock no longer turns the view between commands"
+                                     : "rinput: GetCursorPos back to ours - render clock view turning between commands restored");
+            s_foreign = foreign;
+        }
+        if (s_foreign) return;
+    }
     POINT real;
     const BOOL ok = g_real_GetCursorPos ? g_real_GetCursorPos(&real) : GetCursorPos(&real);
     if (!ok) return;

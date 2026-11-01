@@ -1,5 +1,12 @@
 # cod1reloaded — Changelog
 
+## 1.6.16 (2026-11-01) — RENDER CLOCK et RInput externe
+
+- **RENDER CLOCK + RInput externe** : la souris ne donne plus l'impression d'une autre sensibilité ou d'une
+  accélération. Entre deux ticks, le RENDER CLOCK tournait la vue avec le curseur de Windows (sa vitesse et son
+  accélération) alors que le jeu visait avec le raw input de RInput. Quand un outil externe a repris la souris du
+  jeu, la vue ne tourne plus qu'avec les commandes du jeu (le RENDER CLOCK garde le déplacement fluide).
+
 ## 1.6.15 (2026-11-01) — plus de chutes de fps quand des joueurs apparaissent
 
 - **RENDER CLOCK repasse sur OFF pour tout le monde** (Ctrl+M > Display, nouvelle cvar `cod1x_render_clock`).
