@@ -322,31 +322,59 @@ void render_clock_tick() {
     // into view (each one animated and drawn again for every extra frame). Now the counts are
     // summed over half-second windows, 2 % of late command frames is enough, and the cap holds
     // until the player changes the setting (no retry in the middle of a fight).
+    // 1.6.16: one bad half second was enough, and a fast PC has those too: the hitches right
+    // after a spawn (first models and sounds, 8-11 ms frames) or a lone burst made 4-9 late
+    // frames of ~120 while its draws cost 0.5-1.5 ms - capped at 250 for the session (3 times
+    // in 4 minutes on a 320 Hz screen, 11-01). Now the first 3 s in game are not judged, and
+    // a bad window adds one to a score a clean one takes one from: the cap needs 3 bad windows
+    // more than clean ones (1.5 s of a CPU that does not keep up), a lone burst never reaches it.
     static LONG  s_fit = 0;                 // 0 = none, else the cap in force
     static int   s_fit_req = 0;             // the requested rate the cap was set for
     static long  s_acc_late = 0, s_acc_frames = 0;
     static DWORD s_acc_since = 0;
+    static DWORD s_game_since = 0;          // when in_game() last turned true (0 = not in game)
+    static int   s_bad = 0;                 // bad windows minus clean ones, never below 0
+    static int   s_bad_logged = 0;
     long late = 0, frames = 0;
     frame_limiter_late_poll(&late, &frames);
     const DWORD tnow = GetTickCount();
     const int requested = hz;
     if (s_fit && requested != s_fit_req) {  // the player changed the setting: the cap goes
         s_fit = 0;
+        s_bad = 0;
         s_acc_late = s_acc_frames = 0; s_acc_since = tnow;
     }
+    if (!in_game()) { s_game_since = 0; s_bad = 0; }
+    else if (!s_game_since) s_game_since = tnow ? tnow : 1;
+    const bool judged = s_game_since && tnow - s_game_since >= 3000;   // warm-up after a load / spawn
     s_acc_late += late;
     s_acc_frames += frames;
     if (!s_acc_since) s_acc_since = tnow;
     if (s_fit && hz > s_fit) {
         hz = s_fit;
     } else if (tnow - s_acc_since >= 500) {
-        if (hz > maxfps && s_acc_frames >= 60 && s_acc_late * 50 > s_acc_frames) {   // > 2 % late in half a second
-            s_fit = maxfps; s_fit_req = requested;
-            hz = maxfps;
-            logger::logf("render_clock: %d a second does not fit beside com_maxfps %d on this CPU (a draw costs %.2f ms; "
-                         "%ld of %ld command frames came late in %lu ms) - %d a second until the setting changes",
-                         requested, maxfps, g_freq.QuadPart ? (double)g_cost * 1000.0 / (double)g_freq.QuadPart : 0.0,
-                         s_acc_late, s_acc_frames, (unsigned long)(tnow - s_acc_since), maxfps);
+        if (hz > maxfps && judged && s_acc_frames >= 60) {
+            if (s_acc_late * 50 > s_acc_frames) {                       // > 2 % late in half a second
+                ++s_bad;
+                if (s_bad < 3 && s_bad_logged < 50) {
+                    ++s_bad_logged;
+                    logger::logf("render_clock: %ld of %ld command frames late in %lu ms (draw %.2f ms) - %d/3",
+                                 s_acc_late, s_acc_frames, (unsigned long)(tnow - s_acc_since),
+                                 g_freq.QuadPart ? (double)g_cost * 1000.0 / (double)g_freq.QuadPart : 0.0, s_bad);
+                }
+            } else if (s_bad > 0) {
+                --s_bad;
+            }
+            if (s_bad >= 3) {
+                s_fit = maxfps; s_fit_req = requested;
+                hz = maxfps;
+                s_bad = 0;
+                logger::logf("render_clock: %d a second does not fit beside com_maxfps %d on this CPU (a draw costs %.2f ms; "
+                             "%ld of %ld command frames came late in %lu ms, the 3rd bad half second) - %d a second until "
+                             "the setting changes",
+                             requested, maxfps, g_freq.QuadPart ? (double)g_cost * 1000.0 / (double)g_freq.QuadPart : 0.0,
+                             s_acc_late, s_acc_frames, (unsigned long)(tnow - s_acc_since), maxfps);
+            }
         }
         s_acc_late = s_acc_frames = 0;
         s_acc_since = tnow;
