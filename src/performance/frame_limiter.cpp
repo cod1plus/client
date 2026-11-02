@@ -63,6 +63,7 @@
 #include "performance/render_clock.h"
 #include "performance/process_priority.h"
 #include "performance/bench.h"
+#include "performance/gpu_sync.h"
 #include "core/logger.h"
 #include "netcode/version_patch.h" // CODMP_PREFERRED_BASE
 
@@ -193,7 +194,8 @@ inline void spin_once(LONGLONG remaining_ticks) {
 // tick. Resolved at run time (older Windows / older headers): without it, the Sleep(1) path
 // above, unchanged.
 // 1.6.17: OFF by default again - the Sleep(1) wait is part of the 1.6.12 timing players asked back
-// (see gpu_sync.cpp). COD1RELOADED_LIMITER_HR=1 turns the high-resolution timer on.
+// (see gpu_sync.cpp). On with the rest of the 1.6.13 timing (cod1x_gpu_fence 1, Ctrl+M > Display,
+// live) or alone with COD1RELOADED_LIMITER_HR=1.
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
@@ -202,14 +204,19 @@ typedef HANDLE (WINAPI* CreateWaitableTimerExW_t)(LPSECURITY_ATTRIBUTES, LPCWSTR
 HANDLE g_hr_timer = NULL;
 bool   g_hr_tried = false;
 
+// the high-resolution wait wanted for this frame (the timer itself is created the first time)
+bool hr_wanted() {
+    static int s_env = -1;
+    if (s_env < 0) {
+        const char* e = getenv("COD1RELOADED_LIMITER_HR");
+        s_env = (e && *e == '1') ? 1 : 0;
+    }
+    return s_env || gpu_sync_timing_1613();
+}
+
 void hr_timer_init() {
     if (g_hr_tried) return;
     g_hr_tried = true;
-    const char* e = getenv("COD1RELOADED_LIMITER_HR");
-    if (!(e && *e == '1')) {
-        logger::logf("frame_limiter: Sleep(1) wait, the 1.6.12 timing (COD1RELOADED_LIMITER_HR=1 for the high-resolution timer)");
-        return;
-    }
     HMODULE k32 = GetModuleHandleA("kernel32.dll");
     CreateWaitableTimerExW_t create = k32 ? (CreateWaitableTimerExW_t)GetProcAddress(k32, "CreateWaitableTimerExW") : nullptr;
     if (create) g_hr_timer = create(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
@@ -220,10 +227,16 @@ void hr_timer_init() {
 
 // wait until the QPC deadline; `now` is updated
 void wait_until(LONGLONG deadline, LARGE_INTEGER& now) {
-    hr_timer_init();
+    const bool hr = hr_wanted();
+    static int s_hr_logged = -1;
+    if ((int)hr != s_hr_logged) {
+        s_hr_logged = hr;
+        logger::logf(hr ? "frame_limiter: high-resolution wait (the 1.6.13 timing)" : "frame_limiter: Sleep(1) wait (the 1.6.12 timing)");
+    }
+    if (hr) hr_timer_init();
     while (now.QuadPart < deadline) {
         const LONGLONG remaining = deadline - now.QuadPart;
-        if (g_hr_timer) {
+        if (hr && g_hr_timer) {
             const LONGLONG remaining_us = remaining * 1000000LL / g_qpc_freq.QuadPart;
             if (remaining_us > HR_SPIN_US + 100) {
                 LARGE_INTEGER due;

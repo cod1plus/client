@@ -13,10 +13,12 @@
 //
 // 11-02 (1.6.17): glFinish again by default. Players felt their mouse later than usual since 1.6.13
 // (render clock off, mouse maths unchanged), and a 1.6.16 with the 1.6.12 timing gave them "their usual
-// delay" back. The fence stays behind COD1RELOADED_GPU_FENCE=1 for an A/B.
+// delay" back. The fence stays a choice: cod1x_gpu_fence 1 (Ctrl+M > Display, live, archived, default
+// 0) or COD1RELOADED_GPU_FENCE=1 for an A/B.
 #include "performance/gpu_sync.h"
 #include "core/iat.h"
 #include "core/logger.h"
+#include "netcode/protocol_patch.h"      // CODMP_CVAR_GET_VA
 #include "performance/pacing_stats.h"
 
 #include <cstdlib>
@@ -57,7 +59,10 @@ void*               g_prev_ctx = nullptr;      // the context it was made in (vi
 bool          g_resolve_tried = false;
 bool          g_hooked = false;
 bool          g_auto_off = false;
-bool          g_use_fence = false;
+bool          g_fence_ok = false;          // GL_ARB_sync resolved (and has not failed)
+bool          g_fence_on = false;          // what the last frame used (a switch is logged)
+bool          g_fence_env = false;         // COD1RELOADED_GPU_FENCE=1: the fence whatever the cvar says
+volatile LONG g_fence_want = 0;            // cod1x_gpu_fence (watcher writes, game thread reads)
 
 // the window's statistics: time spent waiting for the GPU (read by session_report.cpp)
 LARGE_INTEGER g_freq = {};
@@ -81,26 +86,29 @@ void resolve_gl() {
     wglGetProcAddress_t gpa = (wglGetProcAddress_t)GetProcAddress(gl, "wglGetProcAddress");
     g_ctx = (wglGetCurrentContext_t)GetProcAddress(gl, "wglGetCurrentContext");
     const char* fence_env = getenv("COD1RELOADED_GPU_FENCE");
-    const bool forced = !(fence_env && fence_env[0] == '1');   // 1.6.17: glFinish unless asked
-    if (gpa && !forced) {
+    g_fence_env = fence_env && fence_env[0] == '1';
+    if (gpa) {
         g_fence = (glFenceSync_t)gpa("glFenceSync");
         g_wait  = (glClientWaitSync_t)gpa("glClientWaitSync");
         g_del   = (glDeleteSync_t)gpa("glDeleteSync");
-        g_use_fence = g_fence && g_wait && g_del && g_ctx;
+        g_fence_ok = g_fence && g_wait && g_del && g_ctx;
     }
-    const char* mode = g_gpu_sync_config.mode == GPU_SYNC_AUTO ? "auto" : "on";
-    if (g_use_fence)
-        logger::logf("gpu_sync: fence on the previous frame after every SwapBuffers (one frame in flight, %s)", mode);
-    else if (g_glFinish)
-        logger::logf("gpu_sync: glFinish after every SwapBuffers (no frame in flight, %s%s)", mode,
-                     forced ? ", the 1.6.12 timing" : "; no GL_ARB_sync");
-    else
-        logger::logf("gpu_sync: opengl32!glFinish not found - off");
+    if (!g_glFinish) { logger::logf("gpu_sync: opengl32!glFinish not found - off"); return; }
+    logger::logf("gpu_sync: glFinish after every SwapBuffers (no frame in flight, %s - the 1.6.12 timing); "
+                 "the fence on the previous frame %s", g_gpu_sync_config.mode == GPU_SYNC_AUTO ? "auto" : "on",
+                 !g_fence_ok ? "is unavailable (no GL_ARB_sync)"
+                             : g_fence_env ? "forced (COD1RELOADED_GPU_FENCE=1)" : "with cod1x_gpu_fence 1");
 }
 
 // the wait itself: the previous frame's fence (this frame's is queued first), else glFinish
 void gpu_wait() {
-    if (g_use_fence) {
+    const bool fence = g_fence_ok && (g_fence_env || g_fence_want != 0);
+    if (fence != g_fence_on) {
+        g_fence_on = fence;
+        logger::logf(fence ? "gpu_sync: fence on the previous frame (one frame in flight - the 1.6.13 timing)"
+                           : "gpu_sync: glFinish after every SwapBuffers (no frame in flight - the 1.6.12 timing)");
+    }
+    if (fence) {
         void* ctx = g_ctx();
         if (g_prev_fence && ctx != g_prev_ctx) g_prev_fence = nullptr;   // new context: the old handle went with it
         GLsync_t mine = g_fence(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -109,7 +117,7 @@ void gpu_wait() {
             g_del(g_prev_fence);
             g_prev_fence = nullptr;
             if (r == GL_WAIT_FAILED) {
-                g_use_fence = false;
+                g_fence_ok = false;
                 if (mine) g_del(mine);
                 logger::logf("gpu_sync: glClientWaitSync failed - glFinish from here on");
                 if (g_glFinish) g_glFinish();
@@ -117,7 +125,7 @@ void gpu_wait() {
             }
         }
         if (!mine) {
-            g_use_fence = false;
+            g_fence_ok = false;
             logger::logf("gpu_sync: glFenceSync returned nothing - glFinish from here on");
             if (g_glFinish) g_glFinish();
             return;
@@ -127,6 +135,10 @@ void gpu_wait() {
         return;
     }
     if (g_glFinish) g_glFinish();
+    if (g_prev_fence) {                  // just switched back: after glFinish the old fence is signalled
+        if (g_ctx() == g_prev_ctx) g_del(g_prev_fence);
+        g_prev_fence = nullptr;
+    }
 }
 
 BOOL WINAPI hk_swapbuffers(HDC dc) {
@@ -137,7 +149,7 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
     cod1x_swap_ticks += ts.QuadPart - t0.QuadPart;     // bench.cpp: time blocked in the driver's present
     const bool wait = g_gpu_sync_config.mode != GPU_SYNC_OFF && !g_auto_off;
     if (wait && !g_resolve_tried) resolve_gl();
-    if (!wait || (!g_glFinish && !g_use_fence)) {
+    if (!wait || !g_glFinish) {
         QueryPerformanceCounter(&t1);
         g_last_ticks = 0;
         pacing_note_present(t1.QuadPart);          // without the wait: when the swap was queued
@@ -192,8 +204,20 @@ void gpu_sync_stats(double* avg_us, double* max_us, long* frames, bool reset) {
 const char* gpu_sync_state() {
     if (!g_hooked || g_gpu_sync_config.mode == GPU_SYNC_OFF) return "off";
     if (g_auto_off) return "auto-off";
-    return g_use_fence ? "fence" : "on";
+    return g_fence_on ? "fence" : "on";
 }
+
+// cod1x_gpu_fence (Ctrl+M > Display; archived, default 0): 1 = the 1.6.13 timing - the fence on the
+// previous frame here and the high-resolution wait in frame_limiter.cpp. Watcher thread.
+void gpu_sync_tick() {
+    typedef void* (__cdecl* Cvar_Get_t)(const char*, const char*, int);
+    static void* s_cv = nullptr;
+    if (!s_cv) s_cv = ((Cvar_Get_t)CODMP_CVAR_GET_VA)("cod1x_gpu_fence", "0", 1 /* archive */);
+    const LONG v = (s_cv && *(int*)((char*)s_cv + 0x20) != 0) ? 1 : 0;
+    if (v != g_fence_want) InterlockedExchange(&g_fence_want, v);
+}
+
+bool gpu_sync_timing_1613() { return g_fence_want != 0 || g_fence_env; }
 
 void gpu_sync_start() {
     // TEST ONLY: COD1X_GPU_SYNC_OFF=1 in the environment (the bench script sets it for one launch) - ini_lock keeps

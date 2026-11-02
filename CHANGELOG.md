@@ -7,6 +7,9 @@
   Le calcul de la souris n'avait pas changé, mais des joueurs la sentaient en retard, même RENDER CLOCK coupé.
   Retour au rythme de la 1.6.12 : le jeu attend que la carte graphique ait fini chaque image (`glFinish`), avec
   l'ancienne attente. Une 1.6.16 de test avec ce rythme a rendu à un joueur « son délai habituel ».
+  Le rythme de la 1.6.13 reste au choix : Ctrl+M > Display > **1.6.13 frame timing (GPU fence)**, OFF par défaut,
+  en direct (`cod1x_gpu_fence`), avec un avertissement : il change le délai de la souris, la visée peut donner
+  l'impression d'une autre sensibilité.
 - **MG montée : plus d'accélération, comme dans le jeu d'origine.** Depuis la 1.6.13, `cl_mouseAccel` s'ajoutait
   à `sensitivity_mg` sur une MG (formule de cod2x) : avec de l'accélération, la MG tournait plus vite que le jeu
   ne l'a jamais fait. `sensitivity_mg 1` = la vitesse du jeu pour tout le monde.

@@ -30,6 +30,10 @@ void gpu_sync_stats(double* avg_us, double* max_us, long* frames, bool reset);
 // "on", "off", or "auto-off" (switched itself off: the GPU sets the fps)
 const char* gpu_sync_state();
 double gpu_sync_last_us();   // the last frame's glFinish wait (stall_trace)
+// cod1x_gpu_fence (watcher thread): 1 = the 1.6.13 timing (fence on the previous frame + the
+// frame limiter's high-resolution wait), 0 = the 1.6.12 one (glFinish + Sleep(1)), the default
+void gpu_sync_tick();
+bool gpu_sync_timing_1613();
 
 }  // namespace patches
 

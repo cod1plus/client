@@ -1480,6 +1480,18 @@ void modern_menu_draw(float sw, float sh) {
             hint(cx, cy, "Off = the safe default. On can help many-core CPUs, can stutter on 4-6 cores.");
             cy += 30;
         }
+        // the 1.6.13 frame timing (cod1x_gpu_fence): the GPU fence on the previous frame and the
+        // high-resolution wait. Off by default since 1.6.17: players felt their mouse later with it.
+        {
+            const bool gf = cv_int("cod1x_gpu_fence", 0) != 0;
+            const bool ngf = toggle(cx, cy, "1.6.13 frame timing (GPU fence)", gf);
+            if (ngf != gf) cmdf("seta cod1x_gpu_fence %d\n", ngf ? 1 : 0);
+            cy += 34;
+            ui_text(cx, cy, 13, 400, UI_DANGER, "Warning: changes the mouse delay - your aim can feel like another sensitivity.");
+            cy += 20;
+            hint(cx, cy, "Off = the 1.6.12 timing (default). On = smoother frames, one frame more in flight.");
+            cy += 30;
+        }
 
         section(cx, cy, colw, "VIEW"); cy += 24;
         static const char* vmodes[] = { "Classic", "Widescreen", "Stretched" };

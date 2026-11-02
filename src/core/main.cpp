@@ -142,6 +142,7 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::session_report_tick();      // one 'bilan' line a minute in the log
             patches::render_clock_tick();        // cod1x_render_clock
             patches::process_priority_mmcss_tick();  // cod1x_mmcss
+            patches::gpu_sync_tick();            // cod1x_gpu_fence
             patches::smodel_fast_tick();         // cod1x_smodel_fast
             patches::sensitivity_mg_tick();      // sensitivity_mg
             patches::trace_cull_tick();          // inline-model trace bounds test: the 10 s line
