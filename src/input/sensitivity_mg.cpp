@@ -9,10 +9,11 @@
 //   0x40becc  mx *= 2.5 (double 0x5a87e8); my += my; jmp 0x40bef6 - sensitivity left out
 //   0x40bee2  mx *= accel sens; my *= accel sens (the normal path)
 //   0x40bef6  fstp [esp+8] = my, then the yaw / pitch turn (m_yaw, m_pitch, turn-rate limits)
-// THE FIX = 0x40becc jumps to a stub: f = rate * cl_mouseAccel + sensitivity_mg, mx *= f * 2.5,
-// my *= f * 2 (cod2x's formula), back at 0x40bef6 with my in st(0) as the game leaves it.
-// sensitivity_mg 1 with cl_mouseAccel 0 = the game's turret speed exactly; cl.cgameSensitivity
-// stays out of it, as in the game.
+// THE FIX = 0x40becc jumps to a stub: mx *= sensitivity_mg * 2.5, my *= sensitivity_mg * 2, back at
+// 0x40bef6 with my in st(0) as the game leaves it. sensitivity_mg 1 = the game's turret speed exactly;
+// cl.cgameSensitivity and cl_mouseAccel stay out of it, as in the game. 1.6.13-1.6.16 added
+// rate * cl_mouseAccel (cod2x's formula): on a turret, players with accel turned faster than the
+// game ever made them.
 
 #include "input/sensitivity_mg.h"
 #include "core/logger.h"
@@ -29,8 +30,6 @@ namespace {
 constexpr uintptr_t VA_MG_TEST   = 0x0040bec2;
 constexpr uintptr_t VA_MG_BRANCH = 0x0040becc;
 constexpr uintptr_t VA_MG_BACK   = 0x0040bef6;
-constexpr uintptr_t VA_ACCEL_LD  = 0x0040be35;   // mov ecx,[cl_mouseAccel]
-constexpr uintptr_t VA_RATE_ST   = 0x0040be45;   // fstp [esp+0x10] = rate
 constexpr uintptr_t VA_EFLAGS    = 0x0148bc40;   // cl.snap.ps.eFlags
 constexpr uint32_t  EF_TURRET    = 0xc000;
 const uint8_t MG_TEST[10]   = { 0xa1, 0x40, 0xbc, 0x48, 0x01, 0xf6, 0xc4, 0xc0, 0x74, 0x16 };
@@ -40,8 +39,6 @@ const uint8_t MG_BRANCH[22] = { 0xd9, 0x44, 0x24, 0x04,                     // f
                                 0xd9, 0x44, 0x24, 0x08,                     // fld [esp+8]
                                 0xdc, 0xc0,                                 // fadd st0,st0
                                 0xeb, 0x14 };                               // jmp 0x40bef6
-const uint8_t ACCEL_LD[6] = { 0x8b, 0x0d, 0x0c, 0x99, 0x89, 0x01 };
-const uint8_t RATE_ST[4]  = { 0xd9, 0x5c, 0x24, 0x10 };
 
 constexpr int CV_VALUE = 0x1c;
 typedef void* (__cdecl* Cvar_Get_t)(const char*, const char*, int);
@@ -54,10 +51,7 @@ void* g_cv = nullptr;
 // In place of the turret branch (jumped to, same stack; the x87 stack is empty here).
 __attribute__((naked)) void stub() {
     __asm__ volatile(
-        "flds 0x10(%%esp)\n\t"             /* rate */
-        "movl 0x0189990c, %%eax\n\t"       /* cl_mouseAccel */
-        "fmuls 0x1c(%%eax)\n\t"
-        "fadds %0\n\t"                     /* f = rate * cl_mouseAccel + sensitivity_mg */
+        "flds %0\n\t"                      /* f = sensitivity_mg (no accel on a turret, as in the game) */
         "fld %%st(0)\n\t"
         "fmuls 4(%%esp)\n\t"
         "fmull 0x005a87e8\n\t"             /* the game's 2.5 */
@@ -72,9 +66,7 @@ __attribute__((naked)) void stub() {
 
 bool sensitivity_mg_install() {
     if (memcmp((const void*)VA_MG_TEST, MG_TEST, sizeof(MG_TEST)) != 0 ||
-        memcmp((const void*)VA_MG_BRANCH, MG_BRANCH, sizeof(MG_BRANCH)) != 0 ||
-        memcmp((const void*)VA_ACCEL_LD, ACCEL_LD, sizeof(ACCEL_LD)) != 0 ||
-        memcmp((const void*)VA_RATE_ST, RATE_ST, sizeof(RATE_ST)) != 0) {
+        memcmp((const void*)VA_MG_BRANCH, MG_BRANCH, sizeof(MG_BRANCH)) != 0) {
         logger::logf("sensitivity_mg: CL_MouseMove's turret branch (0x%x) is not the 1.5 one - not installed", (unsigned)VA_MG_BRANCH);
         return false;
     }

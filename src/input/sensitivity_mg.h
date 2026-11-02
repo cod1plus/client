@@ -6,7 +6,7 @@ namespace patches {
 // The mouse on a mounted MG follows its own cvar (port of cod2x's sensitivity_MG). The game
 // turns a turret at a fixed speed whatever `sensitivity` says (2.5 on yaw, 2 on pitch, per
 // mouse count); that factor is now `sensitivity_mg` (archived, default 1 = the game's own
-// speed, 0.01 - 100), plus cl_mouseAccel like the normal path. Installed once at attach
+// speed, 0.01 - 100); no cl_mouseAccel there, as in the game (1.6.13-1.6.16 added it). Installed once at attach
 // (CoDMP.exe); a different build is left untouched.
 bool sensitivity_mg_install();
 void sensitivity_mg_tick();

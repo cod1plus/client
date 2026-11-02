@@ -191,7 +191,9 @@ inline void spin_once(LONGLONG remaining_ticks) {
 // millisecond of its due time, so the coarse wait can go to HR_SPIN_US before the deadline
 // and only that tail is spun - the deadline itself is still met by the spin, to the QPC
 // tick. Resolved at run time (older Windows / older headers): without it, the Sleep(1) path
-// above, unchanged. COD1RELOADED_LIMITER_LEGACY=1 forces the old path for an A/B.
+// above, unchanged.
+// 1.6.17: OFF by default again - the Sleep(1) wait is part of the 1.6.12 timing players asked back
+// (see gpu_sync.cpp). COD1RELOADED_LIMITER_HR=1 turns the high-resolution timer on.
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
@@ -203,9 +205,9 @@ bool   g_hr_tried = false;
 void hr_timer_init() {
     if (g_hr_tried) return;
     g_hr_tried = true;
-    const char* e = getenv("COD1RELOADED_LIMITER_LEGACY");
-    if (e && *e && *e != '0') {
-        logger::logf("frame_limiter: legacy Sleep(1) wait (COD1RELOADED_LIMITER_LEGACY)");
+    const char* e = getenv("COD1RELOADED_LIMITER_HR");
+    if (!(e && *e == '1')) {
+        logger::logf("frame_limiter: Sleep(1) wait, the 1.6.12 timing (COD1RELOADED_LIMITER_HR=1 for the high-resolution timer)");
         return;
     }
     HMODULE k32 = GetModuleHandleA("kernel32.dll");

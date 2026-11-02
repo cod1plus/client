@@ -1,5 +1,16 @@
 # cod1reloaded — Changelog
 
+## 1.6.17 (2026-11-02) — la souris retrouve le délai de la 1.6.12
+
+- **Le délai de la souris redevient celui de la 1.6.12.** Depuis la 1.6.13, le jeu laissait la carte graphique
+  finir une image pendant qu'il préparait la suivante, et attendait entre deux images avec une minuterie plus fine.
+  Le calcul de la souris n'avait pas changé, mais des joueurs la sentaient en retard, même RENDER CLOCK coupé.
+  Retour au rythme de la 1.6.12 : le jeu attend que la carte graphique ait fini chaque image (`glFinish`), avec
+  l'ancienne attente. Une 1.6.16 de test avec ce rythme a rendu à un joueur « son délai habituel ».
+- **MG montée : plus d'accélération, comme dans le jeu d'origine.** Depuis la 1.6.13, `cl_mouseAccel` s'ajoutait
+  à `sensitivity_mg` sur une MG (formule de cod2x) : avec de l'accélération, la MG tournait plus vite que le jeu
+  ne l'a jamais fait. `sensitivity_mg 1` = la vitesse du jeu pour tout le monde.
+
 ## 1.6.16 (2026-11-01) — RENDER CLOCK et RInput externe
 
 - **RENDER CLOCK + RInput externe** : la souris ne donne plus l'impression d'une autre sensibilité ou d'une

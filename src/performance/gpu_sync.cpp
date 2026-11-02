@@ -9,7 +9,11 @@
 // frame behind, which absorbs a hiccup, and the queue still never grows past that one frame
 // (a driver left alone queues two or three). While the GPU keeps up - the normal case - the
 // previous frame is long done and the wait returns at once: the same latency as glFinish.
-// COD1RELOADED_GPU_FINISH=1 forces glFinish (A/B); no GL_ARB_sync = glFinish as before.
+// No GL_ARB_sync = glFinish as before.
+//
+// 11-02 (1.6.17): glFinish again by default. Players felt their mouse later than usual since 1.6.13
+// (render clock off, mouse maths unchanged), and a 1.6.16 with the 1.6.12 timing gave them "their usual
+// delay" back. The fence stays behind COD1RELOADED_GPU_FENCE=1 for an A/B.
 #include "performance/gpu_sync.h"
 #include "core/iat.h"
 #include "core/logger.h"
@@ -76,8 +80,8 @@ void resolve_gl() {
     g_glFinish = (glFinish_t)GetProcAddress(gl, "glFinish");
     wglGetProcAddress_t gpa = (wglGetProcAddress_t)GetProcAddress(gl, "wglGetProcAddress");
     g_ctx = (wglGetCurrentContext_t)GetProcAddress(gl, "wglGetCurrentContext");
-    const char* force = getenv("COD1RELOADED_GPU_FINISH");
-    const bool forced = force && force[0] == '1';
+    const char* fence_env = getenv("COD1RELOADED_GPU_FENCE");
+    const bool forced = !(fence_env && fence_env[0] == '1');   // 1.6.17: glFinish unless asked
     if (gpa && !forced) {
         g_fence = (glFenceSync_t)gpa("glFenceSync");
         g_wait  = (glClientWaitSync_t)gpa("glClientWaitSync");
@@ -89,7 +93,7 @@ void resolve_gl() {
         logger::logf("gpu_sync: fence on the previous frame after every SwapBuffers (one frame in flight, %s)", mode);
     else if (g_glFinish)
         logger::logf("gpu_sync: glFinish after every SwapBuffers (no frame in flight, %s%s)", mode,
-                     forced ? ", forced" : "; no GL_ARB_sync");
+                     forced ? ", the 1.6.12 timing" : "; no GL_ARB_sync");
     else
         logger::logf("gpu_sync: opengl32!glFinish not found - off");
 }
