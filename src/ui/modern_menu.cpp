@@ -210,6 +210,8 @@ const BindAct k_combat[] = {
     { "weaponslot primaryb","Secondary weapon" },
     { "weaponslot pistol",  "Pistol" },
     { "weaponslot grenade", "Grenade" },
+    // the one scripted bind the competitive rules allow (exec / vstr are refused, input/script_block.cpp)
+    { "+gostand; wait 2; -attack; wait 2; -gostand", "Jump-throw grenade" },
     { "+dropweapon",        "Drop weapon" },
 };
 const BindAct k_comm[] = {

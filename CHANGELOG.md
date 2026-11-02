@@ -1,5 +1,14 @@
 # cod1reloaded — Changelog
 
+## 1.6.18 (2026-11-03) — exec / vstr interdits, bind grenade dans Ctrl+M
+
+- **`exec` et `vstr` ne sont plus utilisables par les joueurs.** Un bind qui lance `exec` ou `vstr` est refusé avec
+  un message rouge dans la console, et la touche est libérée : la ligne disparaît de `config_mp.cfg` à la prochaine
+  écriture de la config. Les taper dans la console est refusé aussi (message rouge). Les configs que le jeu charge
+  lui-même (démarrage, changement de mod, menus) ne sont pas touchées.
+- **Ctrl+M > Keys > COMBAT : « Jump-throw grenade »**, le bind autorisé `+gostand; wait 2; -attack; wait 2; -gostand`,
+  sur la touche de son choix.
+
 ## 1.6.17 (2026-11-02) — la souris retrouve le délai de la 1.6.12
 
 - **Le délai de la souris redevient celui de la 1.6.12.** Depuis la 1.6.13, le jeu laissait la carte graphique
