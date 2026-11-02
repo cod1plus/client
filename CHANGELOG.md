@@ -11,6 +11,9 @@
   Le jump-throw sur `+gostand`, avec ou sans `wait`, reste autorisé.
 - **Ctrl+M > Keys > COMBAT : « Jump-throw grenade »**, le bind autorisé `+gostand; wait 2; -attack; wait 2; -gostand`,
   sur la touche de son choix.
+- **mp_liberation ne plante plus au chargement** (« recursive error after: Hunk_AllocAlign failed ») : la map demande
+  167 Mo de mémoire de chargement et le jeu n'en réservait que 128 par défaut. Le minimum passe à 256 Mo
+  (`com_hunkmegs` plus haut dans la config : gardé). mp_coastal demande toujours `com_hunkmegs 512` à la main.
 
 ## 1.6.17 (2026-11-02) — la souris retrouve le délai de la 1.6.12
 

@@ -39,6 +39,7 @@ set(COD1RELOADED_SOURCES
     src/input/rinput.cpp
     src/input/sensitivity_mg.cpp
     src/input/script_block.cpp
+    src/core/hunk_min.cpp
     src/netcode/version_patch.cpp
     src/netcode/protocol_patch.cpp
     src/netcode/competitive.cpp

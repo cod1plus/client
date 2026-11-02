@@ -25,6 +25,7 @@
 #include "input/rinput.h"
 #include "input/sensitivity_mg.h"
 #include "input/script_block.h"
+#include "core/hunk_min.h"
 #include "gameplay/bone_probe.h"
 #include "features/hitbox_view.h"
 #include "performance/fps_cap.h"
@@ -254,6 +255,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
             patches::smodel_fast_install();      // scene overflow (> 1021 models): heap, not the engine's sqrt scan
             patches::sensitivity_mg_install();   // CL_MouseMove's turret branch: sensitivity_mg
             patches::script_block_install();     // exec / vstr refused in binds and typed in the console
+            patches::hunk_min_install();         // com_hunkMegs at least 256 (mp_liberation needs 167)
             patches::trace_cull_install();       // CM_BoxTrace: bounds test before an inline model's leaf trace
             patches::smodel_light_install();     // DIAGNOSTIC: count the static-model surface lighting (0x513ded)
             patches::smodel_lod_install();       // <map>_dtNNN detail clusters: distance cull under r_lodscale 0 (0x513d1f)
