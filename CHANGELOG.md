@@ -6,6 +6,9 @@
   un message rouge dans la console, et la touche est libérée : la ligne disparaît de `config_mp.cfg` à la prochaine
   écriture de la config. Les taper dans la console est refusé aussi (message rouge). Les configs que le jeu charge
   lui-même (démarrage, changement de mod, menus) ne sont pas touchées.
+- **Un bind qui tire et se déplace est refusé** de la même façon : `+attack` / `-attack` avec `+forward`, `+back`,
+  `+moveleft`, `+moveright`, `+moveup` ou `+movedown` dans le même bind (le script course-saut-lancer automatique).
+  Le jump-throw sur `+gostand`, avec ou sans `wait`, reste autorisé.
 - **Ctrl+M > Keys > COMBAT : « Jump-throw grenade »**, le bind autorisé `+gostand; wait 2; -attack; wait 2; -gostand`,
   sur la touche de son choix.
 

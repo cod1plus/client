@@ -14,9 +14,12 @@
 //   0x437c00  Com_Printf (cdecl).
 // THE FIX = Key_SetBinding's entry jumps to a stub that swaps a refused text for "" (the key ends
 // up unbound and the line leaves config_mp.cfg), and the two Cbuf_AddText calls go through a stub
-// that drops a refused line. A command is refused when its first word is exec or vstr, in any of
-// the ';' / newline separated commands of the text (quotes kept together as Cbuf does, leading
-// slashes and a quoted command word seen through).
+// that drops a refused line. A text is refused when the first word of one of its ';' / newline
+// separated commands is exec or vstr (quotes kept together as Cbuf does, leading slashes and a
+// quoted command word seen through). A BIND is also refused when it fires and moves: +attack /
+// -attack together with +forward / +back / +moveleft / +moveright / +moveup / +movedown (either
+// sign) - the scripted run-jump-throw (enzo 11-03). +gostand is not a move here: the jump-throw
+// "+gostand; wait 2; -attack; wait 2; -gostand", with or without its waits, stays allowed.
 
 #include "input/script_block.h"
 #include "core/logger.h"
@@ -40,10 +43,22 @@ const uint8_t SETBINDING_ENTRY[6] = { 0x83, 0xf8, 0xff, 0x74, 0x5b, 0x53 };
 
 typedef void (__cdecl* Com_Printf_t)(const char*, ...);
 
-bool is_word(const char* w, size_t n, const char* k) { return n == 4 && _strnicmp(w, k, 4) == 0; }
+bool is_word(const char* w, size_t n, const char* k) { return n == strlen(k) && _strnicmp(w, k, n) == 0; }
 
-// true when one of the commands of `s` is exec or vstr
-bool runs_script(const char* s) {
+// a move command, either sign (+forward / -forward ...)
+bool is_move(const char* w, size_t n) {
+    static const char* const moves[] = { "forward", "back", "moveleft", "moveright", "moveup", "movedown" };
+    if (n < 2 || (w[0] != '+' && w[0] != '-')) return false;
+    for (const char* m : moves)
+        if (is_word(w + 1, n - 1, m)) return true;
+    return false;
+}
+
+// what the commands of `s` do: exec / vstr, +attack / -attack, a move
+struct Scan { bool script = false, fire = false, move = false; };
+
+Scan scan(const char* s) {
+    Scan r;
     while (*s) {
         while (*s == ' ' || *s == '\t' || *s == ';' || *s == '\n' || *s == '\r') ++s;
         while (*s == '/' || *s == '\\') ++s;
@@ -58,7 +73,9 @@ bool runs_script(const char* s) {
             while (*s && *s != ' ' && *s != '\t' && *s != ';' && *s != '\n' && *s != '\r' && *s != '"') ++s;
             n = (size_t)(s - w);
         }
-        if (is_word(w, n, "exec") || is_word(w, n, "vstr")) return true;
+        if (is_word(w, n, "exec") || is_word(w, n, "vstr")) r.script = true;
+        else if (is_word(w, n, "+attack") || is_word(w, n, "-attack")) r.fire = true;
+        else if (is_move(w, n)) r.move = true;
         bool quoted = false;                      // the rest of this command
         while (*s) {
             if (*s == '"') quoted = !quoted;
@@ -66,18 +83,22 @@ bool runs_script(const char* s) {
             ++s;
         }
     }
-    return false;
+    return r;
 }
 
 const char* __cdecl bind_filter(int keynum, const char* text) {
-    if (!text || !runs_script(text)) return text;
-    ((Com_Printf_t)VA_COM_PRINTF)("^1Bind refused^7 (COD1.6X): exec and vstr are not allowed in a bind - \"%s\" removed\n", text);
-    logger::logf("script_block: bind \"%s\" refused (key %d left unbound)", text, keynum);
+    if (!text) return text;
+    const Scan s = scan(text);
+    const char* why = s.script ? "exec and vstr are not allowed in a bind"
+                    : (s.fire && s.move) ? "firing and moving in the same bind is not allowed" : nullptr;
+    if (!why) return text;
+    ((Com_Printf_t)VA_COM_PRINTF)("^1Bind refused^7 (COD1.6X): %s - \"%s\" removed\n", why, text);
+    logger::logf("script_block: bind \"%s\" refused, %s (key %d left unbound)", text, why, keynum);
     return "";
 }
 
 int __cdecl console_filter(const char* text) {
-    if (!text || text == (const char*)VA_CHAT_LINE || !runs_script(text)) return 1;
+    if (!text || text == (const char*)VA_CHAT_LINE || !scan(text).script) return 1;
     ((Com_Printf_t)VA_COM_PRINTF)("^1Refused^7 (COD1.6X): exec and vstr are not allowed\n");
     logger::logf("script_block: console line \"%s\" refused", text);
     return 0;
