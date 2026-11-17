@@ -8,6 +8,7 @@
 
 #include <GL/gl.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -65,8 +66,64 @@ constexpr DWORD COL_DEADBAR  = 0xFF35383D;
 constexpr DWORD COL_BLACKBOX = 0xFF050608;
 constexpr DWORD COL_READY    = 0xFF59C97A;
 
+// ---- client game state / last snapshot (CoDMP.exe; same addresses as ui/minimap.cpp) ----
+constexpr uintptr_t VA_GS_SERVERINFO = 0x0148dcbc;   // cl.gameState.stringOffsets[CS_SERVERINFO]
+constexpr uintptr_t VA_GS_STRINGDATA = 0x0148fcbc;
+constexpr int       GS_MAX_CHARS     = 16000;
+constexpr uintptr_t VA_KEYCATCHERS   = 0x015b8aa4;   // cls.keyCatchers: 1 console, 2 UI menu, 4 chat line
+constexpr uintptr_t VA_SNAP_VALID    = 0x0148bba4;   // cl.snap.valid
+constexpr uintptr_t VA_SNAP_NUMENTS  = 0x0148dc8c;
+constexpr uintptr_t VA_SNAP_FIRSTENT = 0x0148dc94;
+constexpr uintptr_t VA_PARSE_ENTS    = 0x01512914;   // cl.parseEntities, entityState_t 0xf0 each
+constexpr int PARSE_MASK = 0x7ff, ENT_SIZE = 0xf0;
+// entityState_t (netfield table 0x580080, features/demo_tables.h)
+constexpr int ES_ETYPE = 0x4, ES_POS_X = 0x18, ES_POS_Y = 0x1c, ES_YAW = 0x40, ES_CLIENTNUM = 0x90,
+              ES_EVENTSEQ = 0xa4, ES_EVENTS = 0xa8;
+constexpr int ET_PLAYER = 1;
+// entity_event_t, from cgame_mp_x86.dll's event name table (0x30079078, 202 names)
+constexpr int EV_FIRE_WEAPON = 159, EV_FIRE_WEAPONB = 160, EV_FIRE_WEAPON_LASTSHOT = 161,
+              EV_FIRE_WEAPON_MG42 = 168;
+
+// "\key\value\..." of the current server's serverinfo (case-insensitive key)
+bool serverinfo_value(const char* key, char* out, int outsz) {
+    out[0] = 0;
+    if (!GetModuleHandleA("cgame_mp_x86.dll") || !*(volatile int*)VA_SNAP_VALID) return false;
+    const int off = *(volatile int*)VA_GS_SERVERINFO;
+    if (off <= 0 || off >= GS_MAX_CHARS) return false;
+    const char* s = (const char*)VA_GS_STRINGDATA + off;
+    const char* end = (const char*)VA_GS_STRINGDATA + GS_MAX_CHARS;
+    const int klen = (int)strlen(key);
+    while (s < end && *s == '\\') {
+        const char* k = s + 1;
+        const char* ke = k;
+        while (ke < end && *ke && *ke != '\\') ++ke;
+        if (ke >= end || !*ke) return false;
+        const char* v = ke + 1;
+        const char* ve = v;
+        while (ve < end && *ve && *ve != '\\') ++ve;
+        if (ke - k == klen && !_strnicmp(k, key, klen)) {
+            const int n = std::min((int)(ve - v), outsz - 1);
+            memcpy(out, v, n);
+            out[n] = 0;
+            return true;
+        }
+        if (ve >= end || !*ve) return false;
+        s = ve;
+    }
+    return false;
+}
+
 // ------------------------------------------------------------------ engine IO
 const char* eng_cvar(const char* name) {
+    // "mapname" is the LOCAL server's cvar ("nomap" on a client of a remote server): the map
+    // being played is the one of the server's serverinfo
+    if (!strcmp(name, "mapname")) {
+        static char s_map[64];
+        if (serverinfo_value("mapname", s_map, sizeof(s_map)) && s_map[0]) {
+            for (char* c = s_map; *c; ++c) *c = (char)tolower((unsigned char)*c);
+            return s_map;
+        }
+    }
     static std::unordered_map<std::string, void*> s_cache;
     void* cv = nullptr;
     auto it = s_cache.find(name);
@@ -229,6 +286,57 @@ struct Track {
     float rx = 0, ry = 0;               // radar: rendered position (smoothed)
 };
 Track g_track[10];
+
+// ---- shots on the radar (CoD2x's radar_player_fire): read from the snapshot, not the feed.
+// A player's weapon events ride on his entityState (eventSequence + events[4], copied from
+// his playerState by the server); every new EV_FIRE_WEAPON* leaves a fading flash where he
+// stood, in the direction he faced. Only the players the camera's snapshot carries (its PVS)
+// are seen - as CoD2x, whose compass marks come from the same snapshot entities. The player
+// the camera follows is the snapshot's playerState, not an entity: no flash for him.
+struct FireMark { float x = 0, y = 0, yaw = 0; DWORD at = 0; };
+constexpr int MAX_FIRE_MARKS = 64;
+constexpr DWORD FIRE_MARK_MS = 900;
+FireMark g_fire[MAX_FIRE_MARKS];
+int g_fire_next = 0;
+struct EventTrack { int seq = 0; DWORD seen = 0; };
+EventTrack g_evt[64];
+
+bool is_fire_event(int ev) {
+    return ev == EV_FIRE_WEAPON || ev == EV_FIRE_WEAPONB || ev == EV_FIRE_WEAPON_LASTSHOT ||
+           ev == EV_FIRE_WEAPON_MG42;
+}
+
+void scan_fires() {
+    if (g_io != &g_engine_io || !*(volatile int*)VA_SNAP_VALID) return;
+    const int n = *(volatile int*)VA_SNAP_NUMENTS;
+    const int first = *(volatile int*)VA_SNAP_FIRSTENT;
+    if (n <= 0 || n > 1024) return;
+    const DWORD now = GetTickCount();
+    for (int i = 0; i < n; ++i) {
+        const char* es = (const char*)VA_PARSE_ENTS + ((first + i) & PARSE_MASK) * ENT_SIZE;
+        if (*(const int*)(es + ES_ETYPE) != ET_PLAYER) continue;
+        const int cn = *(const int*)(es + ES_CLIENTNUM);
+        if (cn < 0 || cn >= 64) continue;
+        const int seq = *(const int*)(es + ES_EVENTSEQ) & 0xff;      // 8 bits on the wire
+        EventTrack& t = g_evt[cn];
+        const bool known = t.seen && now - t.seen < 1000;            // was in view a moment ago
+        t.seen = now;
+        if (!known) { t.seq = seq; continue; }                       // just (re)appeared: no old shots
+        int d = (seq - t.seq) & 0xff;
+        if (d > 4) d = 4;                                            // only 4 events are kept
+        for (int k = d; k > 0; --k) {
+            const int ev = *(const int*)(es + ES_EVENTS + ((seq - k) & 3) * 4) & 0xff;
+            if (!is_fire_event(ev)) continue;
+            FireMark& f = g_fire[g_fire_next];
+            g_fire_next = (g_fire_next + 1) % MAX_FIRE_MARKS;
+            f.x = *(const float*)(es + ES_POS_X);
+            f.y = *(const float*)(es + ES_POS_Y);
+            f.yaw = *(const float*)(es + ES_YAW);
+            f.at = now;
+        }
+        t.seq = seq;
+    }
+}
 
 std::string g_last_feed_raw, g_last_win_raw;
 DWORD g_feed_changed_at = 0;
@@ -927,6 +1035,32 @@ void draw_radar(float top) {
         ui_aa_ring(sx, sy, 4.5f * S, 1.2f * S, 0xFF1A0808);
     }
 
+    // shots (under the players): a short cone in the firing direction and a ring, fading
+    {
+        const DWORD now = GetTickCount();
+        for (const FireMark& f : g_fire) {
+            if (!f.at || now - f.at >= FIRE_MARK_MS) continue;
+            const float a = 1.0f - (float)(now - f.at) / FIRE_MARK_MS;
+            float sx, sy;
+            bool inside;
+            radar_point(b, f.x, f.y, &sx, &sy, &inside);
+            if (!inside) continue;
+            const float yaw = f.yaw * 3.14159265f / 180.0f;
+            const float ex = cosf(yaw), ey = -sinf(yaw);              // world +Y is screen up
+            const float spread = 0.16f, len = (26.0f + 10.0f * (1 - a)) * S;
+            float cone[2 * 5];
+            cone[0] = sx; cone[1] = sy;
+            for (int q = 0; q < 4; ++q) {
+                const float ang = -spread + 2 * spread * q / 3;
+                const float c = cosf(ang), s = sinf(ang);
+                cone[2 + q * 2] = sx + (ex * c - ey * s) * len;
+                cone[3 + q * 2] = sy + (ex * s + ey * c) * len;
+            }
+            ui_aa_poly(cone, 5, with_alpha(0xFFFF8A5C, 0.55f * a));
+            ui_aa_ring(sx, sy, (7.5f + 7.0f * (1 - a)) * S, 1.6f * S, with_alpha(0xFFFF8A5C, 0.8f * a));
+        }
+    }
+
     const float follow = 1 - expf(-g_dt * 14.0f);
     // dead first (under), then the living, the followed one last (on top)
     for (int pass = 0; pass < 3; ++pass) {
@@ -1111,11 +1245,37 @@ bool streamer_hud_update() {
     return g_feed.valid && now - g_feed_changed_at < 3000;
 }
 
+// The PAM puts a new streamer on a black screen and asks his client, every second, to open
+// the quick message menu (= its streamer menu): ui_quickmessage_streamer 1 and exec_cmd
+// "mp_quickmessage". zPAM relies on the client running exec_cmd; CoD1 never does, so the PAM
+// ends up printing "Open the streamer system menu using the Quick Chat button". The 1.6X
+// client opens it itself, as CoD2x does: choosing "Streamer" in the team menu is enough.
+// Not while the console, another menu or the chat line is up; `set cod1x_streamer_autoopen 0`
+// turns it off (back to the Quick Message key).
+void auto_open_streamer_menu(bool menu_up) {
+    if (menu_up) return;
+    if (strcmp(g_io->cvar("ui_quickmessage_streamer"), "1") != 0) return;
+    if (strcmp(g_io->cvar("exec_cmd"), "mp_quickmessage") != 0) return;
+    if (!strcmp(g_io->cvar("cod1x_streamer_autoopen"), "0")) return;
+    if (*(volatile int*)VA_KEYCATCHERS & 7) return;
+    if (!*(volatile int*)VA_SNAP_VALID || !g_io->cvar("sv_serverid")[0]) return;
+    static DWORD s_at = 0;
+    static int s_logged = 0;
+    const DWORD now = GetTickCount();
+    if (now - s_at < 2000) return;
+    s_at = now;
+    g_io->command("mp_quickmessage\n");
+    if (s_logged++ < 5) logger::logf("streamer_hud: the PAM asks for its streamer menu: opened (mp_quickmessage)");
+}
+
 bool streamer_hud_frame() {
     if (!engine_ready()) return false;
 
+    const bool menu_up = ui_menu_visible(MENU_ROOT) || ui_menu_visible(MENU_OVER);
+    auto_open_streamer_menu(menu_up);
+
     // the streamer overlay is on screen only while the PAM streamer menu is open
-    if (!ui_menu_visible(MENU_ROOT) && !ui_menu_visible(MENU_OVER)) {
+    if (!menu_up) {
         if (g_active) { g_active = false; logger::logf("streamer_hud: off (streamer menu closed)"); }
         return false;
     }
@@ -1138,6 +1298,7 @@ bool streamer_hud_frame() {
         return false;
     }
     if (!g_active) { g_active = true; logger::logf("streamer_hud: on"); }
+    scan_fires();
 
     // the PAM's own top bar is replaced
     ui_menu_hide(MENU_LEFT);
