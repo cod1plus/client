@@ -1056,8 +1056,8 @@ void draw_radar(float top) {
                 cone[2 + q * 2] = sx + (ex * c - ey * s) * len;
                 cone[3 + q * 2] = sy + (ex * s + ey * c) * len;
             }
-            ui_aa_poly(cone, 5, with_alpha(0xFFFF8A5C, 0.55f * a));
-            ui_aa_ring(sx, sy, (7.5f + 7.0f * (1 - a)) * S, 1.6f * S, with_alpha(0xFFFF8A5C, 0.8f * a));
+            ui_aa_poly(cone, 5, with_alpha(0xFFFFF0A0, 0.55f * a));
+            ui_aa_ring(sx, sy, (7.5f + 7.0f * (1 - a)) * S, 1.6f * S, with_alpha(0xFFFFF0A0, 0.8f * a));
         }
     }
 
