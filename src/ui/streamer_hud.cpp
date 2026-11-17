@@ -1250,6 +1250,10 @@ bool streamer_hud_update() {
 // "mp_quickmessage". zPAM relies on the client running exec_cmd; CoD1 never does, so the PAM
 // ends up printing "Open the streamer system menu using the Quick Chat button". The 1.6X
 // client opens it itself, as CoD2x does: choosing "Streamer" in the team menu is enough.
+// Only while the PAM is really waiting: exec_cmd keeps "mp_quickmessage" for good once set,
+// but while it waits the PAM parks the streamer at (-99999, -99999, -99999) behind a black
+// screen (_streamer.gsc openStreamMenu) - the camera there is the sign. A streamer who
+// closes his menu himself (Esc) is left alone.
 // Not while the console, another menu or the chat line is up; `set cod1x_streamer_autoopen 0`
 // turns it off (back to the Quick Message key).
 void auto_open_streamer_menu(bool menu_up) {
@@ -1258,6 +1262,9 @@ void auto_open_streamer_menu(bool menu_up) {
     if (strcmp(g_io->cvar("exec_cmd"), "mp_quickmessage") != 0) return;
     if (!strcmp(g_io->cvar("cod1x_streamer_autoopen"), "0")) return;
     if (*(volatile int*)VA_KEYCATCHERS & 7) return;
+    float fx, fy, org[3], ax[9];
+    if (!g_io->camera || !g_io->camera(&fx, &fy, org, ax)) return;
+    if (!(org[0] < -50000.0f && org[1] < -50000.0f)) return;     // not parked: not waiting
     if (!*(volatile int*)VA_SNAP_VALID || !g_io->cvar("sv_serverid")[0]) return;
     static DWORD s_at = 0;
     static int s_logged = 0;
