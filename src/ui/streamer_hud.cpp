@@ -282,10 +282,8 @@ struct Feed {
     FeedPlayer p[10];
 };
 
-// the kill feed on screen: each kill from the moment it first came in the feed
-struct KillShown { KillEv k; DWORD at = 0; };
-std::vector<KillShown> g_kf;
-int   g_kf_last_id = 0;
+// the kill feed on screen = the feed's kills of the round; when each first came (its fade-in)
+std::unordered_map<int, DWORD> g_kill_seen;
 DWORD g_res_at = 0;                       // when the current round result first came
 
 struct RadarWin {             // the PAM's radar window: bombsites (and a fallback frame)
@@ -500,14 +498,10 @@ void parse_feed(const char* raw) {
     f.valid = f.t >= 0 && slot == 10;
     if (f.clock_kind != g_feed.clock_kind || f.clock_tenths != g_feed.clock_tenths) g_clock_at = GetTickCount();
     {
-        // new kills join the feed on screen; ids only grow within a match (a new match restarts them)
         const DWORD now = GetTickCount();
-        int maxid = 0;
-        for (const KillEv& k : f.kills) maxid = std::max(maxid, k.id);
-        if (!f.kills.empty() && maxid < g_kf_last_id) g_kf_last_id = 0;
+        if (f.kills.empty()) g_kill_seen.clear();                 // a new round
         for (const KillEv& k : f.kills)
-            if (k.id > g_kf_last_id) { KillShown ks; ks.k = k; ks.at = now; g_kf.push_back(ks); }
-        g_kf_last_id = std::max(g_kf_last_id, maxid);
+            if (!g_kill_seen.count(k.id)) g_kill_seen[k.id] = now;
         if (f.res.valid && !g_feed.res.valid) g_res_at = now;
     }
     g_feed = f;
@@ -1021,9 +1015,11 @@ float draw_topbar(float vw) {
 
 // ============================================================ CS2-style broadcast (2026-11-22)
 // Layout in 1080p units (S = window height / 1080), as the validated mock-up "HUD streamer
-// CoD1.6X": scorebug top centre, radar top left, kill feed top right, a column of 5 players
-// per team bottom left / right, the followed player's card bottom centre, and at the end of a
-// round the result and the player of the round over everything. Condensed type (Bahnschrift).
+// CoD1.6X": scorebug top centre, radar top left, kill feed top right (the whole round), a
+// column of 5 players per team bottom left / right, the followed player's card bottom centre;
+// at the end of a round a compact result under the scorebug and the player of the round in
+// place of the followed card (nothing over the picture while a replay plays). English text,
+// condensed type (Bahnschrift).
 
 float ctext_w(float size, int weight, const char* s, float tracking = 0) {
     return tracking > 0 ? ui_text_tracked_width(px(size), weight, s, tracking * S, UI_FONT_COND)
@@ -1051,17 +1047,23 @@ void glyph_headshot(float cx, float cy, float r, DWORD c) {
     ui_aa_disc(cx, cy, r * 0.34f, c);
 }
 
-// "ALLIES" / "AXIS" (the PAM's defaults) in French; a clan name as it is
+const char* team_word(int team) { return team == 2 ? "AXIS" : "ALLIES"; }
+// the PAM's team name (a clan tag when both sides have one), else ALLIES / AXIS
 std::string team_label(int side) {
     const std::string nm = upper(g_name[side]);
-    if (nm.empty() || nm == "ALLIES" || nm == "AXIS") return g_team_side[side] == 2 ? "AXE" : "ALLI\xC3\x89S";
-    return nm;
+    return nm.empty() ? team_word(g_team_side[side]) : nm;
 }
+// "mp40_mp" / "mp40" -> "MP40"
 std::string weapon_label(const std::string& w) {
     std::string s = w;
     if (s.size() > 3 && s.compare(s.size() - 3, 3, "_mp") == 0) s.resize(s.size() - 3);
     for (char& c : s) if (c == '_') c = ' ';
     return upper(s);
+}
+// the weapon file of a kill feed name (the PAM sends it without "_mp")
+std::string weapon_file(const std::string& w) {
+    if (w.size() > 3 && w.compare(w.size() - 3, 3, "_mp") == 0) return w;
+    return w + "_mp";
 }
 
 // ---- scorebug: [team name, alive pips | score] [clock / round] [score | team name, pips]
@@ -1106,36 +1108,31 @@ void draw_scorebug(float vw) {
                      : (g_feed.clock_kind == 'r' && tenths < 100) ? COL_DANGER : COL_TEXT;
     ctext(cx, top + 32 * S, 40, 700, tcol, t, 0);
     std::string lab;
-    if (bomb) lab = "BOMBE POS\xC3\x89" "E";
+    if (bomb) lab = "BOMB PLANTED";
     else if (g_feed.clock_kind == 's') lab = "STRAT TIME";
     else {
         const std::string info = upper(g_info);
         if (info == "READY-UP" || info == "BASH" || info == "FINAL") lab = info;
         else if (g_feed.round > 0) {
             char b[48];
-            if (g_feed.rounds > 1) snprintf(b, sizeof(b), "MANCHE %d \xC2\xB7 MR%d", g_feed.round, g_feed.rounds / 2);
-            else snprintf(b, sizeof(b), "MANCHE %d", g_feed.round);
+            if (g_feed.rounds > 1) snprintf(b, sizeof(b), "ROUND %d \xC2\xB7 MR%d", g_feed.round, g_feed.rounds / 2);
+            else snprintf(b, sizeof(b), "ROUND %d", g_feed.round);
             lab = b;
         }
     }
     if (!lab.empty()) ctext(cx, top + 61 * S, 13, 600, bomb ? COL_DANGER : COL_MUTED, lab.c_str(), 0, 3);
 }
 
-// ---- kill feed, top right: the last 5 kills, 8 s each, newest on top
+// ---- kill feed, top right: every kill of the round, newest on top
 void draw_killfeed(float vw) {
     const DWORD now = GetTickCount();
-    std::vector<KillShown> keep;
-    for (const KillShown& k : g_kf) if (now - k.at < 8000) keep.push_back(k);
-    if (keep.size() > 5) keep.erase(keep.begin(), keep.end() - 5);
-    g_kf.swap(keep);
     const float right = vw - 24 * S, h = 34 * S, gap = 6 * S, pad = 12 * S, ih = 18 * S;
     float y = 24 * S;
-    for (int i = (int)g_kf.size() - 1; i >= 0; --i) {
-        const KillShown& ks = g_kf[i];
-        const KillEv& k = ks.k;
-        const float age = (now - ks.at) / 1000.0f;
-        float a = std::min(1.0f, age / 0.15f);
-        if (age > 7.0f) a = std::max(0.0f, 8.0f - age);
+    for (int i = (int)g_feed.kills.size() - 1; i >= 0; --i) {
+        const KillEv& k = g_feed.kills[i];
+        const auto seen = g_kill_seen.find(k.id);
+        const float age = seen == g_kill_seen.end() ? 1.0f : (now - seen->second) / 1000.0f;
+        const float a = std::min(1.0f, age / 0.15f);
         const bool att_ok = k.att >= 0 && k.att < 10 && g_slot[k.att].present;
         const bool vic_ok = k.vic >= 0 && k.vic < 10 && g_slot[k.vic].present;
         const std::string an = att_ok ? upper(g_slot[k.att].name) : "";
@@ -1148,11 +1145,11 @@ void draw_killfeed(float vw) {
         std::string wl;
         float iw = 0;
         if (k.weapon != "-" && k.weapon != "melee") {
-            wi = &weapon_icon(k.weapon);
+            wi = &weapon_icon(weapon_file(k.weapon));
             if (wi->ok) iw = std::min(80 * S, ih * wi->aspect);
         }
         if (iw <= 0) {
-            wl = k.weapon == "melee" ? "CROSSE" : k.weapon == "-" ? "MORT" : weapon_label(k.weapon);
+            wl = k.weapon == "melee" ? "BASH" : k.weapon == "-" ? "DIED" : weapon_label(k.weapon);
             iw = ctext_w(12, 600, wl.c_str(), 2) + 12 * S;
         }
         const float hsw = k.hs ? 22 * S : 0;
@@ -1241,7 +1238,7 @@ void draw_player_row(float x, float y, float w, float h, int k, bool right) {
             ctext(tx, y + h * 0.72f, 12, 600, COL_MUTED, wl.c_str(), al, 2);
         }
     } else {
-        ctext(tx, y + h * 0.72f, 12, 600, 0xFF6A6F75, "MORT", al, 2);
+        ctext(tx, y + h * 0.72f, 12, 600, 0xFF6A6F75, "DEAD", al, 2);
         ui_rect(right ? tx - nw : tx, y + h * 0.36f, nw, std::max(1.0f, 1.5f * S), with_alpha(COL_MUTED, 0.8f));
     }
     ui_clip_pop();
@@ -1268,7 +1265,7 @@ void draw_columns(float vw, float vh) {
 // ---- the followed player's card, bottom centre
 void draw_followed(float vw, float vh) {
     const int k = g_feed.cam;
-    if (k < 0 || k >= 10 || !g_slot[k].present || g_feed.replay) return;
+    if (k < 0 || k >= 10 || !g_slot[k].present || g_feed.replay || g_feed.res.valid) return;
     const Slot& s = g_slot[k];
     const FeedPlayer& f = g_feed.p[k];
     const int team = slot_team(k);
@@ -1284,12 +1281,11 @@ void draw_followed(float vw, float vh) {
     const float r1 = y + 30 * S;
     const std::string nm = upper(s.name);
     const float nw = ctext(lx, r1, 34, 700, COL_TEXT, nm.c_str(), -1, 2);
-    const std::string tag = std::string(team == 2 ? "AXE" : "ALLI\xC3\x89S") + " \xC2\xB7 SUIVI";
-    ctext(lx + nw + 14 * S, r1 + 3 * S, 13, 600, tc, tag.c_str(), -1, 3);
+    ctext(lx + nw + 14 * S, r1 + 3 * S, 13, 600, tc, team_word(team), -1, 3);
     if (f.kills > 0) {
         float kx = rx;
         for (int n = 0; n < std::min(f.kills, 5); ++n) { glyph_skull(kx - 9 * S, r1, 18 * S, COL_TEXT, 0xFF1C1F23); kx -= 21 * S; }
-        ctext(kx - 4 * S, r1 + 1 * S, 13, 600, COL_MUTED, "CETTE MANCHE", 1, 3);
+        ctext(kx - 4 * S, r1 + 1 * S, 13, 600, COL_MUTED, "THIS ROUND", 1, 3);
     }
 
     const float r2 = y + h - 38 * S;
@@ -1298,7 +1294,7 @@ void draw_followed(float vw, float vh) {
         snprintf(hp, sizeof(hp), "%d", s.hp);
         const DWORD hc = s.hp < 30 ? COL_DANGER : COL_TEXT;
         const float hw = ctext(lx, r2, 40, 700, hc, hp);
-        ctext(lx + hw + 8 * S, r2 + 6 * S, 12, 600, COL_MUTED, "VIE", -1, 3);
+        ctext(lx + hw + 8 * S, r2 + 6 * S, 12, 600, COL_MUTED, "HP", -1, 3);
         const float bw = 170 * S, by = r2 + 22 * S;
         ui_aa_rect(lx, by, bw, 6 * S, 3 * S, 0xFF2B2F34);
         const float shown = ui_smooth(0x57C0 + k, (float)s.hp, 9.0f);
@@ -1319,7 +1315,7 @@ void draw_followed(float vw, float vh) {
             ctext(wx + cw + 6 * S, r2 + 10 * S, 18, 600, COL_MUTED, rs);
         }
     } else {
-        ctext(lx, r2 + 4 * S, 22, 700, COL_MUTED, "MORT", -1, 4);
+        ctext(lx, r2 + 4 * S, 22, 700, COL_MUTED, "DEAD", -1, 4);
     }
 
     if (f.ktot >= 0) {
@@ -1338,49 +1334,51 @@ void draw_followed(float vw, float vh) {
     }
 }
 
-// ---- end of the round: who won, how, and the player of the round
+// ---- end of the round: a compact result under the scorebug, the player of the round at the
+// ---- bottom (in place of the followed card); nothing while a replay plays
 void draw_result(float vw, float vh) {
-    if (!g_feed.res.valid) return;
+    if (!g_feed.res.valid || g_feed.replay) return;
     const RoundResult& r = g_feed.res;
-    const float t = std::min(1.0f, (GetTickCount() - g_res_at) / 400.0f);
+    const float t = std::min(1.0f, (GetTickCount() - g_res_at) / 300.0f);
     const DWORD wc = r.winner == 'x' ? COL_AXIS : r.winner == 'a' ? COL_ALLIES : COL_MUTED;
-    ui_rect(0, 0, vw, vh, with_alpha(0x8C080A0C, t));
-    const float bw = 1100 * S, bx = vw / 2 - bw / 2, by = 300 * S, bh = 150 * S;
-    ui_rect(bx, by, bw, 6 * S, with_alpha(wc, t));
-    ui_rect_vgrad(bx, by + 6 * S, bw, bh, with_alpha(0xF515181B, t), with_alpha(0xF50B0D10, t));
-    const char* why = r.reason == 'e' ? "\xC3\x89LIMINATION"
-                    : r.reason == 'b' ? "BOMBE EXPLOS\xC3\x89" "E"
-                    : r.reason == 'd' ? "BOMBE D\xC3\x89SAMORC\xC3\x89" "E"
-                    : "TEMPS \xC3\x89" "COUL\xC3\x89";
-    char head[80];
-    if (g_feed.round > 0) snprintf(head, sizeof(head), "MANCHE %d \xC2\xB7 %s", g_feed.round, why);
+
+    const char* why = r.reason == 'e' ? "ELIMINATION" : r.reason == 'b' ? "BOMB EXPLODED"
+                    : r.reason == 'd' ? "BOMB DEFUSED" : "TIME RAN OUT";
+    char head[64];
+    if (g_feed.round > 0) snprintf(head, sizeof(head), "ROUND %d \xC2\xB7 %s", g_feed.round, why);
     else snprintf(head, sizeof(head), "%s", why);
-    ctext(vw / 2, by + 44 * S, 16, 600, with_alpha(COL_MUTED, t), head, 0, 8);
-    const char* big = r.winner == 'x' ? "L'AXE REMPORTE LA MANCHE"
-                    : r.winner == 'a' ? "LES ALLI\xC3\x89S REMPORTENT LA MANCHE" : "MANCHE NULLE";
-    ctext(vw / 2, by + 102 * S, 76, 700, with_alpha(wc, t), big, 0, 6);
+    std::string big = r.winner == 'd' ? "DRAW" : std::string(team_word(r.winner == 'x' ? 2 : 1)) + " WIN THE ROUND";
+    const float bw = std::max(560 * S, ctext_w(34, 700, big.c_str(), 4) + 80 * S), bh = 72 * S;
+    const float bx = vw / 2 - bw / 2, by = 18 * S + 76 * S + 10 * S;
+    ui_shadow(bx, by, bw, bh, 4 * S, 16 * S, with_alpha(0x70000000, t));
+    ui_aa_rect_vgrad(bx, by, bw, bh, 4 * S, with_alpha(0xF5212428, t), with_alpha(0xF515181B, t));
+    ui_rect(bx, by + bh - 3 * S, bw, 3 * S, with_alpha(wc, t));
+    ctext(vw / 2, by + 20 * S, 13, 600, with_alpha(COL_MUTED, t), head, 0, 4);
+    ctext(vw / 2, by + 46 * S, 34, 700, with_alpha(wc, t), big.c_str(), 0, 4);
 
     if (r.mvp >= 0 && r.mvp < 10 && g_slot[r.mvp].present) {
-        const float cw = 560 * S, ch = 160 * S, cx = vw / 2 - cw / 2, cy = 560 * S;
+        const float cw = 560 * S, ch = 96 * S, cx = vw / 2 - cw / 2, cy = vh - 24 * S - ch;
         const DWORD mc = team_col(slot_team(r.mvp));
         ui_shadow(cx, cy, cw, ch, 6 * S, 18 * S, with_alpha(0x70000000, t));
-        ui_aa_rect_vgrad(cx, cy, cw, ch, 6 * S, with_alpha(0xFF212428, t), with_alpha(0xFF15181B, t));
+        ui_aa_rect_vgrad(cx, cy, cw, ch, 6 * S, with_alpha(0xF5212428, t), with_alpha(0xF515181B, t));
         ui_clip_push(cx, cy, 8 * S, ch);
         ui_aa_rect(cx, cy, 16 * S, ch, 6 * S, with_alpha(mc, t));
         ui_clip_pop();
-        const float lx = cx + 34 * S;
-        ctext(lx, cy + 30 * S, 13, 600, with_alpha(COL_MUTED, t), "JOUEUR DE LA MANCHE", -1, 5);
-        ctext(lx, cy + 68 * S, 44, 700, with_alpha(COL_TEXT, t), upper(g_slot[r.mvp].name).c_str(), -1, 3);
+        const float lx = cx + 30 * S;
+        ctext(lx, cy + 24 * S, 12, 600, with_alpha(COL_MUTED, t), "PLAYER OF THE ROUND", -1, 4);
+        ctext(lx, cy + 60 * S, 32, 700, with_alpha(COL_TEXT, t), upper(g_slot[r.mvp].name).c_str(), -1, 2);
         char v[3][16];
-        const char* l[3] = { "KILLS", "HEADSHOTS", "D\xC3\x89G\xC3\x82TS" };
+        const char* l[3] = { "KILLS", "HS", "DMG" };
         snprintf(v[0], 16, "%d", r.kills);
         snprintf(v[1], 16, "%d", r.hs);
         snprintf(v[2], 16, "%d", r.dmg);
-        float sx = lx;
-        for (int i = 0; i < 3; ++i) {
-            const float vwd = ctext(sx, cy + 112 * S, 30, 700, with_alpha(COL_TEXT, t), v[i]);
-            const float lw = ctext(sx, cy + 138 * S, 12, 600, with_alpha(COL_MUTED, t), l[i], -1, 3);
-            sx += std::max(vwd, lw) + 36 * S;
+        float sx = cx + cw - 24 * S;
+        for (int i = 2; i >= 0; --i) {
+            const float colw = std::max(ctext_w(28, 700, v[i]), ctext_w(11, 600, l[i], 3));
+            const float ccx = sx - colw / 2;
+            ctext(ccx, cy + 50 * S, 28, 700, with_alpha(COL_TEXT, t), v[i], 0);
+            ctext(ccx, cy + 74 * S, 11, 600, with_alpha(COL_MUTED, t), l[i], 0, 3);
+            sx -= colw + 24 * S;
         }
     }
 }
@@ -1396,27 +1394,38 @@ void draw_replay_tag(float vw) {
     ctext(x + 32 * S, y + h / 2, 16, 700, COL_TEXT, "REPLAY", -1, 6);
 }
 
-// The game's own 2D (HUD of the followed player, compass, obituaries, "Connection
-// Interrupted", the PAM's hudelems) is hidden while the broadcast is on screen: cg_draw2D 0
-// (not archived), set back as it was when the overlay goes away. The UI menus (the PAM's
-// streamer menu, its scoreboard, its help on Space) are not cgame's and stay.
-// `set cod1x_streamer_cleanhud 0` keeps the game's HUD.
+// The game's own 2D is skipped while the broadcast is on screen: the HUD of the followed
+// player (health, ammo, compass, stance, weapon list), the PAM's hudelems (round clock,
+// texts), obituaries, "Connection Interrupted", the lagometer. CG_Draw2D (cgame 0x300199e0)
+// tests cg_draw2D at 0x30019a0f (je over the HUD, but it still runs 0x300181b0 and the
+// hudelems drawn there); while the overlay is up that branch becomes a jmp to the very end
+// (0x30019aed). Set back as soon as the overlay goes away; checked every frame, so a cgame
+// reloaded by a map change is patched again. The UI menus (the PAM's streamer menu, its
+// scoreboard, its help on Space) are not cgame's and stay.
+// `set cod1x_streamer_cleanhud 0` keeps the game's 2D.
+constexpr uintptr_t RVA_CG_DRAW2D_TEST = 0x19a0f;
+const unsigned char DRAW2D_ORIG[6]  = { 0x0F, 0x84, 0xD3, 0x00, 0x00, 0x00 };   // je  0x30019ae8
+const unsigned char DRAW2D_SKIP[6]  = { 0xE9, 0xD9, 0x00, 0x00, 0x00, 0x90 };   // jmp 0x30019aed
 void game_hud_hidden(bool hide) {
-    static bool s_hidden = false;
-    static std::string s_prev = "1";
-    if (g_io != &g_engine_io || hide == s_hidden) return;
-    if (hide && !strcmp(g_io->cvar("cod1x_streamer_cleanhud"), "0")) return;
-    typedef void* (__cdecl* Cvar_Set_t)(const char*, const char*);
-    const Cvar_Set_t set = (Cvar_Set_t)CODMP_CVAR_SET_VA;      // force=1
-    if (hide) {
-        s_prev = g_io->cvar("cg_draw2D");
-        if (s_prev.empty() || s_prev == "0") s_prev = "1";
-        set("cg_draw2D", "0");
-    } else {
-        set("cg_draw2D", s_prev.c_str());
+    if (g_io != &g_engine_io) return;
+    const uintptr_t cg = (uintptr_t)GetModuleHandleA("cgame_mp_x86.dll");
+    if (!cg) return;
+    unsigned char* site = (unsigned char*)(cg + RVA_CG_DRAW2D_TEST);
+    if (hide && !strcmp(g_io->cvar("cod1x_streamer_cleanhud"), "0")) hide = false;
+    const unsigned char* want = hide ? DRAW2D_SKIP : DRAW2D_ORIG;
+    const unsigned char* other = hide ? DRAW2D_ORIG : DRAW2D_SKIP;
+    if (!memcmp(site, want, 6)) return;                     // already so
+    if (memcmp(site, other, 6)) {                           // not the cgame we know: hands off
+        static int s_warned = 0;
+        if (!s_warned++) logger::logf("streamer_hud: CG_Draw2D test not recognised (%02x %02x) - game HUD left as is", site[0], site[1]);
+        return;
     }
-    s_hidden = hide;
-    logger::logf("streamer_hud: game HUD %s (cg_draw2D %s)", hide ? "hidden" : "back", hide ? "0" : s_prev.c_str());
+    DWORD old = 0;
+    if (!VirtualProtect(site, 6, PAGE_EXECUTE_READWRITE, &old)) return;
+    memcpy(site, want, 6);
+    VirtualProtect(site, 6, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, 6);
+    logger::logf("streamer_hud: game 2D %s", hide ? "skipped (broadcast on screen)" : "back");
 }
 
 // ------------------------------------------------------------------- radar
@@ -1782,7 +1791,7 @@ bool streamer_hud_frame() {
         return false;
     }
     if (!g_active) { g_active = true; logger::logf("streamer_hud: on"); }
-    game_hud_hidden(true);
+    game_hud_hidden(true);             // every frame: cheap compare, re-patches a reloaded cgame
     scan_fires();
 
     // the PAM's own top bar is replaced
