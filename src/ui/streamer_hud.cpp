@@ -279,6 +279,8 @@ struct Feed {
     bool replay = false;                    // P field: a killcam is replaying the past
     std::vector<KillEv> kills;
     RoundResult res;
+    int  half = 0;                          // H field: halftime after this round (0 none)
+    std::vector<std::pair<char, char>> hist;   // the match's rounds: winner a/x/d, reason e/b/d/t
     FeedPlayer p[10];
 };
 
@@ -441,6 +443,18 @@ void parse_feed(const char* raw) {
                 if (c1 && c1 != '-') sscanf(tok.c_str() + 1, "%d.%d", &f.round, &f.rounds);
                 break;
             case 'P': f.replay = c1 == '1'; break;
+            case 'H':
+                if (c1 && c1 != '-') {
+                    f.half = atoi(tok.c_str() + 1);
+                    const size_t colon = tok.find(':');
+                    if (colon != std::string::npos)
+                        for (size_t q = colon + 1; q + 1 < tok.size() + 1 && q < tok.size(); ) {
+                            const char w = tok[q], r = q + 1 < tok.size() ? tok[q + 1] : 't';
+                            if (w == 'a' || w == 'x' || w == 'd') f.hist.push_back(std::make_pair(w, r));
+                            q += 3;                                  // "<w><r>."
+                        }
+                }
+                break;
             case 'K':
                 if (c1 && c1 != '-') {
                     size_t p = 1;
@@ -1180,7 +1194,7 @@ void draw_player_row(float x, float y, float w, float h, int k, bool right) {
     const bool followed = s.followed || g_feed.cam == k;
     const bool alive = s.alive;
     const float a = alive ? 1.0f : 0.45f, r = 4 * S, cy = y + h / 2;
-    ui_aa_rect(x, y, w, h, r, 0xF015181B);
+    ui_aa_rect(x, y, w, h, r, followed ? 0xF52C3137 : 0xF015181B);
     if (alive) {
         const float shown = ui_smooth(0x57B0 + k, (float)s.hp, 9.0f);
         const float fw = w * std::min(1.0f, std::max(0.0f, shown / 100.0f));
@@ -1242,7 +1256,12 @@ void draw_player_row(float x, float y, float w, float h, int k, bool right) {
         ui_rect(right ? tx - nw : tx, y + h * 0.36f, nw, std::max(1.0f, 1.5f * S), with_alpha(COL_MUTED, 0.8f));
     }
     ui_clip_pop();
-    if (followed) ui_aa_stroke_rect(x, y, w, h, r, 2 * S, 0xFFF0F2F4);
+    if (followed) {
+        ui_aa_stroke_rect(x, y, w, h, r, 2.5f * S, 0xFFF0F2F4);
+        const float ax = right ? x - 6 * S : x + w + 6 * S, d = right ? -1.0f : 1.0f;
+        const float tri[6] = { ax, cy, ax + d * 10 * S, cy - 8 * S, ax + d * 10 * S, cy + 8 * S };
+        ui_aa_poly(tri, 3, 0xFFF0F2F4);
+    }
 }
 
 void draw_columns(float vw, float vh) {
@@ -1281,7 +1300,10 @@ void draw_followed(float vw, float vh) {
     const float r1 = y + 30 * S;
     const std::string nm = upper(s.name);
     const float nw = ctext(lx, r1, 34, 700, COL_TEXT, nm.c_str(), -1, 2);
-    ctext(lx + nw + 14 * S, r1 + 3 * S, 13, 600, tc, team_word(team), -1, 3);
+    {
+        const float tw = ctext(lx + nw + 14 * S, r1 + 3 * S, 13, 600, tc, team_word(team), -1, 3);
+        ctext(lx + nw + 14 * S + tw + 8 * S, r1 + 3 * S, 13, 600, COL_MUTED, "\xC2\xB7 SPECTATING", -1, 3);
+    }
     if (f.kills > 0) {
         float kx = rx;
         for (int n = 0; n < std::min(f.kills, 5); ++n) { glyph_skull(kx - 9 * S, r1, 18 * S, COL_TEXT, 0xFF1C1F23); kx -= 21 * S; }
@@ -1383,6 +1405,143 @@ void draw_result(float vw, float vh) {
     }
 }
 
+// ---- match tracker: one box per round of the match (winner colour + how), halftime gap
+void glyph_reason(float cx, float cy, float s, char r, DWORD c, DWORD bg) {
+    switch (r) {
+    case 'e': glyph_skull(cx, cy, s, c, bg); break;                                  // elimination
+    case 'b':                                                                       // bomb exploded
+        ui_aa_disc(cx, cy + s * 0.06f, s * 0.3f, c);
+        ui_aa_line(cx + s * 0.16f, cy - s * 0.2f, cx + s * 0.34f, cy - s * 0.38f, std::max(1.0f, s * 0.1f), c);
+        break;
+    case 'd':                                                                       // defused: a tick
+        ui_aa_line(cx - s * 0.3f, cy, cx - s * 0.08f, cy + s * 0.24f, std::max(1.0f, s * 0.14f), c);
+        ui_aa_line(cx - s * 0.08f, cy + s * 0.24f, cx + s * 0.32f, cy - s * 0.26f, std::max(1.0f, s * 0.14f), c);
+        break;
+    default:                                                                        // time ran out
+        ui_aa_ring(cx, cy, s * 0.32f, std::max(1.0f, s * 0.1f), c);
+        ui_aa_line(cx, cy, cx, cy - s * 0.2f, std::max(1.0f, s * 0.09f), c);
+        ui_aa_line(cx, cy, cx + s * 0.15f, cy, std::max(1.0f, s * 0.09f), c);
+        break;
+    }
+}
+
+// returns the width it takes; draws when draw = true, centred on cx
+float draw_history(float cx, float y, bool draw, float alpha = 1.0f) {
+    const int played = (int)g_feed.hist.size();
+    const int total = std::max(played, g_feed.rounds > 0 ? g_feed.rounds : played);
+    if (total <= 0) return 0;
+    const float bs = 22 * S, gap = 3 * S, halfgap = 12 * S;
+    const bool has_half = g_feed.half > 0 && g_feed.half < total;
+    const float w = total * bs + (total - 1) * gap + (has_half ? halfgap : 0);
+    if (!draw) return w;
+    float x = cx - w / 2;
+    for (int i = 0; i < total; ++i) {
+        if (i < played) {
+            const char win = g_feed.hist[i].first;
+            const DWORD c = win == 'x' ? COL_AXIS : win == 'a' ? COL_ALLIES : 0xFF5A5F65;
+            ui_aa_rect(x, y, bs, bs, 2 * S, with_alpha(c, alpha));
+            glyph_reason(x + bs / 2, y + bs / 2, bs * 0.8f, g_feed.hist[i].second, with_alpha(0xFF0B0D10, alpha * 0.85f), with_alpha(c, alpha));
+        } else {
+            ui_aa_rect(x, y, bs, bs, 2 * S, with_alpha(i == played ? 0xFF3A3F45 : 0xFF1C1F23, alpha));
+        }
+        x += bs + gap;
+        if (has_half && i + 1 == g_feed.half) {
+            ui_rect(x + halfgap / 2 - gap / 2 - 1 * S, y - 3 * S, std::max(1.0f, 2 * S), bs + 6 * S, with_alpha(0xFF6A6F75, alpha));
+            x += halfgap;
+        }
+    }
+    return w;
+}
+
+// the strip under the scorebug: during strat time, and under the round result
+void draw_tracker(float vw) {
+    if (g_feed.replay || g_feed.hist.empty() && g_feed.rounds <= 0) return;
+    const bool strat = g_feed.clock_kind == 's';
+    const bool result = g_feed.res.valid;
+    if (!strat && !result) return;
+    const float w = draw_history(vw / 2, 0, false);
+    if (w <= 0) return;
+    const float y = 18 * S + 76 * S + 10 * S + (result ? 72 * S + 8 * S : 0);
+    const float pw = w + 28 * S, ph = 22 * S + 22 * S;
+    ui_aa_rect(vw / 2 - pw / 2, y, pw, ph, 3 * S, 0xE60B0D10);
+    draw_history(vw / 2, y + 11 * S, true);
+}
+
+// ---- TAB (the PAM's scoreboard key): the whole match over the picture - scores, every round,
+// ---- every player's K / D / ADR. The PAM's own scoreboard menu stays under it, covered.
+void draw_overview(float vw, float vh) {
+    if (strcmp(g_io->cvar("ui_scoreboard_visible"), "1") != 0) return;
+    ui_rect(0, 0, vw, vh, 0xA6060809);
+    const float pw = 1040 * S, x = vw / 2 - pw / 2, y = 150 * S;
+    const float rowh = 40 * S, headh = 120 * S, tableh = 34 * S + 5 * (rowh + 4 * S);
+    const float ph = headh + tableh + 70 * S;
+    ui_shadow(x, y, pw, ph, 6 * S, 24 * S, 0x90000000);
+    ui_aa_rect_vgrad(x, y, pw, ph, 6 * S, 0xFA1D2024, 0xFA121417);
+    // header: team / score - round strip - score / team
+    for (int side = 0; side < 2; ++side) {
+        const DWORD tc = team_col(g_team_side[side]);
+        const std::string nm = team_label(side);
+        const char* sc = g_score[side].empty() ? "0" : g_score[side].c_str();
+        if (side == 0) {
+            ctext(x + 40 * S, y + 50 * S, 30, 700, tc, nm.c_str(), -1, 4);
+            ctext(x + pw / 2 - 40 * S, y + 50 * S, 56, 700, COL_TEXT, sc, 1);
+        } else {
+            ctext(x + pw - 40 * S, y + 50 * S, 30, 700, tc, nm.c_str(), 1, 4);
+            ctext(x + pw / 2 + 40 * S, y + 50 * S, 56, 700, COL_TEXT, sc, -1);
+        }
+    }
+    ctext(x + pw / 2, y + 50 * S, 20, 600, COL_MUTED, ":", 0);
+    char rl[48];
+    if (g_feed.round > 0 && g_feed.rounds > 1) snprintf(rl, sizeof(rl), "ROUND %d \xC2\xB7 MR%d", g_feed.round, g_feed.rounds / 2);
+    else if (g_feed.round > 0) snprintf(rl, sizeof(rl), "ROUND %d", g_feed.round);
+    else rl[0] = 0;
+    if (rl[0]) ctext(x + pw / 2, y + 18 * S, 12, 600, COL_MUTED, rl, 0, 4);
+    draw_history(x + pw / 2, y + 84 * S, true);
+
+    // two tables side by side
+    const float tw = (pw - 3 * 30 * S) / 2, ty = y + headh + 20 * S;
+    const char* cols[4] = { "K", "D", "ADR", "RND" };
+    for (int side = 0; side < 2; ++side) {
+        const float tx = x + 30 * S + side * (tw + 30 * S);
+        const DWORD tc = team_col(g_team_side[side]);
+        ui_rect(tx, ty + 30 * S, tw, 2 * S, tc);
+        ctext(tx + 12 * S, ty + 15 * S, 12, 600, COL_MUTED, "PLAYER", -1, 3);
+        for (int c = 0; c < 4; ++c)
+            ctext(tx + tw - 24 * S - (3 - c) * 64 * S, ty + 15 * S, 12, 600, COL_MUTED, cols[c], 0, 3);
+        float ry = ty + 38 * S;
+        for (int i = 0; i < 5; ++i) {
+            const int k = side * 5 + i;
+            const Slot& s = g_slot[k];
+            if (!s.present) continue;
+            const FeedPlayer& f = g_feed.p[k];
+            const bool followed = s.followed || g_feed.cam == k;
+            ui_aa_rect(tx, ry, tw, rowh, 3 * S, followed ? 0xFF2C3137 : (i % 2 ? 0xFF17191D : 0xFF1B1E22));
+            if (followed) ui_aa_stroke_rect(tx, ry, tw, rowh, 3 * S, 2 * S, 0xFFF0F2F4);
+            ui_rect(tx, ry, 4 * S, rowh, s.alive ? tc : 0xFF3A3E43);
+            const DWORD nc = s.alive ? COL_TEXT : COL_MUTED;
+            ctext(tx + 16 * S, ry + rowh / 2, 18, 700, nc, upper(s.name).c_str(), -1, 1);
+            const int vals[4] = { f.ktot, f.deaths, f.adr, f.kills };
+            for (int c = 0; c < 4; ++c) {
+                char v[12];
+                if (vals[c] < 0) snprintf(v, sizeof(v), "-");
+                else snprintf(v, sizeof(v), "%d", vals[c]);
+                ctext(tx + tw - 24 * S - (3 - c) * 64 * S, ry + rowh / 2, 18, 700, c == 3 && vals[c] > 0 ? COL_TEXT : nc, v, 0);
+            }
+            ry += rowh + 4 * S;
+        }
+    }
+}
+
+// ---- nobody followed: the streamer flies free
+void draw_free_camera(float vw, float vh) {
+    if (g_feed.cam >= 0 || g_feed.replay || g_feed.res.valid) return;
+    const char* t = "FREE CAMERA";
+    const float w = ctext_w(15, 700, t, 5) + 40 * S, h = 34 * S;
+    const float x = vw / 2 - w / 2, y = vh - 24 * S - h;
+    ui_aa_rect(x, y, w, h, 3 * S, 0xE60B0D10);
+    ctext(vw / 2, y + h / 2, 15, 700, COL_MUTED, t, 0, 5);
+}
+
 // ---- a killcam replays the past
 void draw_replay_tag(float vw) {
     if (!g_feed.replay) return;
@@ -1454,8 +1613,8 @@ void corner_brackets(float x, float y, float w, float h, float arm, float th, DW
 void draw_radar(float top) {
     if (!g_feed.radar) return;
     const float pad = 12 * S;
-    const float max_w = 340 * S, max_h = 300 * S;
-    radar_request((int)(max_w - 2 * pad), (int)(max_h - 2 * pad - 14 * S));
+    const float side = 320 * S, inner = side - 2 * pad;      // a square panel, the map fitted in it
+    radar_request((int)inner, (int)inner);
 
     // world window: the client's own drawing, or the PAM's frame while it is being built
     RadarBox b;
@@ -1465,14 +1624,14 @@ void draw_radar(float top) {
         img_w = (float)g_radar_w; img_h = (float)g_radar_h;
     } else if (g_win.valid) {
         b.wx0 = g_win.cx - g_win.sx / 2; b.wy0 = g_win.cy - g_win.sy / 2; b.wsx = g_win.sx; b.wsy = g_win.sy;
-        const float fit = std::min((max_w - 2 * pad) / g_win.sx, (max_h - 2 * pad - 14 * S) / g_win.sy);
+        const float fit = std::min(inner / g_win.sx, inner / g_win.sy);
         img_w = g_win.sx * fit; img_h = g_win.sy * fit;
     } else {
         return;
     }
-    const float pw = img_w + 2 * pad, ph = img_h + 2 * pad + 14 * S;
+    const float pw = side, ph = side;
     const float x = 24 * S, y = top;
-    b.x = x + pad; b.y = y + pad; b.w = img_w; b.h = img_h;
+    b.x = x + pad + (inner - img_w) / 2; b.y = y + pad + (inner - img_h) / 2; b.w = img_w; b.h = img_h;
 
     // panel: the kit's minimap - near-black, a fine grid, orange corners, N
     ui_shadow(x, y, pw, ph, 2 * S, 14 * S, 0x90000000);
@@ -1591,7 +1750,16 @@ void draw_radar(float top) {
             char num[4];
             snprintf(num, sizeof(num), "%d", (k + 1) % 10);
             text_mid(sx, sy, r * 1.35f / S, 800, with_alpha(0xFF0B0D10, a), num, 0);
-            if (followed) ui_aa_ring(sx, sy, r + 4.5f * S, 1.8f * S, 0xFFFFFFFF);
+            if (followed) {
+                // the followed player: a white ring that breathes, and his name over the dot
+                const float pulse = 0.5f + 0.5f * sinf(GetTickCount() * 0.006f);
+                ui_aa_ring(sx, sy, r + 4.5f * S, 1.8f * S, 0xFFFFFFFF);
+                ui_aa_ring(sx, sy, r + 7 * S + 5 * S * pulse, 1.4f * S, with_alpha(0xFFFFFFFF, 0.55f * (1 - pulse)));
+                const std::string nm = upper(g_slot[k].name);
+                const float tw = ctext_w(12, 700, nm.c_str(), 1) + 12 * S;
+                ui_aa_rect(sx - tw / 2, sy - r - 26 * S, tw, 18 * S, 2 * S, 0xE60B0D10);
+                ctext(sx, sy - r - 17 * S, 12, 700, COL_TEXT, nm.c_str(), 0, 1);
+            }
         }
     }
 }
@@ -1819,9 +1987,12 @@ void streamer_hud_draw(float vw, float vh) {
     draw_killfeed(vw);
     draw_columns(vw, vh);
     draw_followed(vw, vh);
+    draw_free_camera(vw, vh);
     draw_result(vw, vh);
     draw_scorebug(vw);
+    draw_tracker(vw);
     draw_replay_tag(vw);
+    draw_overview(vw, vh);
     if (squeeze) {
         glMatrixMode(GL_MODELVIEW);
         glPopMatrix();
