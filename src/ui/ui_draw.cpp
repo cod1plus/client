@@ -51,6 +51,7 @@ std::map<std::string, TextTex> g_text_cache;
 const wchar_t* font_face(int font) {
     switch (font) {
     case UI_FONT_MONO: return L"Consolas";
+    case UI_FONT_COND: return L"Bahnschrift Condensed";
     default:           return L"Segoe UI";
     }
 }
@@ -584,10 +585,20 @@ float ui_text_font_height(int px, int weight, int font) {
     return (float)get_text("Hg", px, weight, font).h;
 }
 
+// one glyph = one UTF-8 sequence (a lead byte and its continuation bytes): "É", "·" stay whole
+static int utf8_glyph(const char* c, char* g) {
+    int n = 1;
+    while (n < 4 && (((unsigned char)c[n]) & 0xC0) == 0x80) ++n;
+    memcpy(g, c, n);
+    g[n] = 0;
+    return n;
+}
+
 float ui_text_tracked(float x, float y, int px, int weight, DWORD rgba, const char* s, float tracking, int font) {
     const float x0 = x;
-    for (const char* c = s; *c; ++c) {
-        char g[2] = { *c, 0 };
+    char g[5];
+    for (const char* c = s; *c; c += utf8_glyph(c, g)) {
+        utf8_glyph(c, g);
         // GDI pads each glyph texture by 2 px (see make_text): take it back per glyph
         x += ui_text_font(x, y, px, weight, rgba, g, font) - 2 + tracking;
     }
@@ -597,8 +608,9 @@ float ui_text_tracked(float x, float y, int px, int weight, DWORD rgba, const ch
 float ui_text_tracked_width(int px, int weight, const char* s, float tracking, int font) {
     float w = 0;
     int n = 0;
-    for (const char* c = s; *c; ++c, ++n) {
-        char g[2] = { *c, 0 };
+    char g[5];
+    for (const char* c = s; *c; c += utf8_glyph(c, g), ++n) {
+        utf8_glyph(c, g);
         w += ui_text_font_width(px, weight, g, font) - 2 + tracking;
     }
     return n ? w - tracking : 0;

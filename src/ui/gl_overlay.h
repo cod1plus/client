@@ -81,7 +81,8 @@ void ui_clip_xscale(float s);
 
 // --- extended 2D (ui/ui_draw.cpp) --------------------------------------------
 // Faces: Segoe UI (default) and Consolas for tracked small caps / tabular figures.
-enum UiFont { UI_FONT_SANS = 0, UI_FONT_MONO = 1 };
+// UI_FONT_COND: Bahnschrift Condensed (Windows 10+; GDI falls back to its default face elsewhere)
+enum UiFont { UI_FONT_SANS = 0, UI_FONT_MONO = 1, UI_FONT_COND = 2 };
 // Text snapped to whole pixels. Weight = GDI weight (400 regular .. 900 black).
 float ui_text_font(float x, float y, int px, int weight, DWORD rgba, const char* utf8, int font);
 float ui_text_font_width(int px, int weight, const char* utf8, int font);
