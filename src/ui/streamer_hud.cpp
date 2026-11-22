@@ -253,6 +253,7 @@ struct FeedPlayer {
     int kills = 0;
     std::string weapon;       // weapon file name ("kar98k_mp"), "" unknown
     int ktot = -1, deaths = -1, adr = -1;   // match kills / deaths / damage per round (-1: older PAM)
+    int assists = -1, hs = -1, plants = -1, defuses = -1;
     int clip = -1, reserve = -1;            // ammo of the weapon in hand (the followed player only)
 };
 
@@ -287,6 +288,17 @@ struct Feed {
 // the kill feed on screen = the feed's kills of the round; when each first came (its fade-in)
 std::unordered_map<int, DWORD> g_kill_seen;
 DWORD g_res_at = 0;                       // when the current round result first came
+// moments of the show
+bool  g_feed_primed = false;              // a first feed was read (its old kills are no news)
+struct Callout { int att = -1, kills = 0; DWORD at = 0; };
+Callout g_callout;                        // DOUBLE KILL ... ACE
+DWORD g_intro_at = 0;                     // strat time over: "ROUND n" card
+int   g_bomb_total = 0;                   // tenths on the bomb clock when it was planted
+DWORD g_hit_at[10] = {}, g_death_at[10] = {};
+int   g_prev_hp[10] = {};
+bool  g_prev_alive[10] = {};
+std::string g_prev_score[2];
+DWORD g_score_at[2] = {};
 
 struct RadarWin {             // the PAM's radar window: bombsites (and a fallback frame)
     bool valid = false;
@@ -411,6 +423,18 @@ void read_slots() {
         g_score[k] = clean(g_io->cvar(k ? "ui_streamersystem_top_score2" : "ui_streamersystem_top_score1"));
     }
     g_info = clean(g_io->cvar("ui_streamersystem_top_info"), &g_info_red);
+    const DWORD now = GetTickCount();
+    for (int k = 0; k < 10; ++k) {
+        const Slot& s = g_slot[k];
+        if (s.present && s.alive && g_prev_alive[k] && s.hp < g_prev_hp[k]) g_hit_at[k] = now;
+        if (s.present && !s.alive && g_prev_alive[k]) g_death_at[k] = now;
+        g_prev_hp[k] = s.hp;
+        g_prev_alive[k] = s.present && s.alive;
+    }
+    for (int side = 0; side < 2; ++side) {
+        if (!g_prev_score[side].empty() && g_score[side] != g_prev_score[side]) g_score_at[side] = now;
+        g_prev_score[side] = g_score[side];
+    }
 }
 
 // Header fields start with a capital letter (T R X C B E ...), slots with a digit or "-"
@@ -495,8 +519,9 @@ void parse_feed(const char* raw) {
                 int alive = 0, vis = 0, kills = 0;
                 char st = 's';
                 char weapon[64] = "";
-                const int n = sscanf(tok.c_str(), "%d,%f,%f,%f,%f,%c,%d,%63[^,],%d,%d,%d,%d,%d,%d", &alive, &p.x, &p.y, &p.z, &p.yaw, &st, &vis, weapon, &kills,
-                                     &p.ktot, &p.deaths, &p.adr, &p.clip, &p.reserve);
+                const int n = sscanf(tok.c_str(), "%d,%f,%f,%f,%f,%c,%d,%63[^,],%d,%d,%d,%d,%d,%d,%d,%d,%d,%d", &alive, &p.x, &p.y, &p.z, &p.yaw,
+                                     &st, &vis, weapon, &kills, &p.ktot, &p.deaths, &p.adr, &p.assists, &p.hs, &p.plants,
+                                     &p.defuses, &p.clip, &p.reserve);
                 if (n >= 6) {
                     p.present = true;
                     p.alive = alive != 0;
@@ -514,9 +539,19 @@ void parse_feed(const char* raw) {
     {
         const DWORD now = GetTickCount();
         if (f.kills.empty()) g_kill_seen.clear();                 // a new round
-        for (const KillEv& k : f.kills)
-            if (!g_kill_seen.count(k.id)) g_kill_seen[k.id] = now;
+        for (const KillEv& k : f.kills) {
+            if (g_kill_seen.count(k.id)) continue;
+            g_kill_seen[k.id] = now;
+            if (!g_feed_primed || k.att < 0) continue;
+            // a fresh kill: how many has its author made this round?
+            int n = 0;
+            for (const KillEv& o : f.kills) if (o.att == k.att && o.id <= k.id) ++n;
+            if (n >= 2) { g_callout.att = k.att; g_callout.kills = n; g_callout.at = now; }
+        }
         if (f.res.valid && !g_feed.res.valid) g_res_at = now;
+        if (g_feed.clock_kind == 's' && f.clock_kind == 'r') g_intro_at = now;
+        if (f.clock_kind == 'b' && (g_feed.clock_kind != 'b' || f.clock_tenths > g_bomb_total)) g_bomb_total = f.clock_tenths;
+        if (f.valid) g_feed_primed = true;
     }
     g_feed = f;
 
@@ -1096,6 +1131,13 @@ void draw_scorebug(float vw) {
         const char* sc = g_score[side].empty() ? "0" : g_score[side].c_str();
         const int alive = alive_count(side), total = std::max(5, present_count(side));
         const float pw = 14 * S, pg = 4 * S, ph = 6 * S, pws = total * pw + (total - 1) * pg;
+        // a point scored: the score lights up for a moment
+        const float sage = (GetTickCount() - g_score_at[side]) / 1000.0f;
+        if (g_score_at[side] && sage < 1.2f) {
+            const float k = 1 - sage / 1.2f;
+            const float gx = side == 0 ? bx + tw - 70 * S : bx + 10 * S;
+            ui_shadow(gx, top + 12 * S, 60 * S, h - 24 * S, 8 * S, 22 * S, with_alpha(tc, 0.75f * k));
+        }
         if (side == 0) {
             const float sx = bx + tw - 20 * S;
             const float sw = ctext(sx, top + h / 2, 52, 700, COL_TEXT, sc, 1);
@@ -1122,7 +1164,27 @@ void draw_scorebug(float vw) {
                      : (g_feed.clock_kind == 'r' && tenths < 100) ? COL_DANGER : COL_TEXT;
     ctext(cx, top + 32 * S, 40, 700, tcol, t, 0);
     std::string lab;
-    if (bomb) lab = "BOMB PLANTED";
+    if (bomb) {
+        lab = "BOMB PLANTED";
+        // which site: the nearest of the radar's two
+        float best = 1e18f;
+        int site = -1;
+        for (int k = 0; k < 2; ++k) {
+            bool have = g_radar_ok && g_radar.site[k];
+            float sxw = have ? g_radar.site_x[k] : 0, syw = have ? g_radar.site_y[k] : 0;
+            if (g_win.valid && g_win.site[k]) { have = true; sxw = g_win.site_x[k]; syw = g_win.site_y[k]; }
+            if (!have || !g_feed.bomb) continue;
+            const float d = (sxw - g_feed.bx) * (sxw - g_feed.bx) + (syw - g_feed.by) * (syw - g_feed.by);
+            if (d < best) { best = d; site = k; }
+        }
+        if (site >= 0) lab += site ? " \xC2\xB7 B" : " \xC2\xB7 A";
+        // the fuse burning down under the clock
+        if (g_bomb_total > 0 && tenths >= 0) {
+            const float fr = std::min(1.0f, std::max(0.0f, (float)tenths / g_bomb_total));
+            ui_rect(cx - cw / 2, top + h - 4 * S, cw, 4 * S, 0xFF3A1212);
+            ui_rect(cx - cw / 2, top + h - 4 * S, cw * fr, 4 * S, 0xFFFF5F55);
+        }
+    }
     else if (g_feed.clock_kind == 's') lab = "STRAT TIME";
     else {
         const std::string info = upper(g_info);
@@ -1147,6 +1209,8 @@ void draw_killfeed(float vw) {
         const auto seen = g_kill_seen.find(k.id);
         const float age = seen == g_kill_seen.end() ? 1.0f : (now - seen->second) / 1000.0f;
         const float a = std::min(1.0f, age / 0.15f);
+        const float slide = age < 0.25f ? (1 - age / 0.25f) * (1 - age / 0.25f) * 60 * S : 0;   // ease-out from the right
+        const float flash = age < 0.8f ? 1 - age / 0.8f : 0;
         const bool att_ok = k.att >= 0 && k.att < 10 && g_slot[k.att].present;
         const bool vic_ok = k.vic >= 0 && k.vic < 10 && g_slot[k.vic].present;
         const std::string an = att_ok ? upper(g_slot[k.att].name) : "";
@@ -1168,8 +1232,9 @@ void draw_killfeed(float vw) {
         }
         const float hsw = k.hs ? 22 * S : 0;
         const float w = 2 * pad + (naw > 0 ? naw + 10 * S : 0) + iw + 10 * S + hsw + nvw;
-        const float x = right - w, cy = y + h / 2;
+        const float x = right - w + slide, cy = y + h / 2;
         const bool mine = g_feed.cam >= 0 && (k.att == g_feed.cam || k.vic == g_feed.cam);
+        if (flash > 0) ui_shadow(x, y, w, h, 3 * S, 14 * S, with_alpha(k.hs ? COL_DANGER : 0xFFFFFFFF, 0.45f * flash));
         ui_aa_rect(x, y, w, h, 3 * S, with_alpha(0xD10B0D10, a));
         if (mine) ui_aa_stroke_rect(x, y, w, h, 3 * S, 1.2f * S, with_alpha(0x8CF0F2F4, a));
         float cx = x + pad;
@@ -1256,6 +1321,24 @@ void draw_player_row(float x, float y, float w, float h, int k, bool right) {
         ui_rect(right ? tx - nw : tx, y + h * 0.36f, nw, std::max(1.0f, 1.5f * S), with_alpha(COL_MUTED, 0.8f));
     }
     ui_clip_pop();
+    {
+        const DWORD now = GetTickCount();
+        const float hit = g_hit_at[k] ? (now - g_hit_at[k]) / 1000.0f : 9;
+        const float die = g_death_at[k] ? (now - g_death_at[k]) / 1000.0f : 9;
+        if (hit < 0.45f && alive) ui_aa_rect(x, y, w, h, r, with_alpha(COL_DANGER, 0.45f * (1 - hit / 0.45f)));
+        if (die < 0.8f) ui_aa_rect(x, y, w, h, r, with_alpha(0xFFFFFFFF, 0.55f * (1 - die / 0.8f)));
+        // the last one standing against several: 1vN
+        const int side = k / 5, mine = alive_count(side), theirs = alive_count(1 - side);
+        if (alive && mine == 1 && theirs >= 1 && !g_feed.res.valid && (g_feed.clock_kind == 'r' || g_feed.clock_kind == 'b')) {
+            char b[12];
+            snprintf(b, sizeof(b), "1v%d", theirs);
+            const float bw = ctext_w(15, 700, b) + 14 * S, bh = 22 * S;
+            const float bxx = right ? x - bw - 22 * S : x + w + 22 * S;
+            const float pulse = 0.6f + 0.4f * sinf(now * 0.008f);
+            ui_aa_rect(bxx, cy - bh / 2, bw, bh, 3 * S, with_alpha(tc, pulse));
+            ctext(bxx + bw / 2, cy, 15, 700, 0xFF0B0D10, b, 0);
+        }
+    }
     if (followed) {
         ui_aa_stroke_rect(x, y, w, h, r, 2.5f * S, 0xFFF0F2F4);
         const float ax = right ? x - 6 * S : x + w + 6 * S, d = right ? -1.0f : 1.0f;
@@ -1470,9 +1553,9 @@ void draw_tracker(float vw) {
 // ---- TAB (the PAM's scoreboard key): the whole match over the picture - scores, every round,
 // ---- every player's K / D / ADR. The PAM's own scoreboard menu stays under it, covered.
 void draw_overview(float vw, float vh) {
-    if (strcmp(g_io->cvar("ui_scoreboard_visible"), "1") != 0) return;
-    ui_rect(0, 0, vw, vh, 0xA6060809);
-    const float pw = 1040 * S, x = vw / 2 - pw / 2, y = 150 * S;
+    if (strcmp(g_io->cvar("ui_streamersystem_tab"), "1") != 0) return;
+    ui_rect(0, 0, vw, vh, 0xB0060809);
+    const float pw = 1320 * S, x = vw / 2 - pw / 2, y = 150 * S;
     const float rowh = 40 * S, headh = 120 * S, tableh = 34 * S + 5 * (rowh + 4 * S);
     const float ph = headh + tableh + 70 * S;
     ui_shadow(x, y, pw, ph, 6 * S, 24 * S, 0x90000000);
@@ -1500,14 +1583,16 @@ void draw_overview(float vw, float vh) {
 
     // two tables side by side
     const float tw = (pw - 3 * 30 * S) / 2, ty = y + headh + 20 * S;
-    const char* cols[4] = { "K", "D", "ADR", "RND" };
+    const int NC = 8;
+    const char* cols[NC] = { "K", "A", "D", "+/-", "ADR", "HS%", "OBJ", "RND" };
+    const float cstep = 52 * S;
     for (int side = 0; side < 2; ++side) {
         const float tx = x + 30 * S + side * (tw + 30 * S);
         const DWORD tc = team_col(g_team_side[side]);
         ui_rect(tx, ty + 30 * S, tw, 2 * S, tc);
         ctext(tx + 12 * S, ty + 15 * S, 12, 600, COL_MUTED, "PLAYER", -1, 3);
-        for (int c = 0; c < 4; ++c)
-            ctext(tx + tw - 24 * S - (3 - c) * 64 * S, ty + 15 * S, 12, 600, COL_MUTED, cols[c], 0, 3);
+        for (int c = 0; c < NC; ++c)
+            ctext(tx + tw - 26 * S - (NC - 1 - c) * cstep, ty + 15 * S, 12, 600, COL_MUTED, cols[c], 0, 2);
         float ry = ty + 38 * S;
         for (int i = 0; i < 5; ++i) {
             const int k = side * 5 + i;
@@ -1520,15 +1605,85 @@ void draw_overview(float vw, float vh) {
             ui_rect(tx, ry, 4 * S, rowh, s.alive ? tc : 0xFF3A3E43);
             const DWORD nc = s.alive ? COL_TEXT : COL_MUTED;
             ctext(tx + 16 * S, ry + rowh / 2, 18, 700, nc, upper(s.name).c_str(), -1, 1);
-            const int vals[4] = { f.ktot, f.deaths, f.adr, f.kills };
-            for (int c = 0; c < 4; ++c) {
-                char v[12];
-                if (vals[c] < 0) snprintf(v, sizeof(v), "-");
-                else snprintf(v, sizeof(v), "%d", vals[c]);
-                ctext(tx + tw - 24 * S - (3 - c) * 64 * S, ry + rowh / 2, 18, 700, c == 3 && vals[c] > 0 ? COL_TEXT : nc, v, 0);
+            char v[NC][12];
+            auto num = [](char* o, int val) { if (val < 0) snprintf(o, 12, "-"); else snprintf(o, 12, "%d", val); };
+            num(v[0], f.ktot); num(v[1], f.assists); num(v[2], f.deaths);
+            if (f.ktot >= 0 && f.deaths >= 0) snprintf(v[3], 12, "%+d", f.ktot - f.deaths); else snprintf(v[3], 12, "-");
+            num(v[4], f.adr);
+            if (f.hs >= 0 && f.ktot > 0) snprintf(v[5], 12, "%d%%", (int)(100.0f * f.hs / f.ktot + 0.5f)); else snprintf(v[5], 12, f.hs >= 0 ? "0%%" : "-");
+            num(v[6], f.plants >= 0 ? f.plants + std::max(0, f.defuses) : -1);
+            num(v[7], f.kills);
+            for (int c = 0; c < NC; ++c) {
+                DWORD col = nc;
+                if (c == 3 && f.ktot >= 0 && f.deaths >= 0) col = f.ktot - f.deaths > 0 ? COL_READY : f.ktot - f.deaths < 0 ? COL_DANGER : nc;
+                if (c == 7 && f.kills > 0) col = COL_TEXT;
+                ctext(tx + tw - 26 * S - (NC - 1 - c) * cstep, ry + rowh / 2, 18, 700, col, v[c], 0);
             }
             ry += rowh + 4 * S;
         }
+    }
+}
+
+// ---- DOUBLE KILL / TRIPLE KILL / QUAD KILL / ACE, with the player's name (2.6 s)
+void draw_callout(float vw, float vh) {
+    if (!g_callout.at || g_feed.replay) return;
+    const float age = (GetTickCount() - g_callout.at) / 1000.0f;
+    if (age > 2.6f) return;
+    const int k = g_callout.att;
+    if (k < 0 || k >= 10 || !g_slot[k].present) return;
+    const float in = std::min(1.0f, age / 0.18f), out = age > 2.2f ? 1 - (age - 2.2f) / 0.4f : 1.0f;
+    const float a = in * out, sc = 1.25f - 0.25f * in;              // pops in a little big
+    const DWORD tc = team_col(slot_team(k));
+    const char* what = g_callout.kills >= 5 ? "ACE" : g_callout.kills == 4 ? "QUAD KILL" : g_callout.kills == 3 ? "TRIPLE KILL" : "DOUBLE KILL";
+    const std::string nm = upper(g_slot[k].name);
+    const float cy = vh * 0.30f;
+    const float big = (g_callout.kills >= 5 ? 64.0f : 48.0f) * sc;
+    const float ww = std::max(ctext_w(big, 700, what, 6), ctext_w(20, 700, nm.c_str(), 4)) + 80 * S, hh = (big + 46) * S;
+    ui_shadow(vw / 2 - ww / 2, cy - hh / 2, ww, hh, 6 * S, 24 * S, with_alpha(0x90000000, a));
+    ui_aa_rect_vgrad(vw / 2 - ww / 2, cy - hh / 2, ww, hh, 6 * S, with_alpha(0xF0212428, a), with_alpha(0xF015181B, a));
+    ui_rect(vw / 2 - ww / 2, cy - hh / 2, ww, 4 * S, with_alpha(tc, a));
+    ctext(vw / 2, cy - 8 * S, big, 700, with_alpha(g_callout.kills >= 5 ? 0xFFFFD34D : tc, a), what, 0, 6);
+    ctext(vw / 2, cy + hh / 2 - 22 * S, 20, 700, with_alpha(COL_TEXT, a), nm.c_str(), 0, 4);
+}
+
+// ---- strat time over: "ROUND n - LIVE" (1.8 s)
+void draw_intro(float vw, float vh) {
+    if (!g_intro_at || g_feed.replay) return;
+    const float age = (GetTickCount() - g_intro_at) / 1000.0f;
+    if (age > 1.8f) return;
+    const float a = std::min(1.0f, age / 0.15f) * (age > 1.4f ? 1 - (age - 1.4f) / 0.4f : 1.0f);
+    char t[32];
+    if (g_feed.round > 0) snprintf(t, sizeof(t), "ROUND %d", g_feed.round);
+    else snprintf(t, sizeof(t), "LIVE");
+    const float cy = vh * 0.30f;
+    const float ww = ctext_w(56, 700, t, 8) + 100 * S, hh = 110 * S;
+    ui_aa_rect_vgrad(vw / 2 - ww / 2, cy - hh / 2, ww, hh, 6 * S, with_alpha(0xE6212428, a), with_alpha(0xE615181B, a));
+    ctext(vw / 2, cy - 10 * S, 56, 700, with_alpha(COL_TEXT, a), t, 0, 8);
+    {
+        const float lw = ctext_w(15, 700, "LIVE", 6);
+        ui_aa_disc(vw / 2 - lw / 2 - 6 * S, cy + 32 * S, 5 * S, with_alpha(COL_DANGER, a));
+        ctext(vw / 2 + 6 * S, cy + 32 * S, 15, 700, with_alpha(COL_DANGER, a), "LIVE", 0, 6);
+    }
+}
+
+// ---- the last one standing: "CLUTCH - NAME - 1v3" under the scorebug
+void draw_clutch(float vw) {
+    if (g_feed.res.valid || g_feed.replay || !(g_feed.clock_kind == 'r' || g_feed.clock_kind == 'b')) return;
+    for (int side = 0; side < 2; ++side) {
+        if (alive_count(side) != 1 || alive_count(1 - side) < 1) continue;
+        int k = -1;
+        for (int i = 0; i < 5; ++i) if (g_slot[side * 5 + i].present && g_slot[side * 5 + i].alive) k = side * 5 + i;
+        if (k < 0) continue;
+        const DWORD tc = team_col(slot_team(k));
+        char t[96];
+        snprintf(t, sizeof(t), "CLUTCH \xC2\xB7 %s \xC2\xB7 1v%d", upper(g_slot[k].name).c_str(), alive_count(1 - side));
+        const float w = ctext_w(16, 700, t, 4) + 40 * S, h = 34 * S;
+        const float x = vw / 2 - w / 2 + (side == 0 ? -w / 2 - 6 * S : w / 2 + 6 * S) * (alive_count(1 - side) == 1 ? 1.0f : 0.0f);
+        const float y = 18 * S + 76 * S + 10 * S;
+        const float pulse = 0.75f + 0.25f * sinf(GetTickCount() * 0.006f);
+        ui_aa_rect(x, y, w, h, 3 * S, 0xE60B0D10);
+        ui_aa_stroke_rect(x, y, w, h, 3 * S, 2 * S, with_alpha(tc, pulse));
+        ctext(x + w / 2, y + h / 2, 16, 700, tc, t, 0, 4);
     }
 }
 
@@ -1991,6 +2146,9 @@ void streamer_hud_draw(float vw, float vh) {
     draw_result(vw, vh);
     draw_scorebug(vw);
     draw_tracker(vw);
+    draw_clutch(vw);
+    draw_intro(vw, vh);
+    draw_callout(vw, vh);
     draw_replay_tag(vw);
     draw_overview(vw, vh);
     if (squeeze) {
