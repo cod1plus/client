@@ -1687,6 +1687,44 @@ void draw_clutch(float vw) {
     }
 }
 
+// ---- in a player's eyes: his team mates near him (1500 u) get their name and HP over the head
+void draw_mates(float vw, float vh) {
+    const int cam = g_feed.cam;
+    if (cam < 0 || cam >= 10 || g_feed.replay || !g_io->camera) return;
+    float fovx, fovy, org[3], ax[9];
+    if (!g_io->camera(&fovx, &fovy, org, ax)) return;
+    if (!(fovx > 1 && fovx < 179 && fovy > 1 && fovy < 179)) return;
+    const float tx = tanf(fovx * 3.14159265f / 360.0f), ty = tanf(fovy * 3.14159265f / 360.0f);
+    const int team = slot_team(cam);
+    const DWORD tc = team_col(team);
+    for (int k = 0; k < 10; ++k) {
+        if (k == cam || slot_team(k) != team) continue;
+        const FeedPlayer& p = g_feed.p[k];
+        const Slot& s = g_slot[k];
+        if (!p.present || !p.alive || !s.present || !s.alive) continue;
+        float wx, wy, wz;
+        predicted(k, &wx, &wy, &wz);
+        const float head = p.stance == 'p' ? 20.0f : p.stance == 'c' ? 50.0f : 70.0f;
+        const float d[3] = { wx - org[0], wy - org[1], wz + head + 14 - org[2] };
+        const float dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (dist > 1500) continue;
+        const float xf = d[0] * ax[0] + d[1] * ax[1] + d[2] * ax[2];
+        const float yl = d[0] * ax[3] + d[1] * ax[4] + d[2] * ax[5];
+        const float zu = d[0] * ax[6] + d[1] * ax[7] + d[2] * ax[8];
+        if (xf < 32) continue;
+        const float sx = vw / 2 - (yl / xf) / tx * (vw / 2), sy = vh / 2 - (zu / xf) / ty * (vh / 2);
+        if (sx < 0 || sx > vw || sy < 0 || sy > vh) continue;
+        const float fade = dist > 1200 ? (1500 - dist) / 300 : 1.0f;
+        const std::string nm = upper(s.name);
+        const float nw = ctext_w(14, 700, nm.c_str(), 1), bw = nw + 16 * S;
+        ui_aa_rect(sx - bw / 2, sy - 26 * S, bw, 20 * S, 3 * S, with_alpha(0xC00B0D10, fade));
+        ctext(sx, sy - 16 * S, 14, 700, with_alpha(tc, fade), nm.c_str(), 0, 1);
+        const float fr = std::min(1.0f, std::max(0.0f, s.hp / 100.0f));
+        ui_rect(sx - bw / 2, sy - 5 * S, bw, 3 * S, with_alpha(0xA0000000, fade));
+        ui_rect(sx - bw / 2, sy - 5 * S, bw * fr, 3 * S, with_alpha(s.hp < 30 ? COL_DANGER : tc, fade));
+    }
+}
+
 // ---- nobody followed: the streamer flies free
 void draw_free_camera(float vw, float vh) {
     if (g_feed.cam >= 0 || g_feed.replay || g_feed.res.valid) return;
@@ -1743,17 +1781,23 @@ void game_hud_hidden(bool hide) {
 }
 
 // ------------------------------------------------------------------- radar
-struct RadarBox { float x, y, w, h; float wx0, wy0, wsx, wsy; };   // screen rect <- world rect
+struct RadarBox {
+    float x, y, w, h;                  // the map picture on screen (may reach past the panel)
+    float wx0, wy0, wsx, wsy;          // the world window it shows
+    float vx = 0, vy = 0, vw = 0, vh = 0;   // the visible square (what is outside is clipped)
+};
 
 void radar_point(const RadarBox& b, float wx, float wy, float* sx, float* sy, bool* inside) {
     float x = b.x + (wx - b.wx0) / b.wsx * b.w;
     float y = b.y + (1 - (wy - b.wy0) / b.wsy) * b.h;
     bool in = true;
     const float m = 5 * S;
-    if (x < b.x + m) { x = b.x + m; in = false; }
-    if (x > b.x + b.w - m) { x = b.x + b.w - m; in = false; }
-    if (y < b.y + m) { y = b.y + m; in = false; }
-    if (y > b.y + b.h - m) { y = b.y + b.h - m; in = false; }
+    const float lx = b.vw > 0 ? b.vx : b.x, ly = b.vw > 0 ? b.vy : b.y;
+    const float lw = b.vw > 0 ? b.vw : b.w, lh = b.vw > 0 ? b.vh : b.h;
+    if (x < lx + m) { x = lx + m; in = false; }
+    if (x > lx + lw - m) { x = lx + lw - m; in = false; }
+    if (y < ly + m) { y = ly + m; in = false; }
+    if (y > ly + lh - m) { y = ly + lh - m; in = false; }
     *sx = x; *sy = y;
     if (inside) *inside = in;
 }
@@ -1767,9 +1811,13 @@ void corner_brackets(float x, float y, float w, float h, float arm, float th, DW
 
 void draw_radar(float top) {
     if (!g_feed.radar) return;
-    const float pad = 12 * S;
-    const float side = 320 * S, inner = side - 2 * pad;      // a square panel, the map fitted in it
-    radar_request((int)inner, (int)inner);
+    const float pad = 10 * S;
+    const float side = 290 * S, inner = side - 2 * pad;      // a square panel the map fills
+    float aspect = 1;
+    if (g_radar_ok && g_radar.span_y > 0) aspect = g_radar.span_x / g_radar.span_y;
+    else if (g_win.valid && g_win.sy > 0) aspect = g_win.sx / g_win.sy;
+    aspect = std::min(2.5f, std::max(0.4f, aspect));
+    radar_request((int)(inner * std::max(1.0f, aspect)), (int)(inner * std::max(1.0f, 1.0f / aspect)));
 
     // world window: the client's own drawing, or the PAM's frame while it is being built
     RadarBox b;
@@ -1779,14 +1827,27 @@ void draw_radar(float top) {
         img_w = (float)g_radar_w; img_h = (float)g_radar_h;
     } else if (g_win.valid) {
         b.wx0 = g_win.cx - g_win.sx / 2; b.wy0 = g_win.cy - g_win.sy / 2; b.wsx = g_win.sx; b.wsy = g_win.sy;
-        const float fit = std::min(inner / g_win.sx, inner / g_win.sy);
+        const float fit = std::max(inner / g_win.sx, inner / g_win.sy);
         img_w = g_win.sx * fit; img_h = g_win.sy * fit;
     } else {
         return;
     }
     const float pw = side, ph = side;
     const float x = 24 * S, y = top;
-    b.x = x + pad + (inner - img_w) / 2; b.y = y + pad + (inner - img_h) / 2; b.w = img_w; b.h = img_h;
+    // what the square looks at: the followed player, else the planted bomb, else the middle
+    {
+        float fx = b.wx0 + b.wsx / 2, fy = b.wy0 + b.wsy / 2;
+        const int cam = g_feed.cam;
+        if (cam >= 0 && cam < 10 && g_feed.p[cam].present) { float z; predicted(cam, &fx, &fy, &z); }
+        else if (g_feed.bomb) { fx = g_feed.bx; fy = g_feed.by; }
+        const float px_ = (fx - b.wx0) / b.wsx * img_w, py_ = (1 - (fy - b.wy0) / b.wsy) * img_h;
+        float ox = std::min(0.0f, std::max(inner - img_w, inner / 2 - px_));
+        float oy = std::min(0.0f, std::max(inner - img_h, inner / 2 - py_));
+        ox = ui_smooth(0x5A01, ox, 5.0f);
+        oy = ui_smooth(0x5A02, oy, 5.0f);
+        b.x = x + pad + ox; b.y = y + pad + oy; b.w = img_w; b.h = img_h;
+        b.vx = x + pad; b.vy = y + pad; b.vw = inner; b.vh = inner;
+    }
 
     // panel: the kit's minimap - near-black, a fine grid, orange corners, N
     ui_shadow(x, y, pw, ph, 2 * S, 14 * S, 0x90000000);
@@ -1798,7 +1859,11 @@ void draw_radar(float top) {
         for (float gy = y + fmodf(ph / 2, step); gy < y + ph; gy += step) ui_rect(x, floorf(gy), pw, 1, 0x0DFFFFFF);
         ui_clip_pop();
     }
-    if (g_radar_ok) ui_tex_draw("radar:map", b.x, b.y, b.w, b.h, 0, 0, 1, 1, 0xFFFFFFFF);
+    if (g_radar_ok) {
+        ui_clip_push(b.vx, b.vy, b.vw, b.vh);
+        ui_tex_draw("radar:map", b.x, b.y, b.w, b.h, 0, 0, 1, 1, 0xFFFFFFFF);
+        ui_clip_pop();
+    }
     corner_brackets(x, y, pw, ph, 14 * S, 2 * S, COL_AXIS);
     text(x + 9 * S, y + 6 * S, 12, 800, COL_AXIS, "N");
     {
@@ -2137,6 +2202,7 @@ void streamer_hud_draw(float vw, float vh) {
     }
     if (!g_feed.replay) {
         draw_xray(vw, vh);
+        draw_mates(vw, vh);
         draw_radar(24 * S);
     }
     draw_killfeed(vw);
@@ -2148,7 +2214,6 @@ void streamer_hud_draw(float vw, float vh) {
     draw_tracker(vw);
     draw_clutch(vw);
     draw_intro(vw, vh);
-    draw_callout(vw, vh);
     draw_replay_tag(vw);
     draw_overview(vw, vh);
     if (squeeze) {
