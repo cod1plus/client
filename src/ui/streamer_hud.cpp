@@ -254,6 +254,8 @@ struct FeedPlayer {
     std::string weapon;       // weapon file name ("kar98k_mp"), "" unknown
     int ktot = -1, deaths = -1, adr = -1;   // match kills / deaths / damage per round (-1: older PAM)
     int assists = -1, hs = -1, plants = -1, defuses = -1;
+    int nades = -1;                         // frag grenades left (-1: older PAM)
+    std::string second, pistol;             // second primary / pistol (weapon names), "" none
     int clip = -1, reserve = -1;            // ammo of the weapon in hand (the followed player only)
 };
 
@@ -373,6 +375,75 @@ void scan_fires() {
             f.at = now;
         }
         t.seq = seq;
+    }
+}
+
+// ---- utility on the radar: grenades in the air and their explosions, from the snapshot
+// (entities the camera's snapshot carries, as the shots). A grenade in flight is a missile
+// entity (eType 4); its explosion an EV_GRENADE_EXPLODE (178, panzerfaust EV_ROCKET_EXPLODE
+// 179) - either a temporary event entity (eType 12 + event) or an event on the entity.
+constexpr int ET_MISSILE = 4, ET_EVENTS = 12, EV_GRENADE_EXPLODE = 178, EV_ROCKET_EXPLODE = 179;
+struct Nade { int num = -1; float x = 0, y = 0, bx = 0, by = 0, vx = 0, vy = 0; DWORD t0 = 0, seen = 0; };
+Nade g_nade[16];
+struct Boom { float x = 0, y = 0; DWORD at = 0; int num = -1; };
+Boom g_boom[16];
+int g_boom_next = 0;
+EventTrack g_evt_ent[1024];
+DWORD g_util_logged = 0;
+
+void add_boom(int num, float x, float y, DWORD now) {
+    for (const Boom& b : g_boom)                       // a temp entity lives several snapshots: once
+        if (b.at && now - b.at < 700 && fabsf(b.x - x) < 8 && fabsf(b.y - y) < 8) return;
+    Boom& b = g_boom[g_boom_next];
+    g_boom_next = (g_boom_next + 1) % 16;
+    b.x = x; b.y = y; b.at = now; b.num = num;
+}
+
+void scan_util() {
+    if (g_io != &g_engine_io || !*(volatile int*)VA_SNAP_VALID) return;
+    const int n = *(volatile int*)VA_SNAP_NUMENTS;
+    const int first = *(volatile int*)VA_SNAP_FIRSTENT;
+    if (n <= 0 || n > 1024) return;
+    const DWORD now = GetTickCount();
+    for (Nade& g : g_nade) if (g.num >= 0 && now - g.seen > 400) g.num = -1;
+    int missiles = 0;
+    for (int i = 0; i < n; ++i) {
+        const char* es = (const char*)VA_PARSE_ENTS + ((first + i) & PARSE_MASK) * ENT_SIZE;
+        const int num = *(const int*)es & 1023;
+        const int et = *(const int*)(es + ES_ETYPE);
+        const float bx = *(const float*)(es + ES_POS_X), by = *(const float*)(es + ES_POS_Y);
+        if (et == ET_MISSILE) {
+            ++missiles;
+            const float vx = *(const float*)(es + 0x24), vy = *(const float*)(es + 0x28);   // pos.trDelta
+            Nade* slot = nullptr;
+            for (Nade& g : g_nade) if (g.num == num) { slot = &g; break; }
+            if (!slot) for (Nade& g : g_nade) if (g.num < 0) { slot = &g; slot->num = num; slot->t0 = now; break; }
+            if (!slot) continue;
+            if (slot->bx != bx || slot->by != by) { slot->bx = bx; slot->by = by; slot->vx = vx; slot->vy = vy; slot->t0 = now; }   // a bounce
+            const float dt = std::min(3.0f, (now - slot->t0) / 1000.0f);
+            slot->x = bx + vx * dt; slot->y = by + vy * dt; slot->seen = now;
+            continue;
+        }
+        if (et == ET_EVENTS + EV_GRENADE_EXPLODE || et == ET_EVENTS + EV_ROCKET_EXPLODE) { add_boom(num, bx, by, now); continue; }
+        if (et == ET_PLAYER) continue;
+        // an event on the entity itself (the missile turned into the explosion)
+        const int seq = *(const int*)(es + ES_EVENTSEQ) & 0xff;
+        EventTrack& t = g_evt_ent[num];
+        const bool known = t.seen && now - t.seen < 1000;
+        t.seen = now;
+        if (known) {
+            int d = (seq - t.seq) & 0xff;
+            if (d > 4) d = 4;
+            for (int k = d; k > 0; --k) {
+                const int ev = *(const int*)(es + ES_EVENTS + ((seq - k) & 3) * 4) & 0xff;
+                if (ev == EV_GRENADE_EXPLODE || ev == EV_ROCKET_EXPLODE) add_boom(num, bx, by, now);
+            }
+        }
+        t.seq = seq;
+    }
+    if (missiles && now - g_util_logged > 30000) {
+        g_util_logged = now;
+        logger::logf("streamer_hud: utility - %d grenade(s) in the air in this snapshot (missile eType %d)", missiles, ET_MISSILE);
     }
 }
 
@@ -519,9 +590,14 @@ void parse_feed(const char* raw) {
                 int alive = 0, vis = 0, kills = 0;
                 char st = 's';
                 char weapon[64] = "";
-                const int n = sscanf(tok.c_str(), "%d,%f,%f,%f,%f,%c,%d,%63[^,],%d,%d,%d,%d,%d,%d,%d,%d,%d,%d", &alive, &p.x, &p.y, &p.z, &p.yaw,
-                                     &st, &vis, weapon, &kills, &p.ktot, &p.deaths, &p.adr, &p.assists, &p.hs, &p.plants,
-                                     &p.defuses, &p.clip, &p.reserve);
+                char sec[64] = "-", pis[64] = "-";
+                const int n = sscanf(tok.c_str(), "%d,%f,%f,%f,%f,%c,%d,%63[^,],%d,%d,%d,%d,%d,%d,%d,%d,%d,%63[^,],%63[^,],%d,%d", &alive, &p.x, &p.y,
+                                     &p.z, &p.yaw, &st, &vis, weapon, &kills, &p.ktot, &p.deaths, &p.adr, &p.assists, &p.hs,
+                                     &p.plants, &p.defuses, &p.nades, sec, pis, &p.clip, &p.reserve);
+                if (n >= 19) {
+                    if (strcmp(sec, "-")) p.second = sec;
+                    if (strcmp(pis, "-")) p.pistol = pis;
+                }
                 if (n >= 6) {
                     p.present = true;
                     p.alive = alive != 0;
@@ -686,6 +762,8 @@ const Icon& weapon_icon(const std::string& weapon) {
     }
     return icon_from_art("wpn:" + weapon, art);
 }
+
+std::string weapon_file(const std::string& w);   // "mp40" -> "mp40_mp" (the broadcast block)
 
 // draws an icon fitted in (x, y, w, h), aligned left (-1), centre (0) or right (1)
 float draw_icon(const Icon& ic, float x, float y, float w, float h, int align, DWORD col) {
@@ -913,7 +991,7 @@ void draw_card(float x, float y, float w, float h, int k) {
     }
     if (s.alive) {
         if (!f.weapon.empty()) {
-            const Icon& wi = weapon_icon(f.weapon);
+            const Icon& wi = weapon_icon(weapon_file(f.weapon));
             draw_icon(wi, lx + 4 * S, row2 - 10 * S, x + w - pad - lx - 4 * S, 20 * S, 1, with_alpha(0xFFFFFFFF, 0.92f));
         } else if (!s.weapon_text.empty()) {
             label(x + w - pad, row2 - 5 * S, 9, COL_MUTED, upper(s.weapon_text).c_str(), 1, 600);
@@ -1293,11 +1371,24 @@ void draw_player_row(float x, float y, float w, float h, int k, bool right) {
         cur += dir * 16 * S;
     }
     if (f.kills > 0) cur += dir * 4 * S;
-    if (alive)
-        for (int n = 0; n < s.nades; ++n) {
-            glyph_nade(cur + dir * 5 * S, cy + 1 * S, 13 * S, 0xE6C9CED4);
-            cur += dir * 12 * S;
+    if (alive) {
+        // grenades left: one grenade and the count (the PAM's icons say 0 / 1 / 2+ when older)
+        const int nn = f.nades >= 0 ? f.nades : s.nades;
+        if (nn > 0) {
+            char c[8];
+            snprintf(c, sizeof(c), "%d", nn);
+            const float cw = ctext_w(15, 700, c);
+            if (right) {
+                glyph_nade(cur + 6 * S, cy + 1 * S, 14 * S, 0xE6C9CED4);
+                ctext(cur + 14 * S, cy, 15, 700, COL_TEXT, c);
+                cur += 18 * S + cw;
+            } else {
+                ctext(cur, cy, 15, 700, COL_TEXT, c, 1);
+                glyph_nade(cur - cw - 9 * S, cy + 1 * S, 14 * S, 0xE6C9CED4);
+                cur -= 18 * S + cw;
+            }
         }
+    }
 
     // name and weapon, clipped to what is left
     const float tx = right ? nbx - 12 * S : nbx + nb + 12 * S;
@@ -1309,8 +1400,22 @@ void draw_player_row(float x, float y, float w, float h, int k, bool right) {
     if (alive) {
         bool drawn = false;
         if (!f.weapon.empty()) {
-            const Icon& wi = weapon_icon(f.weapon);
-            if (wi.ok) { draw_icon(wi, right ? tx - 90 * S : tx, y + h * 0.58f, 90 * S, 13 * S, al, 0xC8C9CDD1); drawn = true; }
+            const Icon& wi = weapon_icon(weapon_file(f.weapon));
+            if (wi.ok) {
+                const float used = draw_icon(wi, right ? tx - 90 * S : tx, y + h * 0.58f, 90 * S, 13 * S, al, 0xC8C9CDD1);
+                drawn = true;
+                // the other guns he carries (not the one in hand), smaller
+                float gx = right ? tx - used - 10 * S : tx + used + 10 * S;
+                const std::string* others[2] = { &f.second, &f.pistol };
+                for (int o = 0; o < 2; ++o) {
+                    const std::string& g = *others[o];
+                    if (g.empty() || weapon_file(g) == weapon_file(f.weapon)) continue;
+                    const Icon& gi = weapon_icon(weapon_file(g));
+                    if (!gi.ok) continue;
+                    const float gw = draw_icon(gi, right ? gx - 60 * S : gx, y + h * 0.62f, 60 * S, 10 * S, al, 0x80C9CDD1);
+                    gx += right ? -(gw + 8 * S) : gw + 8 * S;
+                }
+            }
         }
         if (!drawn) {
             const std::string wl = !f.weapon.empty() ? weapon_label(f.weapon) : upper(s.weapon_text);
@@ -1408,16 +1513,34 @@ void draw_followed(float vw, float vh) {
 
         const float wx = lx + 200 * S;
         if (!f.weapon.empty()) {
-            const Icon& wi = weapon_icon(f.weapon);
+            const Icon& wi = weapon_icon(weapon_file(f.weapon));
             if (wi.ok) draw_icon(wi, wx, r2 - 30 * S, 140 * S, 16 * S, -1, 0xE6DDE1E5);
             else ctext(wx, r2 - 22 * S, 12, 600, COL_MUTED, weapon_label(f.weapon).c_str(), -1, 3);
         }
+        float ax_end = wx;
         if (f.clip >= 0) {
             char c[12], rs[16];
             snprintf(c, sizeof(c), "%d", f.clip);
             snprintf(rs, sizeof(rs), "/ %d", std::max(0, f.reserve));
             const float cw = ctext(wx, r2 + 6 * S, 34, 700, f.clip == 0 ? COL_DANGER : COL_TEXT, c);
-            ctext(wx + cw + 6 * S, r2 + 10 * S, 18, 600, COL_MUTED, rs);
+            ax_end = wx + cw + 6 * S + ctext(wx + cw + 6 * S, r2 + 10 * S, 18, 600, COL_MUTED, rs);
+        }
+        // the rest of his kit: grenades left, then the pistol / second gun
+        {
+            float gx = std::max(ax_end + 18 * S, wx + 130 * S);
+            const int nn = f.nades >= 0 ? f.nades : s.nades;
+            glyph_nade(gx + 7 * S, r2 + 7 * S, 18 * S, nn > 0 ? 0xF0DDE1E5 : 0x50DDE1E5);
+            char c[8];
+            snprintf(c, sizeof(c), "%d", std::max(0, nn));
+            gx += 18 * S + ctext(gx + 18 * S, r2 + 6 * S, 22, 700, nn > 0 ? COL_TEXT : COL_MUTED, c) + 14 * S;
+            const std::string* others[2] = { &f.second, &f.pistol };
+            for (int o = 0; o < 2; ++o) {
+                const std::string& g = *others[o];
+                if (g.empty() || weapon_file(g) == weapon_file(f.weapon)) continue;
+                const Icon& gi = weapon_icon(weapon_file(g));
+                if (gi.ok) gx += draw_icon(gi, gx, r2 - 2 * S, 70 * S, 16 * S, -1, 0xB4DDE1E5) + 12 * S;
+                else gx += ctext(gx, r2 + 6 * S, 12, 600, COL_MUTED, weapon_label(g).c_str(), -1, 2) + 12 * S;
+            }
         }
     } else {
         ctext(lx, r2 + 4 * S, 22, 700, COL_MUTED, "DEAD", -1, 4);
@@ -1924,6 +2047,31 @@ void draw_radar(float top) {
         }
     }
 
+    // utility: grenades in the air (a small grenade), explosions (a ring the size of the blast)
+    {
+        const DWORD now = GetTickCount();
+        for (const Boom& bm : g_boom) {
+            if (!bm.at || now - bm.at > 1200) continue;
+            const float t = (now - bm.at) / 1200.0f;
+            float sx, sy;
+            bool inside;
+            radar_point(b, bm.x, bm.y, &sx, &sy, &inside);
+            if (!inside) continue;
+            const float rr = std::max(6 * S, 256.0f / b.wsx * b.w);            // the grenade's damage radius
+            ui_aa_disc(sx, sy, rr * (0.4f + 0.6f * t), with_alpha(0xFFFF9A3C, 0.28f * (1 - t)));
+            ui_aa_ring(sx, sy, rr * (0.4f + 0.6f * t), 2 * S, with_alpha(0xFFFFB45C, 0.9f * (1 - t)));
+        }
+        for (const Nade& g : g_nade) {
+            if (g.num < 0) continue;
+            float sx, sy;
+            bool inside;
+            radar_point(b, g.x, g.y, &sx, &sy, &inside);
+            if (!inside) continue;
+            ui_aa_disc(sx, sy, 6 * S, 0xE60B0D10);
+            glyph_nade(sx, sy + 0.5f * S, 10 * S, 0xFFFFE08A);
+        }
+    }
+
     const float follow = 1 - expf(-g_dt * 14.0f);
     // dead first (under), then the living, the followed one last (on top)
     for (int pass = 0; pass < 3; ++pass) {
@@ -2105,10 +2253,13 @@ bool streamer_hud_update() {
     if (g_dt > 0.1f) g_dt = 0.1f;
     g_last_frame = now;
 
-    const char* feed = g_io->cvar("ui_streamersystem_feed");
+    // positions etc. 10 times a second + the events (kills, result, history) in their own cvar
+    std::string feed = g_io->cvar("ui_streamersystem_feed");
+    const char* events = g_io->cvar("ui_streamersystem_events");
+    if (events[0] && !feed.empty()) { feed += "|"; feed += events; }
     if (g_last_feed_raw != feed) {
         g_last_feed_raw = feed;
-        parse_feed(feed);
+        parse_feed(feed.c_str());
         if (g_feed.valid && g_feed.t != g_last_t) { g_last_t = g_feed.t; g_feed_changed_at = now; }
     }
     const char* win = g_io->cvar("ui_streamersystem_radarwin");
@@ -2181,6 +2332,7 @@ bool streamer_hud_frame() {
     if (!g_active) { g_active = true; logger::logf("streamer_hud: on"); }
     game_hud_hidden(true);             // every frame: cheap compare, re-patches a reloaded cgame
     scan_fires();
+    scan_util();
 
     // the PAM's own top bar is replaced
     ui_menu_hide(MENU_LEFT);
