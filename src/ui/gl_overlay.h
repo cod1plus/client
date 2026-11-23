@@ -82,7 +82,16 @@ void ui_clip_xscale(float s);
 // --- extended 2D (ui/ui_draw.cpp) --------------------------------------------
 // Faces: Segoe UI (default) and Consolas for tracked small caps / tabular figures.
 // UI_FONT_COND: Bahnschrift Condensed (Windows 10+; GDI falls back to its default face elsewhere)
-enum UiFont { UI_FONT_SANS = 0, UI_FONT_MONO = 1, UI_FONT_COND = 2 };
+// The streamer overlay's own faces, embedded in the DLL (ui/lan_assets.h, OFL) and registered
+// for this process only: DISPLAY = Big Shoulders 800, DISPLAY_BLACK = Big Shoulders 900,
+// STENCIL = Big Shoulders Stencil 900, BODY = Barlow Semi Condensed 600, BODY_BOLD = 700.
+// One weight each: the weight argument is ignored for them.
+enum UiFont { UI_FONT_SANS = 0, UI_FONT_MONO = 1, UI_FONT_COND = 2,
+              UI_FONT_DISPLAY = 3, UI_FONT_DISPLAY_BLACK = 4, UI_FONT_STENCIL = 5,
+              UI_FONT_BODY = 6, UI_FONT_BODY_BOLD = 7 };
+// A weapon silhouette of the DLL ("mp40", "kar98k_sniper_mp"...: white, muzzle right),
+// uploaded mipmapped under `key`; its width / height in *aspect. False: the DLL has none.
+bool ui_lan_weapon_icon(const char* key, const char* weapon, float* aspect);
 // Text snapped to whole pixels. Weight = GDI weight (400 regular .. 900 black).
 float ui_text_font(float x, float y, int px, int weight, DWORD rgba, const char* utf8, int font);
 float ui_text_font_width(int px, int weight, const char* utf8, int font);

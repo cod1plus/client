@@ -15,9 +15,11 @@
 
 #include "ui/ui_draw.h"
 #include "ui/gl_overlay.h"
+#include "ui/lan_assets.h"            // the streamer overlay's faces and weapon silhouettes
 
 #include <GL/gl.h>
 #include <gdiplus.h>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -50,14 +52,40 @@ std::map<std::string, TextTex> g_text_cache;
 
 const wchar_t* font_face(int font) {
     switch (font) {
-    case UI_FONT_MONO: return L"Consolas";
-    case UI_FONT_COND: return L"Bahnschrift Condensed";
-    default:           return L"Segoe UI";
+    case UI_FONT_MONO:          return L"Consolas";
+    case UI_FONT_COND:          return L"Bahnschrift Condensed";
+    case UI_FONT_DISPLAY:       return L"LanDisplay";
+    case UI_FONT_DISPLAY_BLACK: return L"LanDisplayBlack";
+    case UI_FONT_STENCIL:       return L"LanStencil";
+    case UI_FONT_BODY:          return L"LanBody";
+    case UI_FONT_BODY_BOLD:     return L"LanBodyBold";
+    default:                    return L"Segoe UI";
     }
+}
+
+// The streamer overlay's faces live in the DLL (lan_assets.h) and are registered for this
+// process only, once, before the first text that needs them. Each is a single-weight family.
+bool g_lan_fonts_done = false;
+void ensure_lan_fonts() {
+    if (g_lan_fonts_done) return;
+    g_lan_fonts_done = true;
+    int ok = 0;
+    for (const lan_assets::Blob& b : lan_assets::k_fonts) {
+        DWORD n = 0;
+        if (AddFontMemResourceEx((void*)b.data, (DWORD)b.size, nullptr, &n) && n) ++ok;
+    }
+    char msg[96];
+    snprintf(msg, sizeof(msg), "[ui] streamer overlay fonts: %d of %d registered\n", ok,
+             (int)(sizeof(lan_assets::k_fonts) / sizeof(lan_assets::k_fonts[0])));
+    OutputDebugStringA(msg);
 }
 
 TextTex make_text(const char* utf8, int px, int weight, int font) {
     TextTex out;
+    if (font >= UI_FONT_DISPLAY) {
+        ensure_lan_fonts();
+        weight = FW_NORMAL;            // one weight per family: ask for the face by name
+    }
     wchar_t wide[512];
     int wn = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide, 511);
     if (wn <= 0) return out;
@@ -162,6 +190,43 @@ TextTex load_image_mem(const void* data, int len) {
     }
     stream->Release();                       // frees `mem` (fDeleteOnRelease)
     return out;
+}
+
+// RGBA pixels (straight alpha, rows top-down) of an image in memory, no GL
+bool decode_mem_rgba(const void* data, int len, std::vector<unsigned char>& rgba, int& w, int& h) {
+    ensure_gdiplus();
+    if (!g_gdiplus_up || !data || len <= 0) return false;
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)len);
+    if (!mem) return false;
+    memcpy(GlobalLock(mem), data, (size_t)len);
+    GlobalUnlock(mem);
+    IStream* stream = nullptr;
+    if (CreateStreamOnHGlobal(mem, TRUE, &stream) != S_OK) { GlobalFree(mem); return false; }
+    bool ok = false;
+    {
+        Gdiplus::Bitmap bmp(stream);
+        w = (int)bmp.GetWidth(); h = (int)bmp.GetHeight();
+        Gdiplus::BitmapData bd;
+        Gdiplus::Rect rc(0, 0, w, h);
+        if (bmp.GetLastStatus() == Gdiplus::Ok && w > 0 && h > 0 &&
+            bmp.LockBits(&rc, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &bd) == Gdiplus::Ok) {
+            rgba.resize((size_t)w * h * 4);
+            for (int y = 0; y < h; ++y) {
+                const unsigned char* src = (const unsigned char*)bd.Scan0 + (size_t)y * bd.Stride;
+                unsigned char* dst = &rgba[(size_t)y * w * 4];
+                for (int x = 0; x < w; ++x) {
+                    dst[x * 4 + 0] = src[x * 4 + 2];
+                    dst[x * 4 + 1] = src[x * 4 + 1];
+                    dst[x * 4 + 2] = src[x * 4 + 0];
+                    dst[x * 4 + 3] = src[x * 4 + 3];
+                }
+            }
+            bmp.UnlockBits(&bd);
+            ok = true;
+        }
+    }
+    stream->Release();
+    return ok;
 }
 
 TextTex upload_bitmap(Gdiplus::Bitmap& bmp) {
@@ -503,7 +568,10 @@ void ui_line(float x1, float y1, float x2, float y2, float th, DWORD rgba) {
 void ui_clip_push(float x, float y, float w, float h) {
     if (w < 0) w = 0; if (h < 0) h = 0;
     glEnable(GL_SCISSOR_TEST);
-    glScissor((GLint)(x * g_clip_xs), (GLint)(g_vh - (y + h)), (GLsizei)(w * g_clip_xs), (GLsizei)h);   // GL: y up
+    // outward to whole pixels (a truncated right edge ate the last glyph's ink)
+    const int x0 = (int)floorf(x * g_clip_xs), x1 = (int)ceilf((x + w) * g_clip_xs);
+    const int y0 = (int)floorf(g_vh - (y + h)), y1 = (int)ceilf(g_vh - y);
+    glScissor(x0, y0, x1 - x0, y1 - y0);   // GL: y up
 }
 void ui_clip_xscale(float s) { g_clip_xs = s > 0 ? s : 1.0f; }
 void ui_clip_pop() { glDisable(GL_SCISSOR_TEST); }
@@ -817,6 +885,24 @@ bool ui_tex_draw(const char* key, float x, float y, float w, float h,
     if (it == g_tex.end() || !it->second.id) return false;
     draw_tex(it->second, x, y, w, h, u0, v0, u1, v1, rgba);
     return true;
+}
+
+// The streamer overlay's weapon silhouette for `weapon` ("mp40", "kar98k_sniper", any case,
+// with or without "_mp"), uploaded mipmapped under `key`. False when the DLL has none.
+bool ui_lan_weapon_icon(const char* key, const char* weapon, float* aspect) {
+    std::string w = weapon ? weapon : "";
+    for (char& c : w) c = (char)tolower((unsigned char)c);
+    if (w.size() > 3 && w.compare(w.size() - 3, 3, "_mp") == 0) w.resize(w.size() - 3);
+    for (const lan_assets::Blob& b : lan_assets::k_weapons) {
+        if (w != b.name) continue;
+        std::vector<unsigned char> px;
+        int iw = 0, ih = 0;
+        if (!decode_mem_rgba(b.data, b.size, px, iw, ih)) return false;
+        if (!ui_tex_upload(key, iw, ih, px.data(), false, true)) return false;
+        if (aspect) *aspect = (float)iw / ih;
+        return true;
+    }
+    return false;
 }
 
 }  // namespace patches
