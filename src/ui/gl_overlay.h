@@ -25,13 +25,18 @@ struct UiInput {
 };
 
 // --- lifecycle -------------------------------------------------------------
-void overlay_start();          // DllMain: IAT-hook SwapBuffers + subclass the window
-// The game window, learned from WindowFromDC at every SwapBuffers - valid in
-// EVERY display mode, unlike window_patch::get_game_window() which stays NULL
-// unless the borderless watcher runs (the trap that killed gamma restore).
+void overlay_start();          // DllMain: IAT-hook SwapBuffers + register the wndhub listener
+void overlay_tick();           // watcher thread, ~1/s: detects a bypassed SwapBuffers hook (log only)
+// The game window (= wndhub_window()): learned from WindowFromDC at every
+// SwapBuffers, valid in EVERY display mode.
 HWND overlay_game_window();
 bool overlay_visible();
 void overlay_toggle(bool on);
+// The key that opens / closes the menu: cod1reloaded.ini `menu_hotkey`, "ctrl+m" by
+// default. Modifiers ctrl / shift / alt + one key (letter, digit, f1-f24, insert, home,
+// numpad0...). Returns false and keeps the current hotkey when the text does not parse.
+bool overlay_set_hotkey(const char* spec);
+const char* overlay_hotkey_label();   // "CTRL+M": what the menu's key chips show
 
 // --- draw API (valid only inside the frame callback) -----------------------
 void ui_rect(float x, float y, float w, float h, DWORD rgba);
@@ -54,6 +59,70 @@ void ui_key_capture(bool on);
 // false without drawing anything if the file does not exist or fails to decode, so
 // callers can fall back to a flat colour.
 bool ui_image_cover(float x, float y, float w, float h, const char* path);
+
+// Images decoded from memory (e.g. a file read out of a pk3 through the engine's
+// filesystem), cached under `key`. ui_image_known: already decoded (or failed) -
+// load only once. ui_image_draw stretches it over [x,y,w,h] (no crop), tinted by rgba.
+bool ui_image_known(const char* key);
+bool ui_image_load_mem(const char* key, const void* data, int len);
+bool ui_image_draw(float x, float y, float w, float h, const char* key, DWORD rgba);
+
+// Filled triangle and a straight line (window pixels).
+void ui_triangle(float x1, float y1, float x2, float y2, float x3, float y3, DWORD rgba);
+void ui_line(float x1, float y1, float x2, float y2, float th, DWORD rgba);
+
+// Clip everything drawn until ui_clip_pop() to a rectangle (window pixels, y down).
+// Not nested.
+void ui_clip_push(float x, float y, float w, float h);
+void ui_clip_pop();
+// A horizontal scale set on the modelview (glScalef) for the drawing that follows:
+// ui_clip_push rectangles are then given in those scaled coordinates. 1 = none.
+void ui_clip_xscale(float s);
+
+// --- extended 2D (ui/ui_draw.cpp) --------------------------------------------
+// Faces: Segoe UI (default) and Consolas for tracked small caps / tabular figures.
+enum UiFont { UI_FONT_SANS = 0, UI_FONT_MONO = 1 };
+// Text snapped to whole pixels. Weight = GDI weight (400 regular .. 900 black).
+float ui_text_font(float x, float y, int px, int weight, DWORD rgba, const char* utf8, int font);
+float ui_text_font_width(int px, int weight, const char* utf8, int font);
+float ui_text_font_height(int px, int weight, int font);   // line box of that size
+// Letter-spaced: every glyph placed apart by `tracking` extra pixels. Returns the width.
+float ui_text_tracked(float x, float y, int px, int weight, DWORD rgba, const char* s, float tracking, int font);
+float ui_text_tracked_width(int px, int weight, const char* s, float tracking, int font);
+
+// Anti-aliased shapes (feathered one-pixel rim). Polygons must be convex, x/y pairs.
+void ui_aa_rect(float x, float y, float w, float h, float r, DWORD rgba);           // r = corner radius
+void ui_aa_rect_vgrad(float x, float y, float w, float h, float r, DWORD top, DWORD bottom);
+void ui_aa_stroke_rect(float x, float y, float w, float h, float r, float th, DWORD rgba);
+void ui_aa_poly(const float* xy, int n, DWORD rgba);
+void ui_aa_poly_vgrad(const float* xy, int n, DWORD top, DWORD bottom);
+void ui_aa_poly_stroke(const float* xy, int n, float th, DWORD rgba);
+void ui_aa_disc(float cx, float cy, float r, DWORD rgba);
+void ui_aa_ring(float cx, float cy, float r, float th, DWORD rgba);
+void ui_aa_line(float x1, float y1, float x2, float y2, float th, DWORD rgba);
+// Soft drop shadow of a rounded rectangle, `blur` pixels of falloff.
+void ui_shadow(float x, float y, float w, float h, float r, float blur, DWORD rgba);
+// Axis-aligned gradients (no rim: meant for full-pixel boxes).
+void ui_rect_vgrad(float x, float y, float w, float h, DWORD top, DWORD bottom);
+void ui_rect_hgrad(float x, float y, float w, float h, DWORD left, DWORD right);
+
+// Textures from raw pixels (bytes R,G,B,A, rows top-down), cached under `key` until the
+// GL context changes. Uploading under an existing key replaces it. A failed upload (null
+// pixels) is remembered, so ui_tex_known also means "do not try again".
+bool ui_tex_known(const char* key);
+bool ui_tex_upload(const char* key, int w, int h, const void* rgba, bool repeat, bool mipmap);
+bool ui_tex_size(const char* key, int* w, int* h);
+// A mip chain built by the caller (a worker thread can do the filtering): levels[0] is
+// w x h, each next one halves (at least 1), down to 1 x 1 for trilinear filtering.
+bool ui_tex_upload_levels(const char* key, int w, int h, const unsigned char* const* levels, int nlevels);
+// The next level of such a chain: box filter, colour weighted by alpha (no dark fringe at
+// transparent edges). Pure CPU, any thread; dst holds max(1, w/2) x max(1, h/2) pixels.
+void ui_mip_half(const unsigned char* src, int w, int h, unsigned char* dst);
+// Binds a cached texture for raw GL drawing (glTexCoord2f / glVertex2f), modulated by the
+// current colour. False when the key is unknown or failed.
+bool ui_tex_bind(const char* key);
+bool ui_tex_draw(const char* key, float x, float y, float w, float h,
+                 float u0, float v0, float u1, float v1, DWORD rgba);
 
 // animation helpers (exponential smoothing, per-frame dt computed at swap)
 float ui_smooth(long key, float target, float speed);  // returns the eased value

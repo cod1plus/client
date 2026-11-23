@@ -1,0 +1,19 @@
+{
+  "title": "1.6X Workshop (local test)",
+  "items": [
+    {
+      "id": "mp_liberation",
+      "type": "map",
+      "name": "Liberation",
+      "author": "1.6X (CoD4 port)",
+      "version": "27",
+      "description": "A Normandy village fought street by street: alleys, gardens, rooftops and a central square, rebuilt for CoD1 from the Call of Duty 4 map. Search & Destroy (two bomb sites), Team Deathmatch and Deathmatch. Build tool27.",
+      "folder": "main",
+      "file": "zz_mp_liberation.pk3",
+      "size": 191876653,
+      "sha256": "e7d68d9fe06532d086da6f8a20b954cf861815f3c9a7084d74e3c60039be8261",
+      "url": "zz_mp_liberation.pk3",
+      "thumbnail": "liberation.jpg"
+    }
+  ]
+}

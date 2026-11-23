@@ -12,17 +12,29 @@
 //
 //   Input: the game window is subclassed. While the overlay is open every mouse
 //   and keyboard message is consumed, so the engine sees a frozen world. The
-//   cursor is VIRTUAL - integrated from WM_MOUSEMOVE deltas and drawn by us -
-//   because in exclusive fullscreen the engine recenters the real cursor every
-//   frame; moves that land exactly on the recenter point are ignored (that is
-//   the engine's own SetCursorPos echoing back, not the player's hand).
+//   cursor is VIRTUAL - drawn by us, moved by the tap of input/rinput.h (raw
+//   counts with m_rinput 1, the engine's own per-frame cursor read otherwise),
+//   because in fullscreen the engine re-centres the real cursor every frame.
+//   WM_MOUSEMOVE only drives it when the engine leaves the cursor free.
 //
 //   GL state: glPushAttrib(ALL)+glPushClientAttrib(ALL) around the pass. The
 //   engine is fixed-function GL1.x, so immediate mode is both safe and simplest.
 
 #include "ui/gl_overlay.h"
+#include "core/hook_prof.h"
+#include "ui/ui_draw.h"
+#include "core/wndhub.h"
+#include "features/news.h"
 #include "ui/modern_menu.h"
 #include "ui/home_menu.h"
+#include "ui/demo_seek.h"
+#include "features/pam_install.h"
+#include "ui/eye_debug.h"
+#include "features/hitbox_view.h"
+#include "ui/streamer_hud.h"
+#include "ui/minimap.h"
+#include "ui/hud_editor.h"
+#include "ui/hud_layout.h"
 #include "core/iat.h"
 #include "core/logger.h"
 #include "input/rinput.h"
@@ -30,8 +42,10 @@
 
 #include <GL/gl.h>
 #include <gdiplus.h>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <string>
@@ -46,8 +60,17 @@ namespace {
 
 typedef BOOL (WINAPI* SwapBuffers_t)(HDC);
 SwapBuffers_t g_orig_swap = nullptr;
-WNDPROC       g_orig_wndproc = nullptr;
-HWND          g_hooked_wnd = nullptr;
+// The window is wndhub's (core/wndhub.cpp): ONE subclass for the whole DLL. This
+// module only registers a listener - the 1.6.6 crash was two modules subclassing
+// the same window on their own and looping through each other.
+volatile long g_swap_calls = 0;       // proof the SwapBuffers hook still runs (see overlay_tick)
+// The menu hotkey: cod1reloaded.ini `menu_hotkey`, Ctrl+M unless the player set another.
+struct Hotkey { int vk; bool ctrl, shift, alt; char label[48]; };
+Hotkey g_hotkey = { 'M', true, false, false, "CTRL+M" };
+bool   g_eat_char = false;            // the WM_CHAR a hotkey press generates must not reach the console
+DWORD  g_hotkey_wndproc_tick = 0;     // last hotkey press seen through the WindowProc
+bool   g_wndproc_dead = false;        // the key poll saw a chord the WindowProc never did
+bool   g_news_visible = false;        // the main-menu news card was drawn this frame (Ctrl+N)
 
 // 0 hidden, 1 settings panel, 2 home screen (the modern main-menu replacement).
 // Two screens share one overlay: SETTINGS reached FROM home returns to home on
@@ -67,285 +90,94 @@ bool    g_home_suppress = false;
 UiInput g_in;
 bool    g_keycap = false;           // Keys tab is waiting for the next input
 bool    g_prev_down = false;
-bool    g_saw_raw = false;   // raw tap delivered: ignore the WM_MOUSEMOVE fallback
+float   g_travel = 0;           // cursor travel while open (logged at close: 0 = no mouse)
 POINT   g_last_move = { -1, -1 };
 int     g_vw = 0, g_vh = 0;         // viewport size this frame
-float   g_alpha_mul = 1.0f;
 float   g_dt = 0.016f;
 DWORD   g_last_tick = 0;
-std::map<long, float> g_anim;
-HGLRC   g_glrc = NULL;              // vid_restart detector: context change = dead textures
-
-// ---------------------------------------------------------------- text cache
-struct TextTex { GLuint id = 0; int w = 0, h = 0; };
-std::map<std::string, TextTex> g_text_cache;
-
-TextTex make_text(const char* utf8, int px, int weight) {
-    TextTex out;
-    wchar_t wide[512];
-    int wn = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide, 511);
-    if (wn <= 0) return out;
-    wide[511] = 0;
-
-    HDC dc = CreateCompatibleDC(NULL);
-    if (!dc) return out;
-    HFONT font = CreateFontW(-px, 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                             DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                             L"Segoe UI");
-    HGDIOBJ of = SelectObject(dc, font);
-    SIZE sz = {};
-    GetTextExtentPoint32W(dc, wide, wn - 1, &sz);
-    int w = sz.cx + 2, h = sz.cy + 2;
-
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
-    bmi.bmiHeader.biWidth = w;
-    bmi.bmiHeader.biHeight = -h;                    // top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    void* bits = nullptr;
-    HBITMAP bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
-    if (bmp && bits) {
-        HGDIOBJ ob = SelectObject(dc, bmp);
-        RECT rc = { 0, 0, w, h };
-        SetBkColor(dc, RGB(0, 0, 0));
-        SetTextColor(dc, RGB(255, 255, 255));
-        ExtTextOutW(dc, 1, 1, ETO_OPAQUE, &rc, wide, wn - 1, NULL);
-        GdiFlush();
-
-        // luminance of white-on-black == coverage == alpha
-        unsigned char* a = (unsigned char*)malloc((size_t)w * h);
-        const DWORD* p = (const DWORD*)bits;
-        for (int i = 0; i < w * h; ++i) a[i] = (unsigned char)(p[i] & 0xff);
-
-        glGenTextures(1, &out.id);
-        glBindTexture(GL_TEXTURE_2D, out.id);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, w, h, 0,
-                     GL_ALPHA, GL_UNSIGNED_BYTE, a);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        free(a);
-        out.w = w; out.h = h;
-        SelectObject(dc, ob);
-    }
-    if (bmp) DeleteObject(bmp);
-    SelectObject(dc, of);
-    DeleteObject(font);
-    DeleteDC(dc);
-    return out;
-}
-
-ULONG_PTR g_gdiplus_token = 0;
-bool      g_gdiplus_up    = false;
-
-void ensure_gdiplus() {
-    if (g_gdiplus_up) return;
-    Gdiplus::GdiplusStartupInput in;
-    if (Gdiplus::GdiplusStartup(&g_gdiplus_token, &in, nullptr) == Gdiplus::Ok)
-        g_gdiplus_up = true;
-}
-
-// GDI+ locks 32bpp bitmaps as BGRA in memory (little-endian); GL wants RGBA - swap
-// the R/B bytes per pixel once at load time rather than fighting GL_BGRA support
-// across whatever ancient GL1.x driver this idTech3 build ends up on.
-TextTex load_image(const char* path) {
-    TextTex out;
-    ensure_gdiplus();
-    if (!g_gdiplus_up) return out;
-
-    wchar_t wpath[MAX_PATH];
-    MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, MAX_PATH);
-    Gdiplus::Bitmap bmp(wpath);
-    if (bmp.GetLastStatus() != Gdiplus::Ok) return out;
-
-    int w = (int)bmp.GetWidth(), h = (int)bmp.GetHeight();
-    if (w <= 0 || h <= 0) return out;
-
-    Gdiplus::BitmapData bd;
-    Gdiplus::Rect rc(0, 0, w, h);
-    if (bmp.LockBits(&rc, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &bd) != Gdiplus::Ok)
-        return out;
-
-    unsigned char* px = (unsigned char*)malloc((size_t)w * h * 4);
-    for (int y = 0; y < h; ++y) {
-        const unsigned char* src = (const unsigned char*)bd.Scan0 + (size_t)y * bd.Stride;
-        unsigned char* dst = px + (size_t)y * w * 4;
-        for (int x = 0; x < w; ++x) {
-            dst[x * 4 + 0] = src[x * 4 + 2];   // B -> R
-            dst[x * 4 + 1] = src[x * 4 + 1];   // G
-            dst[x * 4 + 2] = src[x * 4 + 0];   // R -> B
-            dst[x * 4 + 3] = src[x * 4 + 3];   // A
-        }
-    }
-    bmp.UnlockBits(&bd);
-
-    glGenTextures(1, &out.id);
-    glBindTexture(GL_TEXTURE_2D, out.id);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    free(px);
-    out.w = w; out.h = h;
-    return out;
-}
-
-const TextTex& get_text(const char* utf8, int px, int weight) {
-    char key[560];
-    snprintf(key, sizeof(key), "%d|%d|%s", px, weight, utf8);
-    auto it = g_text_cache.find(key);
-    if (it != g_text_cache.end()) return it->second;
-    return g_text_cache.emplace(key, make_text(utf8, px, weight)).first->second;
-}
-
-inline void set_color(DWORD c) {
-    float a = ((c >> 24) & 0xff) * g_alpha_mul;
-    glColor4ub((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff,
-               (GLubyte)(a > 255 ? 255 : a));
-}
-
-// ------------------------------------------------------------------ drawing
-void arc_fan(float cx, float cy, float r, float a0, float a1) {
-    for (int i = 0; i <= 6; ++i) {
-        float a = a0 + (a1 - a0) * i / 6.0f;
-        glVertex2f(cx + cosf(a) * r, cy + sinf(a) * r);
-    }
-}
 
 }  // namespace
 
-void ui_rect(float x, float y, float w, float h, DWORD rgba) {
-    glDisable(GL_TEXTURE_2D);
-    set_color(rgba);
-    glBegin(GL_QUADS);
-    glVertex2f(x, y); glVertex2f(x + w, y);
-    glVertex2f(x + w, y + h); glVertex2f(x, y + h);
-    glEnd();
-}
+const UiInput& ui_input() { return g_in; }
 
-void ui_rect_rounded(float x, float y, float w, float h, float r, DWORD rgba) {
-    if (r <= 0.5f) { ui_rect(x, y, w, h, rgba); return; }
-    if (r > w / 2) r = w / 2;
-    if (r > h / 2) r = h / 2;
-    glDisable(GL_TEXTURE_2D);
-    set_color(rgba);
-    const float PI = 3.14159265f;
-    glBegin(GL_TRIANGLE_FAN);
-    glVertex2f(x + w / 2, y + h / 2);
-    arc_fan(x + r,     y + r,     r, PI,          PI * 1.5f);   // top-left
-    arc_fan(x + w - r, y + r,     r, PI * 1.5f,   PI * 2.0f);   // top-right
-    arc_fan(x + w - r, y + h - r, r, 0,           PI * 0.5f);   // bottom-right
-    arc_fan(x + r,     y + h - r, r, PI * 0.5f,   PI);          // bottom-left
-    glVertex2f(x, y + r);                                       // close the fan
-    glEnd();
+namespace {
+bool mods_match(bool ctrl, bool shift, bool alt) {
+    return ctrl == g_hotkey.ctrl && shift == g_hotkey.shift && alt == g_hotkey.alt;
 }
+}  // namespace
 
-void ui_rect_border(float x, float y, float w, float h, float r, float th, DWORD rgba) {
-    // two rounded rects would need stenciling; a line loop is enough at 1-2px
-    (void)r;
-    glDisable(GL_TEXTURE_2D);
-    set_color(rgba);
-    glLineWidth(th);
-    glBegin(GL_LINE_LOOP);
-    glVertex2f(x, y); glVertex2f(x + w, y);
-    glVertex2f(x + w, y + h); glVertex2f(x, y + h);
-    glEnd();
-    glLineWidth(1.0f);
-}
-
-void ui_ellipse(float cx, float cy, float rx, float ry, float th, DWORD rgba) {
-    glDisable(GL_TEXTURE_2D);
-    set_color(rgba);
-    glLineWidth(th);
-    glBegin(GL_LINE_LOOP);
-    for (int i = 0; i < 40; ++i) {
-        float a = 2.0f * 3.14159265f * i / 40.0f;
-        glVertex2f(cx + cosf(a) * rx, cy + sinf(a) * ry);
+// "ctrl+m", "ctrl+shift+o", "alt+f1", "f10", "insert"... Modifiers ctrl / shift / alt in
+// any order, then exactly one key. Escape is refused (it closes the menu).
+bool overlay_set_hotkey(const char* spec) {
+    struct Name { const char* name; int vk; const char* label; };
+    static const Name NAMES[] = {
+        { "insert", VK_INSERT, "INSERT" }, { "ins", VK_INSERT, "INSERT" },
+        { "delete", VK_DELETE, "DELETE" }, { "del", VK_DELETE, "DELETE" },
+        { "home", VK_HOME, "HOME" }, { "end", VK_END, "END" },
+        { "pageup", VK_PRIOR, "PAGE UP" }, { "pgup", VK_PRIOR, "PAGE UP" },
+        { "pagedown", VK_NEXT, "PAGE DOWN" }, { "pgdn", VK_NEXT, "PAGE DOWN" },
+        { "pause", VK_PAUSE, "PAUSE" }, { "scrolllock", VK_SCROLL, "SCROLL LOCK" },
+        { "tab", VK_TAB, "TAB" }, { "space", VK_SPACE, "SPACE" }, { "backspace", VK_BACK, "BACKSPACE" },
+        { "up", VK_UP, "UP" }, { "down", VK_DOWN, "DOWN" }, { "left", VK_LEFT, "LEFT" }, { "right", VK_RIGHT, "RIGHT" },
+    };
+    if (!spec) return false;
+    Hotkey k = { 0, false, false, false, "" };
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s", spec);
+    int keys = 0;
+    char key_label[24] = "";
+    for (char* tok = strtok(buf, "+"); tok; tok = strtok(nullptr, "+")) {
+        while (*tok == ' ' || *tok == '\t') ++tok;
+        char* e = tok + strlen(tok);
+        while (e > tok && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r')) *--e = 0;
+        for (char* p = tok; *p; ++p) *p = (char)tolower((unsigned char)*p);
+        if (!*tok) return false;
+        if (!strcmp(tok, "ctrl") || !strcmp(tok, "control")) { k.ctrl = true; continue; }
+        if (!strcmp(tok, "shift")) { k.shift = true; continue; }
+        if (!strcmp(tok, "alt")) { k.alt = true; continue; }
+        if (++keys > 1) return false;
+        const size_t n = strlen(tok);
+        if (n == 1 && ((tok[0] >= 'a' && tok[0] <= 'z') || (tok[0] >= '0' && tok[0] <= '9'))) {
+            k.vk = toupper((unsigned char)tok[0]);
+            snprintf(key_label, sizeof(key_label), "%c", (char)k.vk);
+        } else if (tok[0] == 'f' && n >= 2 && n <= 3 && atoi(tok + 1) >= 1 && atoi(tok + 1) <= 24) {
+            k.vk = VK_F1 + atoi(tok + 1) - 1;
+            snprintf(key_label, sizeof(key_label), "F%d", atoi(tok + 1));
+        } else if ((!strncmp(tok, "kp", 2) || !strncmp(tok, "numpad", 6)) &&
+                   isdigit((unsigned char)tok[n - 1]) && (tok[n - 2] == 'p' || tok[n - 2] == 'd')) {
+            k.vk = VK_NUMPAD0 + (tok[n - 1] - '0');
+            snprintf(key_label, sizeof(key_label), "NUMPAD %c", tok[n - 1]);
+        } else {
+            for (const Name& nm : NAMES)
+                if (!strcmp(tok, nm.name)) { k.vk = nm.vk; snprintf(key_label, sizeof(key_label), "%s", nm.label); break; }
+            if (!k.vk) return false;
+        }
     }
-    glEnd();
-    glLineWidth(1.0f);
-}
-
-float ui_text(float x, float y, int px, int weight, DWORD rgba, const char* utf8) {
-    const TextTex& t = get_text(utf8, px, weight);
-    if (!t.id) return 0;
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, t.id);
-    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-    set_color(rgba);
-    glBegin(GL_QUADS);
-    glTexCoord2f(0, 0); glVertex2f(x, y);
-    glTexCoord2f(1, 0); glVertex2f(x + t.w, y);
-    glTexCoord2f(1, 1); glVertex2f(x + t.w, y + t.h);
-    glTexCoord2f(0, 1); glVertex2f(x, y + t.h);
-    glEnd();
-    return (float)t.w;
-}
-
-bool ui_image_cover(float x, float y, float w, float h, const char* path) {
-    char key[560];
-    snprintf(key, sizeof(key), "img:%s", path);
-    auto it = g_text_cache.find(key);
-    if (it == g_text_cache.end()) {
-        it = g_text_cache.emplace(key, load_image(path)).first;
-    }
-    const TextTex& t = it->second;
-    if (!t.id) return false;
-
-    float img_ar = (float)t.w / t.h, box_ar = w / h;
-    float u0 = 0, u1 = 1, v0 = 0, v1 = 1;
-    if (img_ar > box_ar) {                    // image wider than box: crop left/right
-        float keep = box_ar / img_ar;
-        u0 = (1.0f - keep) * 0.5f; u1 = 1.0f - u0;
-    } else {                                   // image taller than box: crop top/bottom
-        float keep = img_ar / box_ar;
-        v0 = (1.0f - keep) * 0.5f; v1 = 1.0f - v0;
-    }
-
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, t.id);
-    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-    set_color(0xFFFFFFFF);
-    glBegin(GL_QUADS);
-    glTexCoord2f(u0, v0); glVertex2f(x, y);
-    glTexCoord2f(u1, v0); glVertex2f(x + w, y);
-    glTexCoord2f(u1, v1); glVertex2f(x + w, y + h);
-    glTexCoord2f(u0, v1); glVertex2f(x, y + h);
-    glEnd();
+    if (!k.vk) return false;
+    snprintf(k.label, sizeof(k.label), "%s%s%s%s", k.ctrl ? "CTRL+" : "", k.shift ? "SHIFT+" : "",
+             k.alt ? "ALT+" : "", key_label);
+    g_hotkey = k;
     return true;
 }
 
-float ui_text_width(int px, int weight, const char* utf8) {
-    return (float)get_text(utf8, px, weight).w;
-}
+const char* overlay_hotkey_label() { return g_hotkey.label; }
 
-const UiInput& ui_input() { return g_in; }
-
-float ui_smooth(long key, float target, float speed) {
-    auto it = g_anim.find(key);
-    if (it == g_anim.end()) it = g_anim.emplace(key, target).first;
-    float k = 1.0f - expf(-speed * g_dt);
-    it->second += (target - it->second) * k;
-    if (it->second > target - 0.001f && it->second < target + 0.001f)
-        it->second = target;
-    return it->second;
-}
-void ui_anim_set(long key, float v) { g_anim[key] = v; }
-void ui_alpha(float mul) { g_alpha_mul = mul < 0 ? 0 : (mul > 1 ? 1 : mul); }
-float ui_alpha_get() { return g_alpha_mul; }
 void ui_key_capture(bool on) { g_keycap = on; if (!on) g_in.vk = 0; }
 bool overlay_visible() { return g_mode != 0; }
-HWND overlay_game_window() { return g_hooked_wnd; }
+HWND overlay_game_window() { return wndhub_window(); }
+
+// One line per close: a "the menu cursor does not move" report is then a log with
+// travel 0 (no mouse reached the menu) or not (it moved, the problem is elsewhere).
+static void note_close(int was) {
+    if (was == 0) return;
+    logger::logf("overlay: closed (cursor travel %.0f px, %s)", g_travel,
+                 rinput_ui_cursor_pinned() ? "engine-pinned cursor" : "free cursor, window messages");
+    g_travel = 0;
+}
 
 void overlay_toggle(bool on) {
     int was = g_mode;
+    if (!on) note_close(was);
     g_mode = on ? 1 : 0;
     g_came_from_home = false;
     g_last_move.x = -1;
@@ -365,7 +197,7 @@ void set_mode(int m, bool from_home) {
         logger::logf("overlay: mode %d -> %d (from_home=%d, suppress=%d)",
                      g_mode, m, from_home, g_home_suppress);
     if (g_mode == 0 && m != 0) rinput_ui_capture(true);
-    if (g_mode != 0 && m == 0) rinput_ui_capture(false);
+    if (g_mode != 0 && m == 0) { rinput_ui_capture(false); note_close(g_mode); }
     g_mode = m;
     g_came_from_home = from_home;
 }
@@ -373,7 +205,10 @@ void set_mode(int m, bool from_home) {
 // ------------------------------------------------------------------- wndproc
 namespace {
 
-LRESULT CALLBACK hk_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
+// wndhub listener. `return true` = consumed (*res goes back to Windows, nothing
+// below us - not the engine - sees the message); `return false` = pass it on.
+bool overlay_listener(HWND w, UINT m, WPARAM wp, LPARAM lp, LRESULT* res) {
+    *res = 0;
     // Restore the desktop's gamma HERE, not (only) from DLL_PROCESS_DETACH. Calling
     // GDI functions from DllMain's detach handler is a documented Microsoft anti-
     // pattern (loader lock), and worse: on ExitProcess() - which is how Sys_Quit
@@ -382,11 +217,7 @@ LRESULT CALLBACK hk_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     // brightness du jeu... l'applique parfois au bureau" (2026-08-15): the restore
     // call simply never ran on those exits. WM_DESTROY fires on the main thread while
     // the window and full GDI state are still alive, well before ExitProcess - a
-    // reliable hook regardless of how the process is about to end. This wndproc is
-    // ALSO the one subclass that installs unconditionally in every display mode (via
-    // WindowFromDC, see ensure_subclass) - window_patch.cpp's own WM_DESTROY handler
-    // exists but only subclasses when window_borderless=on, which is not enzo's
-    // config (fullscreen=on) - so it never even runs for him. Must run before the
+    // reliable hook regardless of how the process is about to end. Must run before the
     // g_mode==0 early-return below: quitting from gameplay (overlay hidden) must
     // still restore gamma, not just quitting from our own menus.
     if (m == WM_DESTROY) gamma_fix_shutdown();
@@ -412,54 +243,79 @@ LRESULT CALLBACK hk_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     // below or CTRL+M could never be observed.
     if (g_mode != 0 && g_keycap) {
         switch (m) {
-        case WM_KEYDOWN: case WM_SYSKEYDOWN: g_in.vk = (int)wp;      return 0;
-        case WM_LBUTTONDOWN:                 g_in.vk = VK_LBUTTON;   return 0;
-        case WM_RBUTTONDOWN:                 g_in.vk = VK_RBUTTON;   return 0;
-        case WM_MBUTTONDOWN:                 g_in.vk = VK_MBUTTON;   return 0;
+        case WM_KEYDOWN: case WM_SYSKEYDOWN: g_in.vk = (int)wp;      return true;
+        case WM_LBUTTONDOWN:                 g_in.vk = VK_LBUTTON;   return true;
+        case WM_RBUTTONDOWN:                 g_in.vk = VK_RBUTTON;   return true;
+        case WM_MBUTTONDOWN:                 g_in.vk = VK_MBUTTON;   return true;
         case WM_XBUTTONDOWN:
             g_in.vk = (HIWORD(wp) == XBUTTON1) ? VK_XBUTTON1 : VK_XBUTTON2;
-            return 0;
+            return true;
         case WM_MOUSEWHEEL:
             g_in.vk = GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 0xF001 : 0xF002;
-            return 0;
+            return true;
         case WM_KEYUP: case WM_SYSKEYUP: case WM_CHAR:
         case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: case WM_XBUTTONUP:
-            return 0;
+            return true;
         }
     }
 
-    // Ctrl+M only (enzo, 2026-09-17): INSERT is a key players bind, and a bare key
-    // fires while aiming or typing; a chord does not
-    if (m == WM_KEYDOWN && wp == 'M' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+    // Ctrl+N: the news card's link (main menu only - the card is not drawn in game)
+    if (m == WM_KEYDOWN && wp == 'N' && (GetKeyState(VK_CONTROL) & 0x8000) &&
+        ((g_mode == 0 && g_news_visible) || g_mode == 2)) {
+        news_open_link();
+        return true;
+    }
+    // The menu hotkey (menu_hotkey in cod1reloaded.ini, Ctrl+M by default - enzo,
+    // 2026-09-17: INSERT is a key players bind, and a bare key fires while aiming or
+    // typing; a chord does not). Alt chords and F10 arrive as WM_SYSKEYDOWN. Auto-repeat
+    // (bit 30) is ignored: holding the keys must not open and close the menu in a loop.
+    if (g_eat_char && (m == WM_CHAR || m == WM_SYSCHAR)) {
+        g_eat_char = false;                          // F10, Insert... make no char: time-boxed
+        if (GetTickCount() - g_hotkey_wndproc_tick < 250) return true;
+    }
+    if ((m == WM_KEYDOWN || m == WM_SYSKEYDOWN) && (int)wp == g_hotkey.vk &&
+        mods_match((GetKeyState(VK_CONTROL) & 0x8000) != 0, (GetKeyState(VK_SHIFT) & 0x8000) != 0,
+                   (GetKeyState(VK_MENU) & 0x8000) != 0)) {
+        if (lp & 0x40000000) return true;
+        // One line per press: a player who "cannot open the menu" either has this
+        // line (the overlay saw the key: look at the mode transitions) or does not
+        // (nothing reached our proc: a hook above us ate it, or we are not in the
+        // chain - see hotkey_poll, which then takes over).
+        g_hotkey_wndproc_tick = GetTickCount();
+        g_wndproc_dead = false;
+        g_eat_char = true;
+        logger::logf("overlay: %s via WindowProc (mode %d)", g_hotkey.label, g_mode);
         if (g_mode == 0) {
             if (home_menu_is_active()) { g_home_suppress = false; set_mode(2, false); }
             else overlay_toggle(true);
         }
+        else if (g_mode == 2) set_mode(1, true);                        // home -> settings
         else if (g_mode == 1 && g_came_from_home) set_mode(2, false);  // settings -> home
         else overlay_toggle(false);
-        return 0;
+        return true;
     }
     if (g_mode == 0)
-        return CallWindowProcA(g_orig_wndproc, w, m, wp, lp);
+        return false;
 
     switch (m) {
     case WM_KEYDOWN:
         if (wp == VK_ESCAPE) {
-            if (g_mode == 1 && g_came_from_home) set_mode(2, false);   // settings -> home
-            else if (g_mode == 2) { home_menu_close_via_escape(); set_mode(0, false); }
+            if (g_mode == 1 && hud_editor_active()) hud_editor_open(false);   // editor -> Display tab
+            else if (g_mode == 1 && g_came_from_home) set_mode(2, false);   // settings -> home
+            else if (g_mode == 2) home_menu_escape();                  // quit confirm on/off
             else overlay_toggle(false);
-            return 0;
+            return true;
         }
-        return 0;                                   // swallow
+        return true;
     case WM_KEYUP: case WM_SYSKEYUP:
         // RELEASES go through: the Ctrl of Ctrl+M went down before we opened, and if
         // its release is swallowed the engine keeps Ctrl held - console "a" = home,
         // crouch stuck (enzo, 2026-09-18). A release of an already-up key is a no-op.
-        return CallWindowProcA(g_orig_wndproc, w, m, wp, lp);
+        return false;
     case WM_CHAR: case WM_SYSKEYDOWN:
-        return 0;
+        return true;
     case WM_MOUSEMOVE: {
-        if (g_saw_raw) return 0;            // raw input owns the cursor
+        if (rinput_ui_cursor_pinned()) return true;   // the tap owns the cursor (rinput.h)
         POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };
         RECT rc; GetClientRect(w, &rc);
         POINT centre = { rc.right / 2, rc.bottom / 2 };
@@ -475,49 +331,197 @@ LRESULT CALLBACK hk_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         if (g_last_move.x >= 0 && !is_recentre) {
             g_in.mx += (float)(p.x - g_last_move.x);
             g_in.my += (float)(p.y - g_last_move.y);
+            g_travel += fabsf((float)(p.x - g_last_move.x)) + fabsf((float)(p.y - g_last_move.y));
             if (g_in.mx < 0) g_in.mx = 0;
             if (g_in.my < 0) g_in.my = 0;
             if (g_vw > 0 && g_in.mx > g_vw) g_in.mx = (float)g_vw;
             if (g_vh > 0 && g_in.my > g_vh) g_in.my = (float)g_vh;
         }
         g_last_move = p;
-        return 0;
+        return true;
     }
-    case WM_LBUTTONDOWN: g_in.down = true;  return 0;
-    case WM_LBUTTONUP:   g_in.down = false; return 0;
+    case WM_LBUTTONDOWN: g_in.down = true;  return true;
+    case WM_LBUTTONUP:   g_in.down = false; return true;
     case WM_MOUSEWHEEL:
         g_in.wheel += (float)GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
-        return 0;
+        return true;
     case WM_RBUTTONDOWN: case WM_RBUTTONUP:
     case WM_MBUTTONDOWN: case WM_MBUTTONUP:
-        return 0;
+        return true;
     }
-    return CallWindowProcA(g_orig_wndproc, w, m, wp, lp);
+    return false;
 }
 
-void ensure_subclass(HDC dc) {
-    // Do NOT use window_patch::get_game_window(): it only returns a handle once the
-    // BORDERLESS watcher thread has run, and that thread is entirely gated behind
-    // `window_borderless = on` (window_patch.cpp:264). With window_borderless = off
-    // (enzo's own 1440x1080-stretched fullscreen setup) the watcher never starts, the
-    // handle stays null forever, and Ctrl+M has nothing to attach to - found
-    // live 2026-08-10 right after that exact config was applied via ini + vid_restart.
-    // WindowFromDC is the standard overlay technique instead: the HDC handed to us at
-    // every SwapBuffers already belongs to the game's window, in every display mode.
+// The HDC handed to SwapBuffers belongs to the game's window in every display
+// mode (WindowFromDC is the standard overlay technique); wndhub refuses anything
+// that is not the engine's window class, so a third party's HDC cannot fool it.
+void attach_window(HDC dc) {
     HWND w = WindowFromDC(dc);
-    if (!w || w == g_hooked_wnd) return;
-    WNDPROC prev = (WNDPROC)SetWindowLongPtrA(w, GWLP_WNDPROC, (LONG_PTR)hk_wndproc);
-    if (prev) {
-        g_orig_wndproc = prev;
-        g_hooked_wnd = w;
-        logger::logf("  overlay: window subclassed (hwnd %p)", (void*)w);
+    if (w) wndhub_attach(w);
+}
+
+// Ctrl+M / ESC / clicks normally arrive through the WindowProc, where they are also
+// SWALLOWED so the engine never sees them. If a third-party hook above ours eats
+// the chord (or we are out of the chain and the ping has not healed it yet), this
+// per-frame poll still opens and closes the menu - and says so in the log, which is
+// the diagnostic the "menu impossible to open" reports have been missing. Only
+// while our window is in the foreground, and only once the chord has been held
+// for 100 ms WITHOUT the WindowProc reporting it: GetAsyncKeyState sees the key
+// the instant it goes down, while its WM_KEYDOWN waits in the queue until the
+// engine pumps messages at the start of the next frame - firing on the first
+// frame would race the proc and toggle twice. Once the poll has caught a press
+// the proc missed, the mouse button is polled too, so the menu stays usable; the
+// engine then also receives those inputs - a degraded mode, logged, never the
+// normal one.
+void hotkey_poll(HWND w) {
+    static DWORD s_chord_since = 0;      // 0 = chord not down
+    static bool  s_fired = false;        // once per chord
+    const bool chord = (GetAsyncKeyState(g_hotkey.vk) & 0x8000) &&
+                       mods_match((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0,
+                                  (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0,
+                                  (GetAsyncKeyState(VK_MENU) & 0x8000) != 0);
+    const DWORD now = GetTickCount();
+    if (!chord) { s_chord_since = 0; s_fired = false; return; }
+    if (!s_chord_since) { s_chord_since = now ? now : 1; return; }
+    if (s_fired || now - s_chord_since < 100) return;
+    if (!w || GetForegroundWindow() != w) return;
+    if (g_hotkey_wndproc_tick >= s_chord_since) { s_fired = true; return; }   // the proc saw it
+    s_fired = true;
+    if (!g_wndproc_dead) {
+        g_wndproc_dead = true;
+        logger::logf("overlay: %s seen by the key poll but NOT by the WindowProc - "
+                     "another hook on the window eats it; menu driven by polling from now on", g_hotkey.label);
+    }
+    if (g_mode == 0) overlay_toggle(true); else overlay_toggle(false);
+}
+
+// ------------------------------------------------------------------- news card
+// "MAJOR IN PROGRESS" and the like, fed by news.txt online (features/news.cpp), on
+// the MAIN MENU only (drawn while no cgame is loaded). Broadcast lower-third, not a
+// box: right-aligned type over a gradient that fades into the screen edge, a live
+// dot, a hairline, the link hint in tracked small caps. Same mono palette as the
+// menu. Ctrl+N opens the link - the card cannot be clicked, the engine owns the
+// cursor on its own menu.
+
+// Uppercase, letter-spaced: the "eyebrow" style. Per glyph through the text cache.
+float tracked_width(int px, int weight, const char* s, float tracking) {
+    float w = 0;
+    for (const char* c = s; *c; ++c) {
+        char g[2] = { *c, 0 };
+        w += ui_text_width(px, weight, g) + tracking;
+    }
+    return w > tracking ? w - tracking : 0;
+}
+void text_tracked(float x, float y, int px, int weight, DWORD col, const char* s, float tracking) {
+    for (const char* c = s; *c; ++c) {
+        char g[2] = { *c, 0 };
+        x += ui_text(x, y, px, weight, col, g) + tracking;
     }
 }
 
+void draw_news_card(HWND wnd) {
+    static DWORD s_probe = 0, s_since = 0;
+    static bool  s_in_game = true;
+    const DWORD now = GetTickCount();
+    if (now - s_probe > 500) { s_probe = now; s_in_game = GetModuleHandleA("cgame_mp_x86.dll") != NULL; }
+    char title[64], text[128], url[256];
+    if (s_in_game || !news_get(title, sizeof(title), text, sizeof(text), url, sizeof(url))) {
+        g_news_visible = false;
+        s_since = 0;
+        return;
+    }
+    RECT rc;
+    GetClientRect(wnd, &rc);
+    g_vw = rc.right; g_vh = rc.bottom;
+    if (g_vw <= 0 || g_vh <= 0) return;
+    g_news_visible = true;
+    if (!s_since) s_since = now ? now : 1;
+    for (char* c = title; *c; ++c) *c = (char)toupper((unsigned char)*c);
+
+    ui_begin_2d(g_vw, g_vh);
+    // ease in over 700 ms: fade + a slide of a few pixels from the right
+    float t = (now - s_since) / 700.0f; if (t > 1) t = 1;
+    const float ease = t * t * (3 - 2 * t);
+    const float sc = g_vh / 1080.0f > 0.6f ? g_vh / 1080.0f : 0.6f;
+    const float margin = 44 * sc, pad = 22 * sc, slide = (1 - ease) * 18 * sc;
+    const int   px_eye = (int)(12 * sc), px_head = (int)(24 * sc), px_hint = (int)(11 * sc);
+    const float tr_eye = 2.6f * sc, tr_hint = 1.8f * sc;
+    const char* hint = "CTRL + N   OPEN THE PAGE";
+    const float dot_r = 3.5f * sc, dot_gap = 12 * sc;
+
+    const float w_eye  = tracked_width(px_eye, 600, title, tr_eye) + dot_r * 2 + dot_gap;
+    const float w_head = text[0] ? ui_text_width(px_head, 600, text) : 0;
+    const float w_hint = url[0] ? tracked_width(px_hint, 600, hint, tr_hint) : 0;
+    float bw = w_eye; if (w_head > bw) bw = w_head; if (w_hint > bw) bw = w_hint;
+    const float x1 = g_vw - margin + slide;                 // right edge of the type
+    const float y0 = margin;
+    float h = 20 * sc;                                      // eyebrow row
+    if (text[0]) h += 30 * sc;
+    if (url[0])  h += 26 * sc;
+    h += 8 * sc;
+
+    ui_alpha(ease);
+    // backdrop: a gradient that starts transparent to the left of the type and
+    // becomes near-black at the screen edge, so the type reads on any menu art
+    // - soft on every side: a horizontal ramp times a vertical one, so it is a
+    // shadow behind the type, never a band with edges
+    {
+        const float gx0 = x1 - bw - 220 * sc, gx1 = (float)g_vw;
+        const float gy0 = y0 - pad * 1.6f, gy1 = y0 + h + pad * 1.6f;
+        const int cols = 40, rows = 14;
+        for (int j = 0; j < rows; ++j) {
+            const float r0 = (float)j / rows, r1 = (float)(j + 1) / rows;
+            const float d = r0 < 0.5f ? r0 * 2 : (1 - r0) * 2;      // 0 at the edges, 1 mid
+            const float fy = d * d * (3 - 2 * d);
+            for (int i = 0; i < cols; ++i) {
+                const float f0 = (float)i / cols, f1 = (float)(i + 1) / cols;
+                const float a = f0 * f0 * 0.85f * fy;
+                if (a < 0.01f) continue;
+                ui_rect(gx0 + (gx1 - gx0) * f0, gy0 + (gy1 - gy0) * r0,
+                        (gx1 - gx0) * (f1 - f0) + 1, (gy1 - gy0) * (r1 - r0) + 1,
+                        ((DWORD)(a * 255) << 24) | 0x000000);
+            }
+        }
+    }
+    float y = y0;
+    // eyebrow: live dot + tracked small caps, right-aligned
+    {
+        const float pulse = 0.55f + 0.45f * sinf(now * 0.0045f);
+        const float ex = x1 - tracked_width(px_eye, 600, title, tr_eye);
+        const float cx = ex - dot_gap - dot_r, cy = y + px_eye * 0.72f;
+        ui_ellipse(cx, cy, dot_r * (1.6f + 0.9f * pulse), dot_r * (1.6f + 0.9f * pulse), 1.0f,
+                   ((DWORD)(70 * pulse) << 24) | 0xFFFFFF);
+        ui_rect_rounded(cx - dot_r, cy - dot_r, dot_r * 2, dot_r * 2, dot_r, UI_ACCENT);
+        text_tracked(ex, y, px_eye, 600, UI_ACCENT, title, tr_eye);
+        y += 20 * sc;
+    }
+    // headline
+    if (text[0]) {
+        ui_text(x1 - w_head, y, px_head, 600, UI_TEXT, text);
+        y += 30 * sc;
+    }
+    // hairline + hint
+    if (url[0]) {
+        ui_rect(x1 - bw, y + 4 * sc, bw, 1, 0x40FFFFFF);
+        text_tracked(x1 - w_hint, y + 11 * sc, px_hint, 600, UI_MUTED, hint, tr_hint);
+    }
+    ui_alpha(1.0f);
+    ui_end_2d();
+}
 
 // ------------------------------------------------------------------- swap
-BOOL WINAPI hk_swapbuffers(HDC dc) {
-    ensure_subclass(dc);
+void swap_frame_work(HDC dc) {
+    InterlockedIncrement(&g_swap_calls);
+    attach_window(dc);
+    demo_seek_frame();                            // demo fast-forward to a kill (ui/demo_seek)
+    pkg_install_frame();                          // package cvars + cod1x_install (features/pkg_frame)
+    eye_debug_frame();                            // player_debugEyePosition (ui/eye_debug)
+    hitbox_view_frame();                          // cod1x_drawhitbox (features/hitbox_view)
+    minimap_frame();                              // cod1x_minimap: cvars, the radar job (ui/minimap)
+    hud_layout_frame();                           // the game's HUD moved / hidden, fps clock (ui/hud_layout)
+    HWND wnd = wndhub_window();                   // this frame's window
+    hotkey_poll(wnd);
+    if (g_wndproc_dead && g_mode != 0) g_in.down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
     if (g_mode == 0 && modern_menu_poll_open()) overlay_toggle(true);
     // Level-triggered: enter home the moment the engine opens "main", leave it the
     // moment the engine closes "main" through a path WE did not initiate (e.g. some
@@ -533,41 +537,23 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
     if (!home_active) g_home_suppress = false;      // cvar caught up: re-arm
     if (g_mode == 0 && home_active && !g_home_suppress) set_mode(2, false);
     if (g_mode == 2 && !home_active) set_mode(0, false);
-    if (g_mode != 0 && g_hooked_wnd) {
+    if (g_mode != 0 && wnd) {
         RECT rc;
-        GetClientRect(g_hooked_wnd, &rc);
+        GetClientRect(wnd, &rc);
         g_vw = rc.right; g_vh = rc.bottom;
         if (g_vw > 0 && g_vh > 0) {
-            // vid_restart destroys the GL context; every cached texture id then
-            // belongs to a dead context and draws as garbage squares (seen live
-            // 2026-08-10: the whole menu turned into black-and-white blocks).
-            // Forget the cache and re-rasterise lazily in the new context.
-            HGLRC rc = wglGetCurrentContext();
-            if (rc != g_glrc) { g_glrc = rc; g_text_cache.clear(); }
-            glPushAttrib(GL_ALL_ATTRIB_BITS);
-            glPushClientAttrib(GL_CLIENT_ALL_ATTRIB_BITS);
-            glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
-            glOrtho(0, g_vw, g_vh, 0, -1, 1);
-            glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
-            glViewport(0, 0, g_vw, g_vh);
-            glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
-            glDisable(GL_LIGHTING);   glDisable(GL_SCISSOR_TEST);
-            glDisable(GL_ALPHA_TEST); glDisable(GL_FOG);
-            glDisableClientState(GL_VERTEX_ARRAY);
-            glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-            glDisableClientState(GL_COLOR_ARRAY);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            ui_begin_2d(g_vw, g_vh);
 
-            // PRIMARY cursor source: the raw-input tap. WM_MOUSEMOVE cannot do
-            // this job - Windows coalesces it to the latest position and the
-            // engine re-pins the cursor to centre ~250x/s, so the physical
-            // positions are overwritten before we ever see them (frozen cursor,
-            // 2026-08-10). Raw deltas come straight from the device.
+            // PRIMARY cursor source: the tap in input/rinput.cpp. WM_MOUSEMOVE
+            // cannot do this job while the engine pins the cursor - Windows
+            // coalesces it to the latest position and the engine re-centres ~250x/s,
+            // so the physical positions are overwritten before we ever see them
+            // (frozen cursor, 2026-08-10; and for every m_rinput 0 player until the
+            // tap also read the engine's cursor, 2026-09-30).
             long rdx = 0, rdy = 0;
             rinput_ui_take_delta(&rdx, &rdy);
             if (rdx || rdy) {
-                g_saw_raw = true;
+                g_travel += fabsf((float)rdx) + fabsf((float)rdy);
                 g_in.mx += (float)rdx;
                 g_in.my += (float)rdy;
                 if (g_in.mx < 0) g_in.mx = 0;
@@ -579,6 +565,7 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
             DWORD now = GetTickCount();
             g_dt = g_last_tick ? (now - g_last_tick) / 1000.0f : 0.016f;
             if (g_dt > 0.05f) g_dt = 0.05f;
+            ui_frame_dt(g_dt);
             g_last_tick = now;
 
             g_in.clicked = g_in.down && !g_prev_down;
@@ -593,11 +580,11 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
             // cursor: small triangle pointer, drawn last
             float mx = g_in.mx, my = g_in.my;
             glDisable(GL_TEXTURE_2D);
-            set_color(0xFF000000);
+            ui_set_color(0xFF000000);
             glBegin(GL_TRIANGLES);
             glVertex2f(mx, my); glVertex2f(mx + 15, my + 6); glVertex2f(mx + 6, my + 15);
             glEnd();
-            set_color(0xFFFFFFFF);
+            ui_set_color(0xFFFFFFFF);
             glBegin(GL_TRIANGLES);
             glVertex2f(mx + 1, my + 2); glVertex2f(mx + 12, my + 6.5f); glVertex2f(mx + 6.5f, my + 12);
             glEnd();
@@ -605,11 +592,91 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
             g_in.wheel = 0;
             g_in.vk = 0;                        // capture events are one-frame
 
-            glMatrixMode(GL_MODELVIEW); glPopMatrix();
-            glMatrixMode(GL_PROJECTION); glPopMatrix();
-            glPopClientAttrib();
-            glPopAttrib();
+            ui_end_2d();
         }
+    } else if (g_mode == 0 && wnd && demo_seek_curtain_visible()) {
+        // a demo is being fast-forwarded to a kill: cover it
+        RECT rc;
+        GetClientRect(wnd, &rc);
+        if (rc.right > 0 && rc.bottom > 0) {
+            ui_begin_2d(rc.right, rc.bottom);
+            demo_seek_draw_curtain((float)rc.right, (float)rc.bottom);
+            ui_end_2d();
+        }
+    } else if (g_mode == 0 && wnd) {
+        // no menu open: the announcement card, main menu only (no cgame = no game loaded)
+        draw_news_card(wnd);
+        // in game, PAM streamer team: the native caster overlay (ui/streamer_hud.cpp)
+        const bool streamer = streamer_hud_frame();
+        // in game: the CoD4-style radar (ui/minimap.cpp); the caster overlay has its own
+        if (!streamer && minimap_active()) {
+            RECT rc;
+            GetClientRect(wnd, &rc);
+            if (rc.right > 0 && rc.bottom > 0) {
+                ui_begin_2d(rc.right, rc.bottom);
+                minimap_draw((float)rc.right, (float)rc.bottom);
+                ui_alpha(1.0f);
+                ui_end_2d();
+            }
+        }
+        // the 1.6X fps counter / lagometer, where the HUD editor put them (ui/hud_layout.cpp)
+        if (hud_layout_active()) {
+            RECT rc;
+            GetClientRect(wnd, &rc);
+            if (rc.right > 0 && rc.bottom > 0) {
+                ui_begin_2d(rc.right, rc.bottom);
+                hud_layout_draw((float)rc.right, (float)rc.bottom);
+                ui_alpha(1.0f);
+                ui_end_2d();
+            }
+        }
+        if (streamer) {
+            RECT rc;
+            GetClientRect(wnd, &rc);
+            g_vw = rc.right; g_vh = rc.bottom;
+            if (g_vw > 0 && g_vh > 0) {
+                const DWORD now = GetTickCount();
+                g_dt = g_last_tick ? (now - g_last_tick) / 1000.0f : 0.016f;
+                if (g_dt > 0.05f) g_dt = 0.05f;
+                ui_frame_dt(g_dt);
+                g_last_tick = now;
+                ui_begin_2d(g_vw, g_vh);
+                streamer_hud_draw((float)g_vw, (float)g_vh);
+                ui_alpha(1.0f);
+                ui_end_2d();
+            }
+        }
+        // the SERVER's tested hit boxes over the player you look at (cod1x_drawhitbox)
+        if (hitbox_view_active()) {
+            RECT rc;
+            GetClientRect(wnd, &rc);
+            if (rc.right > 0 && rc.bottom > 0) {
+                ui_begin_2d(rc.right, rc.bottom);
+                hitbox_view_draw((float)rc.right, (float)rc.bottom);
+                ui_alpha(1.0f);
+                ui_end_2d();
+            }
+        }
+        // local server debug: the camera point over the body (player_debugEyePosition)
+        if (eye_debug_active()) {
+            RECT rc;
+            GetClientRect(wnd, &rc);
+            if (rc.right > 0 && rc.bottom > 0) {
+                ui_begin_2d(rc.right, rc.bottom);
+                eye_debug_draw((float)rc.right, (float)rc.bottom);
+                ui_alpha(1.0f);
+                ui_end_2d();
+            }
+        }
+    }
+}
+
+BOOL WINAPI hk_swapbuffers(HDC dc) {
+    { PROF_SCOPE(PROF_OVERLAY); swap_frame_work(dc); }   // our per-frame work, timed apart from the real swap
+    {
+        HWND w = wndhub_window();
+        RECT rc;
+        if (w && GetClientRect(w, &rc) && rc.right > 0 && rc.bottom > 0) minimap_test_frame(rc.right, rc.bottom);   // dev captures
     }
     return g_orig_swap ? g_orig_swap(dc) : FALSE;
 }
@@ -617,6 +684,7 @@ BOOL WINAPI hk_swapbuffers(HDC dc) {
 }  // namespace
 
 void overlay_start() {
+    wndhub_add_listener(overlay_listener, "overlay");
     void* orig = iat_hook("gdi32.dll", "SwapBuffers", (void*)hk_swapbuffers);
     if (orig) {
         g_orig_swap = (SwapBuffers_t)orig;
@@ -624,6 +692,36 @@ void overlay_start() {
     } else {
         logger::logf("  overlay: SwapBuffers import not found, modern menu OFF");
     }
+}
+
+// Watcher thread, ~1/s. The only way the menu can be entirely absent is our
+// SwapBuffers hook no longer running: a third-party overlay that rewrote the exe's
+// import slot AFTER us without chaining to what it found. Re-hooking on top would
+// loop if that hook DOES chain to us, so this only diagnoses - with the module that
+// owns the slot's new target, which names the culprit in the player's log.
+void overlay_tick() {
+    static long  s_last_calls = -1;
+    static DWORD s_stalled_since = 0;
+    static bool  s_logged = false;
+    if (!g_orig_swap || s_logged) return;
+    const long calls = g_swap_calls;
+    if (calls != s_last_calls) { s_last_calls = calls; s_stalled_since = 0; return; }
+    HWND w = wndhub_window();
+    if (!w || IsIconic(w)) return;                                // no frames expected
+    const DWORD now = GetTickCount();
+    if (!s_stalled_since) { s_stalled_since = now; return; }
+    if (now - s_stalled_since < 3000) return;
+    void* slot = iat_peek("gdi32.dll", "SwapBuffers");
+    if (slot == (void*)hk_swapbuffers) return;                    // ours, just no frames (paused)
+    char mod[MAX_PATH] = "?";
+    HMODULE hm = NULL;
+    if (slot && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)slot, &hm))
+        GetModuleFileNameA(hm, mod, sizeof(mod));
+    s_logged = true;
+    logger::logf("overlay: SwapBuffers hook BYPASSED - the import slot now points to %p (%s) "
+                 "and our hook has not run for 3 s: modern menu unavailable on this machine",
+                 slot, mod);
 }
 
 }  // namespace patches

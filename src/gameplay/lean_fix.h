@@ -37,6 +37,15 @@ constexpr uintptr_t ENT_CLIENTNUM_OFFSET = 0x90;
 constexpr uintptr_t CGAME_SNAP_PTR_RVA       = 0x1e5f24;
 constexpr uintptr_t SNAP_LOCAL_CLIENTNUM_OFF = 0xb8;
 
+// The bg clock: { int time; int latestSnapshotTime; int frametime; } at cgame+0xf2390,
+// written from cg.time by CG_DrawActiveFrame (0x300351d1) before anything is posed. Its
+// frametime (+8) is what the engine limiter multiplies (0x300051dd). The server's twin is
+// the game module's `bg` (G_RunFrame 0x50676: level.time).
+constexpr uintptr_t CGAME_BG_TIME_RVA = 0xf2390;
+// ci->control: 6 vec3 at +0x3fc, tag_origin angles +0x444, offset +0x450 - the buffer's
+// layout exactly (0x300051f9 / 0x30005277 / 0x3000528f).
+constexpr uintptr_t CI_CONTROL_OFFSET = 0x3fc;
+
 // WARNING: bit 0x40 (test al,0x40 @0x300049ba) is NOT a reliable is_leaning
 // signal: always 0 in-game even during a visible lean. kept for reference.
 constexpr uint32_t ENT_FLAG_LEANING_QUESTIONABLE = 0x40;
@@ -89,6 +98,12 @@ struct LeanFixConfig {
 
     bool  ctrl_smooth_enable;
     int   ctrl_smooth_time;   // ms
+
+    // cod2x's movement-transition blend, the shared version (lean_controllers.c v2,
+    // "BLEND"). The server runs the same code from pose_sync.c; the two MUST agree, like
+    // everything else in the shared file - a client with it on against a server with it
+    // off draws the pose the blend produces and gets hit where the engine limiter put it.
+    bool  ctrl_blend_enable;
 
     // Controller-buffer dump: max samples per client, 0 = off. Diagnostic only, it
     // changes nothing about the pose. Read from cod1reloaded.ini (key ctrl_dump) because

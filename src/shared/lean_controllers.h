@@ -49,8 +49,18 @@ extern "C" {
 #endif
 
 /* Bump on ANY change to the shared arithmetic. Both sides print it; a mismatch in the
- * two logs means one repo was copied and the other was not. */
-#define LC_VERSION 1
+ * two logs means one repo was copied and the other was not.
+ * v2: the movement-transition blend (lc_ctx_t.blend, see lean_controllers.c "BLEND").
+ * v3: crouch + lean right bends like crouch + lean left (x1.25, not the engine's x1.5).
+ * v4: crouch + lean right bends like STAND + lean right (x0.8) - enzo, in game.
+ * v5: the lateral body shift is per SIDE (and stance): standing 3.0 left / 7.5 right, crouch
+ *     provisional = standing. The head bone lands on the eye on both sides, which is what
+ *     CoD2's own table achieves for CoD2's symmetric roll (lean_controllers.c, the table).
+ * v7: the table is calibrated on the SERVER'S MEASURED hit volume (lean_probe, 2026-10-15) so
+ *     that the head sits where cod2x puts it against the eye (+0.2 left / -1.6 right):
+ *     standing 4.5 left / 5.0 right, crouch 3.5 left / 7.5 right. (v6, the cod2x moving tilt,
+ *     is dropped: the shift is in the model's view-aligned frame and is not lost while moving.) */
+#define LC_VERSION 9
 
 #define LC_SIDE_CLIENT 0
 #define LC_SIDE_SERVER 1
@@ -78,7 +88,8 @@ extern "C" {
 
 /*
  * Everything the shared code needs. The host fills it per invocation; nothing is cached
- * across calls except the dump throttle, which is keyed on client_num.
+ * across calls except the dump throttle and (v2) the blend state, both keyed on
+ * client_num.
  */
 typedef struct lc_ctx_s {
     int          side;            /* LC_SIDE_CLIENT | LC_SIDE_SERVER - dump label only */
@@ -90,24 +101,56 @@ typedef struct lc_ctx_s {
      *              patched without corrupting four unrelated computations)
      * server: 7.5 (game .rodata 0x73d5c, retuned in place by COD1RELOADED_LEAN_CONST;
      *              GCC did not pool - that literal has exactly one reader)
-     * lc_apply() tops each side up to the same LC_LATERAL_TOTAL, so the invariant that
+     * lc_apply() tops each side up to the same lc_lateral_total(), so the invariant that
      * used to be a comment in two files is now one subtraction in one file. */
     float        engine_lateral;
 
     unsigned int now_ms;          /* any monotonic ms clock; used only to throttle dumps */
 
-    const void*  es;              /* entityState_s* - READ-ONLY, dump only. May be NULL. */
+    const void*  es;              /* entityState_s* - READ-ONLY: the dump, and the blend's
+                                   * movement type. May be NULL when not blending. */
     const void*  ci;              /* clientInfo_t*  - READ-ONLY, dump only. May be NULL. */
 
     int          dump;            /* 0 = off, else max dump samples per client */
     void       (*log)(const char* line);   /* host sink: logger::logf / printf */
+
+    /* ---- v2: the movement-transition blend (lean_controllers.c, "BLEND") ----------
+     * blend = LC_BLEND_OFF    : v1 behaviour, bit for bit; the engine's own limiter
+     *                           runs on the buffer afterwards as it always did.
+     *         LC_BLEND_COMMIT : blend, and advance this client's blend state. Exactly
+     *                           one caller per side does this, on a fixed cadence:
+     *                           client = the pose path, once per rendered frame;
+     *                           server = pose_sync_frame(), once per server frame.
+     *         LC_BLEND_PEEK   : blend from the state as it stands, change nothing. The
+     *                           server's on-demand poses (a bullet trace, a tag query)
+     *                           use this, so HOW OFTEN the server poses a player can no
+     *                           longer change WHERE his hitbox is.
+     * es MUST be set when blending: the movement type is read from it. */
+    int          blend;
+    int          game_time;       /* the bg clock, ms: client cg.time, server level.time -
+                                   * cgame 0x300f2390 / game `bg`+0, both written from the
+                                   * frame time before any pose of that frame */
+    float*       control;         /* ci->control (24 floats at ci+0x3fc, same order as the
+                                   * buffer), or NULL. When blending, the result is written
+                                   * here too, which turns the engine limiter that follows
+                                   * (BG_Player_DoControllers) into a no-op: this file owns
+                                   * the whole smoothing, on both sides. */
 } lc_ctx_t;
+
+#define LC_BLEND_OFF    0
+#define LC_BLEND_COMMIT 1
+#define LC_BLEND_PEEK   2
 
 /* Apply our deltas to the buffer the engine just produced. No allocation, no call back
  * into the game. Dumps "pre"/"post" when ctx->dump is set and the throttle allows.
  * Returns non-zero when it emitted a sample, so a host with a further stage of its own
  * can dump that stage in the same sample instead of on its own schedule. */
 int lc_apply(float* out, const lc_ctx_t* ctx);
+
+/* The shared lateral target (units at fLeanFrac = 1) for this stance and side - the sign of
+ * lean_frac picks the side (< 0 = left). The table is in lean_controllers.c; tests and
+ * diagnostics read it from here instead of carrying a copy. */
+float lc_lateral_total(int stance, float lean_frac);
 
 /* Emit one labelled sample of the buffer. Exposed separately so the client can also dump
  * AFTER its controller smoothing (a client-only stage the server has no counterpart for -

@@ -1,18 +1,26 @@
 #ifndef COD1RELOADED_PAM_INSTALL_H
 #define COD1RELOADED_PAM_INSTALL_H
 
-// "INSTALL / UPDATE PAM" from the 1.6X menu: fetch the competitive mod's pk3s without
-// joining a server (the engine's own download runs at connect time, one server at a
-// time, and it is what makes a first join take minutes).
+// "INSTALL / UPDATE PAM" and "INSTALL HD TEXTURES" from the 1.6X menu: fetch a
+// package of pk3s without joining a server (the engine's own download runs at connect
+// time, one server at a time, and it is what makes a first join take minutes).
 //
-// Source of truth = a text manifest published by the PAM repo
-// (https://github.com/cod1plus/cod1pluspam, tools/make_manifest.py):
-//     mod <folder>                               e.g. __rPAMv115b5
+// One mechanism, several PACKAGES (PkgId): each has its own manifest URL, status and
+// worker; the menu shows one button per package. Source of truth = a text manifest
+// published by the package's repo (cod1pluspam/tools/make_manifest.py writes it):
+//     mod <folder>                               target folder: __rPAMv115b5, main, ...
 //     version <n>                                informative
 //     file <name> <bytes> <sha256> <url>         one per pk3
 //     remove <name>                              stale pk3 to delete (optional)
-// The manifest is generated from the pk3s a SERVER runs, so what lands here passes
-// that server's sv_pure check byte for byte.
+//     cvar <name> <value>                        applied (seta) once the install is done
+//                                                (optional; e.g. com_hunkMegs 512 for a
+//                                                texture pack the default hunk cannot hold)
+// A PAM manifest is generated from the pk3s a SERVER runs, so what lands here passes
+// that server's sv_pure check byte for byte. The HD texture pack in main\ is different:
+// no server holds its 5.6 GB. A 1.6X server (cod1plus.so, pure_extra.c) lists the
+// pack's checksums as if it did, so its clients read the textures and pass the pure
+// check; any other pure server does not list them and the engine ignores the paks
+// there (vanilla textures, no kick).
 //
 // A pk3 is a zip the engine reads as-is: nothing to unpack, each file goes straight to
 // <game dir>\<mod>\<name>. Download to <name>.part, verify size + SHA-256, rename over.
@@ -25,14 +33,18 @@
 // pk3s just means the engine downloads the difference at connect, as before.
 
 #include <windows.h>
+#include <string>
 
 namespace patches {
 
 struct PamInstallConfig {
     bool enable;
-    char manifest_url[256];   // ini: pam_manifest_url
+    char manifest_url[256];   // ini: pam_manifest_url / hdtex_manifest_url
 };
-extern PamInstallConfig g_pam_install_config;
+extern PamInstallConfig g_pam_install_config;     // the competitive mod
+extern PamInstallConfig g_hdtex_install_config;   // HD texture pack -> the main folder
+
+enum PkgId { PKG_PAM = 0, PKG_HDTEX = 1, PKG_COUNT = 2 };
 
 enum PamState { PAM_IDLE = 0, PAM_CHECKING = 1, PAM_DOWNLOADING = 2, PAM_DONE = 3, PAM_ERROR = 4, PAM_RESTART = 5 };
 
@@ -44,10 +56,37 @@ struct PamStatus {
     char  mod[64];          // folder name once the manifest is known
 };
 
-void pam_install_start();                 // menu button; no-op while a job runs
-void pam_install_status(PamStatus* out);  // snapshot for the menu (any thread)
-void pam_install_swap_pending();          // DllMain: apply <mod>\*.pk3.new left by a locked install
-bool pam_install_running();
+struct PkgCvar { char name[48]; char value[48]; };
+constexpr int PKG_MAX_CVARS = 4;
+
+void pkg_install_start(PkgId id);                      // menu button; no-op while that job runs
+void pkg_install_status(PkgId id, PamStatus* out);     // snapshot for the menu (any thread)
+bool pkg_install_running(PkgId id);
+// The manifest's `cvar` lines of a finished job, handed out ONCE (cleared on return) so
+// the menu can apply them on the main thread. Returns the count.
+int  pkg_install_take_cvars(PkgId id, PkgCvar* out, int max);
+// Every frame, main thread (SwapBuffers hook): applies the finished jobs' cvars and
+// serves `set cod1x_install hdtex|pam` (console / command line). features/pkg_frame.cpp
+void pkg_install_frame();
+
+// PAM shorthands (the original API, kept for the callers and the host test)
+inline void pam_install_start()                { pkg_install_start(PKG_PAM); }
+inline void pam_install_status(PamStatus* out) { pkg_install_status(PKG_PAM, out); }
+inline bool pam_install_running()              { return pkg_install_running(PKG_PAM); }
+void pam_install_swap_pending();          // DllMain: apply <folder>\*.pk3.new left by a locked install
+
+// The same transfer for other features (the Workshop tab, features/workshop.cpp), on the
+// caller's thread. pkg_fetch_file streams `url` into `path` (a .part: resumed when one is
+// left over, refused past `expect_size`), hashing on the fly; `progress` is called ~10x/s.
+// sha_hex receives 64 lowercase hex digits. Errors come back as one line in `err`.
+typedef void (*PkgProgressFn)(void* user, unsigned long long got, unsigned long long total, double mb_per_s);
+bool pkg_fetch_text(const char* url, size_t max_bytes, std::string& out, std::string& err);
+bool pkg_fetch_file(const char* url, const char* path, unsigned long long expect_size,
+                    PkgProgressFn progress, void* user, char sha_hex[65], std::string& err);
+bool pkg_file_sha256(const char* path, unsigned long long* size, char sha_hex[65]);
+bool pkg_game_dir(char* out, size_t n);           // "<folder of mss32.dll>\"
+bool pkg_valid_pk3_name(const char* s);           // a bare *.pk3 name: no separator, no traversal
+bool pkg_valid_folder(const char* s);             // a bare folder name: letters, digits, _ -
 
 }  // namespace patches
 

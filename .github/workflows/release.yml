@@ -88,16 +88,19 @@ jobs:
           printf '{\n  "version": "%s",\n  "download_url": "https://github.com/%s/releases/latest/download/mss32.dll",\n  "notes": "cod1reloaded %s - see CHANGELOG"\n}\n' \
             "$TAG" "$GITHUB_REPOSITORY" "$TAG" > dist/manifest.json
           # mirror the game folder layout so the zip extracts straight over it
-          ( cd dist && mkdir -p Main && cp zz_cod1x_ui.pk3 Main/ \
-            && zip -q "cod1reloaded-$TAG.zip" mss32.dll cod1reloaded.ini Main/zz_cod1x_ui.pk3 )
+          # + the home screen's art (cod1reloaded/home/*.jpg, optional at runtime)
+          ( cd dist && mkdir -p Main cod1reloaded/home && cp zz_cod1x_ui.pk3 Main/ \
+            && cp ../assets/home/*.jpg cod1reloaded/home/ \
+            && zip -q "cod1reloaded-$TAG.zip" mss32.dll cod1reloaded.ini Main/zz_cod1x_ui.pk3 cod1reloaded/home/*.jpg )
           # No-rinput variant. Release assets must have unique names, so the loose DLL is
           # published as mss32-norinput.dll - but INSIDE its zip it is mss32.dll, because
           # that is the name the game must load. Extract the zip over the game folder.
           cp build/norinput/mss32.dll dist/mss32-norinput.dll
-          ( cd dist && mkdir -p norinput/Main && cp ../build/norinput/mss32.dll norinput/mss32.dll \
+          ( cd dist && mkdir -p norinput/Main norinput/cod1reloaded/home && cp ../build/norinput/mss32.dll norinput/mss32.dll \
             && cp cod1reloaded.ini norinput/ && cp zz_cod1x_ui.pk3 norinput/Main/ \
+            && cp ../assets/home/*.jpg norinput/cod1reloaded/home/ \
             && cd norinput && zip -q "../cod1reloaded-$TAG-norinput.zip" \
-                 mss32.dll cod1reloaded.ini Main/zz_cod1x_ui.pk3 )
+                 mss32.dll cod1reloaded.ini Main/zz_cod1x_ui.pk3 cod1reloaded/home/*.jpg )
           ls -l dist
 
       - name: Upload assets to the release

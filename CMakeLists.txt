@@ -34,7 +34,12 @@ set(COD1RELOADED_SOURCES
     src/gameplay/swing_fix.cpp
     src/core/logger.cpp
     src/core/iat.cpp
+    src/core/wndhub.cpp
+    src/features/news.cpp
     src/input/rinput.cpp
+    src/input/sensitivity_mg.cpp
+    src/input/script_block.cpp
+    src/core/hunk_min.cpp
     src/netcode/version_patch.cpp
     src/netcode/protocol_patch.cpp
     src/netcode/competitive.cpp
@@ -43,6 +48,8 @@ set(COD1RELOADED_SOURCES
     src/netcode/ruleset_parse.cpp
     src/netcode/ruleset_fetch.cpp
     src/features/pam_install.cpp
+    src/features/pkg_frame.cpp
+    src/features/workshop.cpp
     src/netcode/ruleset.cpp
     src/netcode/version_gate.cpp
     src/video/window_patch.cpp
@@ -51,6 +58,26 @@ set(COD1RELOADED_SOURCES
     src/video/mode_guard.cpp
     src/performance/fps_cap.cpp
     src/performance/frame_limiter.cpp
+    src/performance/pacing_stats.cpp
+    src/performance/render_clock.cpp
+    src/performance/smodel_fast.cpp
+    src/performance/trace_cull.cpp
+    src/performance/smodel_light.cpp
+    src/performance/bench.cpp
+    src/performance/smodel_lod.cpp
+    src/performance/smodel_path.cpp
+    src/performance/stall_trace.cpp
+    src/performance/gpu_sync.cpp
+    src/core/session_report.cpp
+    src/core/hook_prof.cpp
+    src/core/ini_lock.cpp
+    src/netcode/net_diag.cpp
+    src/features/demo_index.cpp
+    src/features/pak_checksum.cpp
+    src/ui/demo_library.cpp
+    src/ui/demo_seek.cpp
+    src/ui/demo_mod.cpp
+    src/ui/eye_debug.cpp
     src/features/updater.cpp
     src/features/demo_upload.cpp
     src/core/toast.cpp
@@ -62,16 +89,30 @@ set(COD1RELOADED_SOURCES
     src/video/gamma_fix.cpp
     src/features/avatar_overlay.cpp
     src/features/engine_2d.cpp
+    src/features/hitbox_view.cpp
     src/features/discord_rpc.cpp
     src/features/settings_menu.cpp
     src/gameplay/stance_fix.cpp
     src/gameplay/anim_clamp.cpp
+    src/gameplay/bone_probe.cpp
+    src/gameplay/hitbox_client.cpp
+    src/gameplay/inspect.cpp
+    src/gameplay/use_pickup.cpp
     src/netcode/antilag.cpp
     src/core/single_instance.cpp
     src/ui/gl_overlay.cpp
+    src/ui/ui_draw.cpp
     src/ui/modern_menu.cpp
     src/ui/home_menu.cpp
+    src/ui/menu_hooks.cpp
     src/ui/player_preview.cpp
+    src/ui/streamer_hud.cpp
+    src/ui/game_image.cpp
+    src/ui/radar_map.cpp
+    src/ui/minimap.cpp
+    src/ui/hud_editor.cpp
+    src/ui/hud_layout.cpp
+    src/ui/workshop_tab.cpp
 )
 
 add_library(cod1reloaded SHARED
@@ -83,8 +124,19 @@ add_library(mss32 SHARED
     src/mss32_proxy.def
 )
 
-target_include_directories(cod1reloaded PRIVATE src)
-target_include_directories(mss32 PRIVATE src)
+# The shipped cod1reloaded.ini goes into the DLL as a byte array (build/generated/
+# ini_template.h): a launch without the file next to mss32.dll writes it back instead of
+# running the compiled defaults in silence. Re-generated whenever the .ini changes.
+file(READ "${CMAKE_SOURCE_DIR}/cod1reloaded.ini" COD1RELOADED_INI_HEX HEX)
+string(LENGTH "${COD1RELOADED_INI_HEX}" _ini_hex_len)
+math(EXPR COD1RELOADED_INI_SIZE "${_ini_hex_len} / 2")
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," COD1RELOADED_INI_BYTES "${COD1RELOADED_INI_HEX}")
+configure_file("${CMAKE_SOURCE_DIR}/src/core/ini_template.h.in"
+               "${CMAKE_BINARY_DIR}/generated/ini_template.h" @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/cod1reloaded.ini")
+
+target_include_directories(cod1reloaded PRIVATE src "${CMAKE_BINARY_DIR}/generated")
+target_include_directories(mss32 PRIVATE src "${CMAKE_BINARY_DIR}/generated")
 
 # Build a DLL that never touches the mouse at all, for bisecting input problems.
 # `raw_mouse_input = off` in the ini is NOT the same thing: it only sets the default of
@@ -108,6 +160,31 @@ if (COD1RELOADED_NO_RINPUT)
     message(STATUS "cod1reloaded: output -> ${COD1RELOADED_OUTPUT_DIR}")
 endif()
 
+# Weapon inspect (gameplay/inspect.cpp, `cod1x_inspect`, Ctrl+M > Inspect) waits for a later
+# version: OFF = the view weapon hook is never installed, its cvars are never registered and
+# the Inspect tab is not in the rail. The code still compiles, so it cannot rot meanwhile.
+#     cmake -S . -B build-inspect -DCOD1RELOADED_WEAPON_INSPECT=ON ...
+option(COD1RELOADED_WEAPON_INSPECT "Weapon inspect (cod1x_inspect) and the Ctrl+M Inspect tab" OFF)
+if (COD1RELOADED_WEAPON_INSPECT)
+    target_compile_definitions(cod1reloaded PRIVATE COD1RELOADED_WEAPON_INSPECT=1)
+    target_compile_definitions(mss32 PRIVATE COD1RELOADED_WEAPON_INSPECT=1)
+    message(STATUS "cod1reloaded: weapon inspect ON")
+endif()
+
+# Dev builds only: core/ini_lock.cpp imposes nothing - the seven locked keys are taken as
+# written in cod1reloaded.ini (e.g. gpu_sync = on to force the sync instead of auto) and
+# r_fullscreen / r_displayRefresh are left to the engine. The log says so at every launch.
+# Never ship this: the whole point of the lock is that everybody plays the same.
+#     cmake -S . -B build-devunlock -DCOD1RELOADED_DEV_UNLOCK=ON ...
+option(COD1RELOADED_DEV_UNLOCK "ini_lock imposes nothing: the .ini is taken as written (dev only)" OFF)
+if (COD1RELOADED_DEV_UNLOCK)
+    target_compile_definitions(cod1reloaded PRIVATE COD1RELOADED_DEV_UNLOCK=1)
+    target_compile_definitions(mss32 PRIVATE COD1RELOADED_DEV_UNLOCK=1)
+    set(COD1RELOADED_OUTPUT_DIR "${COD1RELOADED_OUTPUT_DIR}/devunlock")
+    message(STATUS "cod1reloaded: DEV UNLOCK - ini_lock imposes nothing (do not ship)")
+    message(STATUS "cod1reloaded: output -> ${COD1RELOADED_OUTPUT_DIR}")
+endif()
+
 target_compile_options(cod1reloaded PRIVATE
     -Wall -Wextra -Wno-unused-parameter
     -O2
@@ -127,10 +204,10 @@ target_link_options(mss32 PRIVATE
 )
 
 target_link_libraries(cod1reloaded PRIVATE
-    kernel32 user32 winmm wininet shell32 advapi32 gdiplus gdi32 opengl32
+    kernel32 user32 winmm wininet shell32 advapi32 gdiplus gdi32 opengl32 ole32
 )
 target_link_libraries(mss32 PRIVATE
-    kernel32 user32 winmm wininet shell32 advapi32 gdiplus gdi32 opengl32
+    kernel32 user32 winmm wininet shell32 advapi32 gdiplus gdi32 opengl32 ole32
 )
 
 set_target_properties(cod1reloaded PROPERTIES
@@ -144,3 +221,50 @@ set_target_properties(mss32 PROPERTIES
     OUTPUT_NAME "mss32"
     RUNTIME_OUTPUT_DIRECTORY "${COD1RELOADED_OUTPUT_DIR}"
 )
+
+# Offline render of the native streamer overlay (tools/hud_preview/main.cpp): the same
+# drawing code as the DLL, into a PNG - how its look is checked before shipping.
+#     mingw32-make hud_preview && build/hud_preview.exe scene.txt out.png
+add_executable(hud_preview EXCLUDE_FROM_ALL
+    tools/hud_preview/main.cpp
+    src/ui/ui_draw.cpp
+    src/ui/streamer_hud.cpp
+    src/ui/game_image.cpp
+    src/ui/radar_map.cpp
+)
+target_include_directories(hud_preview PRIVATE src)
+target_compile_options(hud_preview PRIVATE -Wall -Wextra -Wno-unused-parameter -O2)
+target_link_options(hud_preview PRIVATE -static -static-libgcc -static-libstdc++)
+target_link_libraries(hud_preview PRIVATE user32 gdi32 gdiplus opengl32 ole32)
+set_target_properties(hud_preview PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${COD1RELOADED_OUTPUT_DIR}")
+
+# Offline render of the minimap (tools/minimap_preview/main.cpp): the same drawing code as
+# the DLL, on a game screenshot, from a map's BSP or a minimaps pack - how it is tuned.
+#     mingw32-make minimap_preview && build/minimap_preview.exe scene.txt
+add_executable(minimap_preview EXCLUDE_FROM_ALL
+    tools/minimap_preview/main.cpp
+    src/ui/ui_draw.cpp
+    src/ui/minimap.cpp
+    src/ui/radar_map.cpp
+)
+target_include_directories(minimap_preview PRIVATE src)
+target_compile_options(minimap_preview PRIVATE -Wall -Wextra -Wno-unused-parameter -O2)
+target_link_options(minimap_preview PRIVATE -static -static-libgcc -static-libstdc++)
+target_link_libraries(minimap_preview PRIVATE user32 gdi32 gdiplus opengl32 ole32)
+set_target_properties(minimap_preview PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${COD1RELOADED_OUTPUT_DIR}")
+
+# Offline render of the Ctrl+M > Workshop tab (tools/workshop_preview/main.cpp) against a real
+# catalog; it installs into its own folder, so copy the exe to a scratch folder first.
+#     mingw32-make workshop_preview && workshop_preview.exe <catalog url> out.png [w h] [--install]
+add_executable(workshop_preview EXCLUDE_FROM_ALL
+    tools/workshop_preview/main.cpp
+    src/ui/ui_draw.cpp
+    src/ui/workshop_tab.cpp
+    src/features/workshop.cpp
+    src/features/pam_install.cpp
+)
+target_include_directories(workshop_preview PRIVATE src)
+target_compile_options(workshop_preview PRIVATE -Wall -Wextra -Wno-unused-parameter -O2)
+target_link_options(workshop_preview PRIVATE -static -static-libgcc -static-libstdc++)
+target_link_libraries(workshop_preview PRIVATE user32 gdi32 gdiplus opengl32 ole32 wininet advapi32)
+set_target_properties(workshop_preview PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${COD1RELOADED_OUTPUT_DIR}")

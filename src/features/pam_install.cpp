@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace patches {
@@ -19,13 +20,36 @@ PamInstallConfig g_pam_install_config = {
     /* enable       */ true,
     /* manifest_url */ "https://raw.githubusercontent.com/cod1plus/cod1pluspam/main/pam.manifest",
 };
+PamInstallConfig g_hdtex_install_config = {
+    /* enable       */ true,
+    // zcod1..6 + zcod9_fix, 5.6 GB, on the 1.6X fastdl (zcod7 = DXT skies: the engine's cube
+    // map loader dies on them, see pure_extra.c). Plain http: what a 1.6X server accepts is
+    // pinned by checksum in cod1plus.so (pure_extra), a tampered pak is just not read there.
+    /* manifest_url */ "http://87.106.7.52:8080/fastdl/cod1/hdtex/hdtex.manifest",
+};
 
 namespace {
 
 CRITICAL_SECTION g_cs;
 bool      g_cs_init = false;
-bool      g_running = false;
-PamStatus g_status = { PAM_IDLE, "", 0.f, 0, 0, "" };
+
+// One job per package: its config, its status, its own worker thread. The download
+// code below addresses "the current job" through t_job, set at worker entry, so the
+// PAM-era code paths did not have to grow a parameter each.
+struct Job {
+    const PamInstallConfig* cfg;
+    const char* tag;      // log prefix
+    const char* label;    // in status texts
+    bool        running;
+    PamStatus   status;
+    PkgCvar     cvars[PKG_MAX_CVARS];
+    int         ncvars;
+};
+Job g_jobs[PKG_COUNT] = {
+    { &g_pam_install_config,   "pam_install",   "PAM",         false, { PAM_IDLE, "", 0.f, 0, 0, "" }, {}, 0 },
+    { &g_hdtex_install_config, "hdtex_install", "HD textures", false, { PAM_IDLE, "", 0.f, 0, 0, "" }, {}, 0 },
+};
+thread_local Job* t_job = nullptr;
 
 constexpr size_t MAX_MANIFEST_BYTES = 256 * 1024;
 
@@ -35,6 +59,7 @@ struct Manifest {
     int version = 0;
     std::vector<ManifestFile> files;
     std::vector<std::string> removes;
+    std::vector<PkgCvar> cvars;
 };
 
 void cs_init() {
@@ -45,16 +70,17 @@ void cs_init() {
 
 void set_status(int state, const char* text, float progress = -1.f) {
     EnterCriticalSection(&g_cs);
-    g_status.state = state;
-    if (text) snprintf(g_status.text, sizeof(g_status.text), "%s", text);
-    if (progress >= 0.f) g_status.progress = progress;
+    PamStatus& st = t_job->status;
+    st.state = state;
+    if (text) snprintf(st.text, sizeof(st.text), "%s", text);
+    if (progress >= 0.f) st.progress = progress;
     LeaveCriticalSection(&g_cs);
 }
 
 void set_counts(int done, int total) {
     EnterCriticalSection(&g_cs);
-    g_status.files_done = done;
-    g_status.files_total = total;
+    t_job->status.files_done = done;
+    t_job->status.files_total = total;
     LeaveCriticalSection(&g_cs);
 }
 
@@ -131,6 +157,19 @@ bool parse_manifest(const std::string& text, Manifest& m, std::string& err) {
             m.files.push_back(f);
         } else if (t[0] == "remove" && t.size() >= 2) {
             if (valid_name(t[1])) m.removes.push_back(t[1]);
+        } else if (t[0] == "cvar" && t.size() >= 3) {
+            // a cvar the pack needs (seta'd by the menu once installed). Name and value
+            // are plain tokens: no quotes, no semicolons - nothing a console line could
+            // be smuggled into.
+            bool ok = valid_mod(t[1]) && t[1].size() < sizeof(PkgCvar().name) && t[2].size() < sizeof(PkgCvar().value);
+            for (size_t k = 0; ok && k < t[2].size(); ++k)
+                ok = isalnum((unsigned char)t[2][k]) || t[2][k] == '.' || t[2][k] == '-' || t[2][k] == '_';
+            if (ok && (int)m.cvars.size() < PKG_MAX_CVARS) {
+                PkgCvar cv = {};
+                snprintf(cv.name, sizeof(cv.name), "%s", t[1].c_str());
+                snprintf(cv.value, sizeof(cv.value), "%s", t[2].c_str());
+                m.cvars.push_back(cv);
+            }
         }
     }
     if (m.mod.empty()) { err = "manifest names no mod folder"; return false; }
@@ -166,10 +205,10 @@ bool file_sha256(const char* path, unsigned long long* size, std::string& hex) {
     if (!f) return false;
     Sha256 h;
     if (!h.ok) { fclose(f); return false; }
-    static char buf[1 << 16];
+    std::vector<char> buf(1 << 16);       // per call: the Workshop hashes on its own threads
     size_t n;
     unsigned long long total = 0;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) { h.update(buf, (DWORD)n); total += n; }
+    while ((n = fread(buf.data(), 1, buf.size(), f)) > 0) { h.update(buf.data(), (DWORD)n); total += n; }
     fclose(f);
     *size = total;
     hex = h.hex();
@@ -183,8 +222,14 @@ HINTERNET open_inet() {
     return hi;
 }
 
-HINTERNET open_url(HINTERNET hi, const char* url, std::string& err) {
-    HINTERNET hu = InternetOpenUrlA(hi, url, NULL, 0,
+// resume_from > 0 asks for the tail of the file (Range); *status_out tells whether the
+// server honoured it (206) or sent the whole file again (200). Redirects (GitHub
+// release assets bounce to their CDN) are followed by WinINet itself.
+HINTERNET open_url(HINTERNET hi, const char* url, std::string& err,
+                   unsigned long long resume_from = 0, DWORD* status_out = nullptr) {
+    char hdr[64] = "";
+    if (resume_from) snprintf(hdr, sizeof(hdr), "Range: bytes=%llu-\r\n", resume_from);
+    HINTERNET hu = InternetOpenUrlA(hi, url, hdr[0] ? hdr : NULL, hdr[0] ? (DWORD)-1 : 0,
                                     INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_UI, 0);
     if (!hu) {
         char b[96]; snprintf(b, sizeof(b), "connection failed (err %lu)", GetLastError());
@@ -193,16 +238,18 @@ HINTERNET open_url(HINTERNET hi, const char* url, std::string& err) {
     DWORD rtmo = 30000;
     InternetSetOptionA(hu, INTERNET_OPTION_RECEIVE_TIMEOUT, &rtmo, sizeof(rtmo));
     DWORD status = 0, ssz = sizeof(status);
-    if (HttpQueryInfoA(hu, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &status, &ssz, NULL) && status != 200) {
+    if (HttpQueryInfoA(hu, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &status, &ssz, NULL) &&
+        status != 200 && !(resume_from && status == 206)) {
         char b[64]; snprintf(b, sizeof(b), "HTTP %lu", status);
         err = b;
         InternetCloseHandle(hu);
         return NULL;
     }
+    if (status_out) *status_out = status;
     return hu;
 }
 
-bool http_get_text(const char* url, std::string& out, std::string& err) {
+bool http_get_text(const char* url, std::string& out, std::string& err, size_t max_bytes = MAX_MANIFEST_BYTES) {
     HINTERNET hi = open_inet();
     if (!hi) { err = "wininet unavailable"; return false; }
     HINTERNET hu = open_url(hi, url, err);
@@ -211,7 +258,7 @@ bool http_get_text(const char* url, std::string& out, std::string& err) {
     char buf[8192]; DWORD n = 0; bool ok = true;
     while (InternetReadFile(hu, buf, sizeof(buf), &n) && n > 0) {
         out.append(buf, n);
-        if (out.size() > MAX_MANIFEST_BYTES) { ok = false; err = "manifest too large"; break; }
+        if (out.size() > max_bytes) { ok = false; err = "manifest too large"; break; }
     }
     InternetCloseHandle(hu);
     InternetCloseHandle(hi);
@@ -220,22 +267,52 @@ bool http_get_text(const char* url, std::string& out, std::string& err) {
 }
 
 // stream `url` into `path`, hashing on the fly; progress via `done_base + bytes` over `total`
+// Resumable: a <name>.part left by an interrupted run is continued from its size
+// (a multi-GB texture pack over a flaky link must not start over), its bytes are
+// hashed first so the SHA-256 still covers the whole file. A server that ignores
+// the Range request (200) makes us start over. `cb` set (pkg_fetch_file): progress goes
+// there instead of a package job's status.
 bool http_get_file(const char* url, const char* path, unsigned long long expect_size,
                    unsigned long long done_base, unsigned long long total,
-                   const char* label, std::string& sha_out, std::string& err) {
+                   const char* label, std::string& sha_out, std::string& err,
+                   PkgProgressFn cb = nullptr, void* cb_user = nullptr) {
     HINTERNET hi = open_inet();
     if (!hi) { err = "wininet unavailable"; return false; }
-    HINTERNET hu = open_url(hi, url, err);
-    if (!hu) { InternetCloseHandle(hi); return false; }
-    FILE* f = fopen(path, "wb");
-    if (!f) { err = "cannot write to the mod folder"; InternetCloseHandle(hu); InternetCloseHandle(hi); return false; }
     Sha256 h;
-    static char buf[1 << 16];
+    unsigned long long have = 0;
+    {
+        WIN32_FILE_ATTRIBUTE_DATA d;
+        if (GetFileAttributesExA(path, GetFileExInfoStandard, &d))
+            have = ((unsigned long long)d.nFileSizeHigh << 32) | d.nFileSizeLow;
+        if (have >= expect_size) have = 0;        // complete or oversized leftover: redo it
+    }
+    DWORD status = 0;
+    HINTERNET hu = open_url(hi, url, err, have, &status);
+    if (!hu) { InternetCloseHandle(hi); return false; }
+    if (have && status != 206) have = 0;          // no partial content: from scratch
+    if (have) {
+        // hash what we already have; a part we cannot read is a part we do not trust
+        FILE* pf = fopen(path, "rb");
+        unsigned long long hashed = 0;
+        if (pf) {
+            std::vector<char> hb(1 << 16); size_t k;
+            while ((k = fread(hb.data(), 1, hb.size(), pf)) > 0) { h.update(hb.data(), (DWORD)k); hashed += k; }
+            fclose(pf);
+        }
+        if (hashed != have) { have = 0; InternetCloseHandle(hu); hu = open_url(hi, url, err, 0, &status); if (!hu) { InternetCloseHandle(hi); return false; } }
+    }
+    FILE* f = fopen(path, have ? "ab" : "wb");
+    if (!f) { err = "cannot write to the mod folder"; InternetCloseHandle(hu); InternetCloseHandle(hi); return false; }
+    if (!have) { Sha256 fresh; std::swap(h.prov, fresh.prov); std::swap(h.hash, fresh.hash); std::swap(h.ok, fresh.ok); }
+    if (have) logger::logf("%s: resuming %s at %.1f MB", t_job ? t_job->tag : "fetch", label, have / 1048576.0);
+    std::vector<char> bufv(1 << 16);
+    char* buf = bufv.data();
     DWORD n = 0;
-    unsigned long long got = 0;
+    unsigned long long got = have;
     bool ok = true;
     DWORD last_ui = 0, t0 = GetTickCount();
-    while (InternetReadFile(hu, buf, sizeof(buf), &n) && n > 0) {
+    const unsigned long long got0 = got;
+    while (InternetReadFile(hu, buf, (DWORD)bufv.size(), &n) && n > 0) {
         if (fwrite(buf, 1, n, f) != n) { ok = false; err = "disk write failed"; break; }
         h.update(buf, n);
         got += n;
@@ -244,43 +321,49 @@ bool http_get_file(const char* url, const char* path, unsigned long long expect_
         if (now - last_ui > 100) {
             last_ui = now;
             const double secs = (now - t0) / 1000.0;
+            if (cb) { cb(cb_user, got, expect_size, secs > 0.2 ? (got - got0) / 1048576.0 / secs : 0.0); continue; }
             char txt[160];
             snprintf(txt, sizeof(txt), "%s  %.1f / %.1f MB  %.1f MB/s", label,
-                     got / 1048576.0, expect_size / 1048576.0, secs > 0.2 ? got / 1048576.0 / secs : 0.0);
+                     got / 1048576.0, expect_size / 1048576.0, secs > 0.2 ? (got - got0) / 1048576.0 / secs : 0.0);
             set_status(PAM_DOWNLOADING, txt, total ? (float)((double)(done_base + got) / (double)total) : 0.f);
         }
     }
     fclose(f);
     InternetCloseHandle(hu);
     InternetCloseHandle(hi);
-    if (ok && got != expect_size) { ok = false; err = "transfer ended early"; }
-    if (!ok) { DeleteFileA(path); return false; }
+    if (ok && got != expect_size) { ok = false; err = "transfer ended early (resumes next time)"; }
+    if (!ok) {
+        if (got > expect_size) DeleteFileA(path);      // only a wrong file is thrown away
+        return false;
+    }
     sha_out = h.hex();
     return true;
 }
 
 // ---------------------------------------------------------------- the job
-DWORD WINAPI worker(LPVOID) {
+DWORD WINAPI worker(LPVOID p) {
+    t_job = (Job*)p;
     char base[MAX_PATH];
     if (!game_dir(base, sizeof(base))) { set_status(PAM_ERROR, "cannot locate the game folder"); goto out; }
     {
-        set_status(PAM_CHECKING, "Fetching the PAM manifest...", 0.f);
+        char txt0[96]; snprintf(txt0, sizeof(txt0), "Fetching the %s manifest...", t_job->label);
+        set_status(PAM_CHECKING, txt0, 0.f);
         std::string text, err;
-        if (!http_get_text(g_pam_install_config.manifest_url, text, err)) {
+        if (!http_get_text(t_job->cfg->manifest_url, text, err)) {
             char b[200]; snprintf(b, sizeof(b), "Manifest: %s", err.c_str());
-            logger::logf("pam_install: %s (%s)", b, g_pam_install_config.manifest_url);
+            logger::logf("%s: %s (%s)", t_job->tag, b, t_job->cfg->manifest_url);
             set_status(PAM_ERROR, b); goto out;
         }
         Manifest m;
         if (!parse_manifest(text, m, err)) {
             char b[200]; snprintf(b, sizeof(b), "Manifest: %s", err.c_str());
-            logger::logf("pam_install: %s", b);
+            logger::logf("%s: %s", t_job->tag, b);
             set_status(PAM_ERROR, b); goto out;
         }
         EnterCriticalSection(&g_cs);
-        snprintf(g_status.mod, sizeof(g_status.mod), "%s", m.mod.c_str());
+        snprintf(t_job->status.mod, sizeof(t_job->status.mod), "%s", m.mod.c_str());
         LeaveCriticalSection(&g_cs);
-        logger::logf("pam_install: manifest %s v%d, %d file(s), %d removal(s)",
+        logger::logf("%s: manifest %s v%d, %d file(s), %d removal(s)", t_job->tag,
                      m.mod.c_str(), m.version, (int)m.files.size(), (int)m.removes.size());
 
         char moddir[MAX_PATH];
@@ -317,13 +400,13 @@ DWORD WINAPI worker(LPVOID) {
             std::string hex;
             if (!http_get_file(f.url.c_str(), part, f.size, done, total, label, hex, err)) {
                 char b[200]; snprintf(b, sizeof(b), "%s: %s", f.name.c_str(), err.c_str());
-                logger::logf("pam_install: %s (%s)", b, f.url.c_str());
+                logger::logf("%s: %s (%s)", t_job->tag, b, f.url.c_str());
                 set_status(PAM_ERROR, b); goto out;
             }
             if (hex != f.sha) {
                 DeleteFileA(part);
                 char b[200]; snprintf(b, sizeof(b), "%s: checksum mismatch, discarded", f.name.c_str());
-                logger::logf("pam_install: %s", b);
+                logger::logf("%s: %s", t_job->tag, b);
                 set_status(PAM_ERROR, b); goto out;
             }
             if (!MoveFileExA(part, path, MOVEFILE_REPLACE_EXISTING)) {
@@ -332,11 +415,11 @@ DWORD WINAPI worker(LPVOID) {
                 char pnew[MAX_PATH]; snprintf(pnew, sizeof(pnew), "%s.new", path);
                 if (!MoveFileExA(part, pnew, MOVEFILE_REPLACE_EXISTING)) {
                     char b[200]; snprintf(b, sizeof(b), "%s: cannot place the file", f.name.c_str());
-                    logger::logf("pam_install: %s", b);
+                    logger::logf("%s: %s", t_job->tag, b);
                     set_status(PAM_ERROR, b); goto out;
                 }
                 ++restart_needed;
-                logger::logf("pam_install: %s is in use, staged as .new (applied at next launch)", f.name.c_str());
+                logger::logf("%s: %s is in use, staged as .new (applied at next launch)", t_job->tag, f.name.c_str());
             }
             done += f.size;
             ++fetched;
@@ -356,59 +439,87 @@ DWORD WINAPI worker(LPVOID) {
         if (restart_needed)
             snprintf(b, sizeof(b), "%d file(s) staged - restart the game to finish (mod in use)", restart_needed);
         else if (fetched == 0)
-            snprintf(b, sizeof(b), "PAM is up to date (%d files, v%d)", (int)m.files.size(), m.version);
+            snprintf(b, sizeof(b), "%s up to date (%d files, v%d)", t_job->label, (int)m.files.size(), m.version);
         else
-            snprintf(b, sizeof(b), "PAM ready: %d file(s) installed, %.0f MB (v%d)", fetched, total / 1048576.0, m.version);
-        logger::logf("pam_install: %s%s", b, removed ? " (+ stale files removed)" : "");
+            snprintf(b, sizeof(b), "%s ready: %d file(s) installed, %.0f MB (v%d)", t_job->label, fetched, total / 1048576.0, m.version);
+        logger::logf("%s: %s%s", t_job->tag, b, removed ? " (+ stale files removed)" : "");
+        // the pack's cvars: handed to the menu (main thread) by pkg_install_take_cvars
+        EnterCriticalSection(&g_cs);
+        t_job->ncvars = 0;
+        for (size_t i = 0; i < m.cvars.size() && t_job->ncvars < PKG_MAX_CVARS; ++i)
+            t_job->cvars[t_job->ncvars++] = m.cvars[i];
+        LeaveCriticalSection(&g_cs);
         set_status(restart_needed ? PAM_RESTART : PAM_DONE, b, 1.f);
     }
 out:
     EnterCriticalSection(&g_cs);
-    g_running = false;
+    t_job->running = false;
     LeaveCriticalSection(&g_cs);
     return 0;
 }
 
 }  // namespace
 
-void pam_install_start() {
+void pkg_install_start(PkgId id) {
     cs_init();
-    if (!g_pam_install_config.enable || !g_pam_install_config.manifest_url[0]) {
-        set_status(PAM_ERROR, "PAM download disabled in cod1reloaded.ini");
+    if (id < 0 || id >= PKG_COUNT) return;
+    Job& j = g_jobs[id];
+    EnterCriticalSection(&g_cs);
+    if (j.running) { LeaveCriticalSection(&g_cs); return; }
+    if (!j.cfg->enable || !j.cfg->manifest_url[0]) {
+        j.status.state = PAM_ERROR;
+        snprintf(j.status.text, sizeof(j.status.text), "%s", !j.cfg->enable
+                 ? "download disabled in cod1reloaded.ini" : "no download link configured yet");
+        LeaveCriticalSection(&g_cs);
         return;
     }
-    EnterCriticalSection(&g_cs);
-    if (g_running) { LeaveCriticalSection(&g_cs); return; }
-    g_running = true;
-    g_status.state = PAM_CHECKING;
-    g_status.progress = 0.f;
-    g_status.files_done = g_status.files_total = 0;
-    snprintf(g_status.text, sizeof(g_status.text), "Starting...");
+    j.running = true;
+    j.status.state = PAM_CHECKING;
+    j.status.progress = 0.f;
+    j.status.files_done = j.status.files_total = 0;
+    snprintf(j.status.text, sizeof(j.status.text), "Starting...");
     LeaveCriticalSection(&g_cs);
-    HANDLE h = CreateThread(NULL, 0, worker, NULL, 0, NULL);
+    HANDLE h = CreateThread(NULL, 0, worker, &j, 0, NULL);
     if (!h) {
         EnterCriticalSection(&g_cs);
-        g_running = false;
+        j.running = false;
+        j.status.state = PAM_ERROR;
+        snprintf(j.status.text, sizeof(j.status.text), "cannot start the download thread");
         LeaveCriticalSection(&g_cs);
-        set_status(PAM_ERROR, "cannot start the download thread");
         return;
     }
     CloseHandle(h);
 }
 
-void pam_install_status(PamStatus* out) {
+void pkg_install_status(PkgId id, PamStatus* out) {
     cs_init();
+    if (id < 0 || id >= PKG_COUNT) { *out = PamStatus{ PAM_IDLE, "", 0.f, 0, 0, "" }; return; }
     EnterCriticalSection(&g_cs);
-    *out = g_status;
+    *out = g_jobs[id].status;
     LeaveCriticalSection(&g_cs);
 }
 
-bool pam_install_running() {
+bool pkg_install_running(PkgId id) {
     cs_init();
+    if (id < 0 || id >= PKG_COUNT) return false;
     EnterCriticalSection(&g_cs);
-    const bool r = g_running;
+    const bool r = g_jobs[id].running;
     LeaveCriticalSection(&g_cs);
     return r;
+}
+
+int pkg_install_take_cvars(PkgId id, PkgCvar* out, int max) {
+    cs_init();
+    if (id < 0 || id >= PKG_COUNT || !out || max <= 0) return 0;
+    EnterCriticalSection(&g_cs);
+    Job& j = g_jobs[id];
+    int n = 0;
+    if (!j.running) {
+        for (; n < j.ncvars && n < max; ++n) out[n] = j.cvars[n];
+        j.ncvars = 0;
+    }
+    LeaveCriticalSection(&g_cs);
+    return n;
 }
 
 // DllMain, before the engine opens any pak: every <game>\<dir>\*.pk3.new replaces its pk3.
@@ -436,7 +547,33 @@ void pam_install_swap_pending() {
         FindClose(h2);
     } while (FindNextFileA(h, &d));
     FindClose(h);
-    if (swapped) logger::logf("pam_install: %d staged pk3(s) swapped in from the previous session", swapped);
+    if (swapped) logger::logf("pkg_install: %d staged pk3(s) swapped in from the previous session", swapped);
 }
+
+// ---------------------------------------------------------------- shared with the Workshop
+bool pkg_fetch_text(const char* url, size_t max_bytes, std::string& out, std::string& err) {
+    return http_get_text(url, out, err, max_bytes);
+}
+
+bool pkg_fetch_file(const char* url, const char* path, unsigned long long expect_size,
+                    PkgProgressFn progress, void* user, char sha_hex[65], std::string& err) {
+    std::string hex;
+    sha_hex[0] = 0;
+    if (!http_get_file(url, path, expect_size, 0, expect_size, "", hex, err, progress, user)) return false;
+    snprintf(sha_hex, 65, "%s", hex.c_str());
+    return true;
+}
+
+bool pkg_file_sha256(const char* path, unsigned long long* size, char sha_hex[65]) {
+    std::string hex;
+    sha_hex[0] = 0;
+    if (!file_sha256(path, size, hex)) return false;
+    snprintf(sha_hex, 65, "%s", hex.c_str());
+    return true;
+}
+
+bool pkg_game_dir(char* out, size_t n) { return game_dir(out, n); }
+bool pkg_valid_pk3_name(const char* s) { return s && valid_name(s); }
+bool pkg_valid_folder(const char* s) { return s && valid_mod(s); }
 
 }  // namespace patches

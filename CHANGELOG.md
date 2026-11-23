@@ -1,5 +1,248 @@
 # cod1reloaded — Changelog
 
+## 1.6.19 (2026-11-09, pre-release) — armes au sol : munitions avec la touche d'action seulement
+
+- **Armes au sol : plus de ramassage prédit en marchant dessus** (`use_pickup`, cvar `cod1x_use_pickup`, 1 par
+  défaut). Moitié client de `use_pickup` du serveur (cod1plus.so), qui ne donne plus les munitions d'une arme
+  au contact, seulement avec la touche d'action. Le jeu prédisait encore ce ramassage chez le joueur qui
+  passe dessus : son de ramassage et arme cachée alors que le serveur ne donne rien. Les medkits gardent leur
+  prédiction. Sur un serveur qui donne encore les munitions au contact, elles arrivent avec l'événement du
+  serveur (comme `cg_predictItems 0`, pour les armes seulement). `cod1x_use_pickup 0` = prédiction du jeu.
+
+## 1.6.18 (2026-11-03) — exec / vstr interdits, bind grenade dans Ctrl+M
+
+- **`exec` et `vstr` ne sont plus utilisables par les joueurs.** Un bind qui lance `exec` ou `vstr` est refusé avec
+  un message rouge dans la console, et la touche est libérée : la ligne disparaît de `config_mp.cfg` à la prochaine
+  écriture de la config. Les taper dans la console est refusé aussi (message rouge). Les configs que le jeu charge
+  lui-même (démarrage, changement de mod, menus) ne sont pas touchées.
+- **Un bind qui tire et se déplace est refusé** de la même façon : `+attack` / `-attack` avec `+forward`, `+back`,
+  `+moveleft`, `+moveright`, `+moveup` ou `+movedown` dans le même bind (le script course-saut-lancer automatique).
+  Le jump-throw sur `+gostand`, avec ou sans `wait`, reste autorisé.
+- **Ctrl+M > Keys > COMBAT : « Jump-throw grenade »**, le bind autorisé `+gostand; wait 2; -attack; wait 2; -gostand`,
+  sur la touche de son choix.
+- **mp_liberation ne plante plus au chargement** (« recursive error after: Hunk_AllocAlign failed ») : la map demande
+  167 Mo de mémoire de chargement et le jeu n'en réservait que 128 par défaut. Le minimum passe à 256 Mo
+  (`com_hunkmegs` plus haut dans la config : gardé). mp_coastal demande toujours `com_hunkmegs 512` à la main.
+
+## 1.6.17 (2026-11-02) — la souris retrouve le délai de la 1.6.12
+
+- **Le délai de la souris redevient celui de la 1.6.12.** Depuis la 1.6.13, le jeu laissait la carte graphique
+  finir une image pendant qu'il préparait la suivante, et attendait entre deux images avec une minuterie plus fine.
+  Le calcul de la souris n'avait pas changé, mais des joueurs la sentaient en retard, même RENDER CLOCK coupé.
+  Retour au rythme de la 1.6.12 : le jeu attend que la carte graphique ait fini chaque image (`glFinish`), avec
+  l'ancienne attente. Une 1.6.16 de test avec ce rythme a rendu à un joueur « son délai habituel ».
+  Le rythme de la 1.6.13 reste au choix : Ctrl+M > Display > **1.6.13 frame timing (GPU fence)**, OFF par défaut,
+  en direct (`cod1x_gpu_fence`), avec un avertissement : il change le délai de la souris, la visée peut donner
+  l'impression d'une autre sensibilité.
+- **MG montée : plus d'accélération, comme dans le jeu d'origine.** Depuis la 1.6.13, `cl_mouseAccel` s'ajoutait
+  à `sensitivity_mg` sur une MG (formule de cod2x) : avec de l'accélération, la MG tournait plus vite que le jeu
+  ne l'a jamais fait. `sensitivity_mg 1` = la vitesse du jeu pour tout le monde.
+
+## 1.6.16 (2026-11-01) — RENDER CLOCK et RInput externe
+
+- **RENDER CLOCK + RInput externe** : la souris ne donne plus l'impression d'une autre sensibilité ou d'une
+  accélération. Entre deux ticks, le RENDER CLOCK tournait la vue avec le curseur de Windows (sa vitesse et son
+  accélération) alors que le jeu visait avec le raw input de RInput. Quand un outil externe a repris la souris du
+  jeu, la vue ne tourne plus qu'avec les commandes du jeu (le RENDER CLOCK garde le déplacement fluide).
+- **RENDER CLOCK ne retombe plus à 250 sur un bon PC** : une seule demi-seconde avec quelques images en retard
+  suffisait (les à-coups juste après l'apparition, un pic isolé) et le plafond restait jusqu'au changement de
+  réglage. Les 3 premières secondes en jeu ne comptent plus, et il faut maintenant que le retard dure (3 demi-secondes
+  en retard de plus que de demi-secondes à l'heure) : un PC qui ne suit vraiment pas retombe toujours à 250.
+
+## 1.6.15 (2026-11-01) — plus de chutes de fps quand des joueurs apparaissent
+
+- **RENDER CLOCK repasse sur OFF pour tout le monde** (Ctrl+M > Display, nouvelle cvar `cod1x_render_clock`).
+  Sa protection ne se déclenchait jamais en 1.6.13 / 1.6.14 : sur un CPU modeste, les images en plus faisaient
+  chuter les fps dès que des joueurs entraient dans le champ (chacun redessiné à chaque image en plus). Elle
+  réagit maintenant en une demi-seconde (2 % d'images en retard suffisent) et garde 250 images / s jusqu'à ce
+  qu'on change le réglage, plus de nouvel essai au milieu d'un combat.
+- **Priorité de jeu Windows (MMCSS) désactivée par défaut** : nouvel interrupteur « Windows game priority
+  (MMCSS) » dans Ctrl+M > Display (cvar `cod1x_mmcss`, sauvegardée, s'applique tout de suite). Activée d'office en
+  1.6.13, elle peut provoquer des saccades sur les processeurs de 4 à 6 cœurs.
+
+## 1.6.14 (2026-10-31) — la minimap désactivée par défaut
+
+- **La minimap est désactivée par défaut** : on l'active dans Ctrl+M > Display (cvar `cod1x_minimap_on`, sauvegardée).
+  La 1.6.13 l'affichait d'office et sa cvar `cod1x_minimap` était sauvegardée dans chaque `config_mp.cfg` (un par
+  mod) : l'interrupteur porte désormais un autre nom, ces anciens « 1 » ne font plus rien. `cod1x_minimap` reste la
+  clé du serveur (0 / 1 / 2, serverinfo / systeminfo).
+
+## 1.6.13 (2026-10-31) — des fps stables à 250, une minimap, un éditeur de HUD et le Workshop
+
+### 🗺️ Minimap (radar façon CoD4)
+- En haut à droite (le chat de CoD1 est en haut à gauche), **toi et tes coéquipiers seulement, jamais
+  un ennemi**. Zoomée sur toi (`cod1x_minimap_range`), tourne avec la vue ou nord en haut, carrée arrondie ou
+  ronde, sites de bombe épinglés au bord quand ils sont hors champ ; réglages dans Ctrl+M > Display.
+- Le serveur décide avec la clé `cod1x_minimap` (serverinfo / systeminfo) : 0 = rien, 1 = toi seul, 2 = + tes
+  coéquipiers. Sans clé : coéquipiers, ou toi seul quand un ruleset compétitif est appliqué.
+- Le dessin de la carte vient du pack « Minimaps » du Workshop s'il est installé, sinon le client le trace
+  lui-même depuis le BSP de la carte. `cod1x_minimap 0` = plus de minimap.
+
+### 🧩 Éditeur de HUD (Ctrl+M > Display)
+- Boussole, posture, barre de vie, munitions, nom de l'arme, indications d'action et liste des armes (en haut
+  au changement d'arme) : déplacés à la souris ou masqués. Un élément jamais touché reste celui du jeu.
+- Compteur de fps et lagometer : ceux du jeu (`cg_drawFPS` / `cg_lagometer`, par défaut) ou ceux de 1.6X,
+  placés où l'on veut.
+
+### 📦 Workshop (Ctrl+M > Workshop)
+- Les maps et mods du catalogue 1.6X (dépôt GitHub cod1plus/workshop) : un clic = téléchargé, vérifié
+  (SHA-256) et installé au bon endroit ; mise à jour signalée quand une nouvelle version sort. Packs de
+  plusieurs fichiers (textures HD) et pack d'images de la minimap.
+- **PLAY** sur une map installée : la lance seul en devmap, dans Main (Aim Rooms, Liberation, Coastal). Juste
+  après un téléchargement, les fichiers du jeu sont rechargés d'abord : pas besoin de relancer le jeu.
+
+### 🖱️ Sensibilité sur MG montée : `sensitivity_mg`
+- Comme `sensitivity_MG` de cod2x (sauvegardée, 1 par défaut = le jeu à l'identique, 0,01 à 100). Sur une MG
+  montée le jeu ignore `sensitivity` et tourne à vitesse fixe ; cette vitesse est multipliée par
+  `sensitivity_mg` (plus `cl_mouseAccel`). Pour retrouver en horizontal sa sensibilité S : `sensitivity_mg` =
+  S / 2,5. Curseur « Mounted MG » dans Ctrl+M > Mouse > SENSITIVITY.
+
+### 🏙️ Grandes maps converties (Liberation, Coastal)
+- Les traces de collision ne parcourent plus chaque brosse d'un modèle de brosses que la trace ne touche pas
+  (`trace_cull`) : mêmes collisions, 120-170 → 217-246 fps mesurés sur Liberation.
+- `r_vbo_paranoia` (hérité d'une config de développeur d'Activision dans pak9) n'efface plus les buffers GPU
+  à chaque image.
+- Les petits décors des maps converties (grappes `<map>_dt*`) disparaissent à leur distance prévue même sous
+  `r_lodscale 0` (`cod1x_detail_scale`). Les maps stock ne sont pas concernées.
+- `cod1x_static_flatlight 1` (0 par défaut) : éclairage uniforme par modèle statique au lieu du calcul par
+  sommet, contre les saccades en tournant sur une très grosse map ; il change l'éclairage des modèles, d'où
+  le défaut à 0.
+- `cod1x_bench` : banc de mesure des images (diagnostic, inactif par défaut).
+
+### 🎯 Ce qui faisait chuter les fps en 1.6.12 (mesuré sur les logs, lignes `bilan`)
+- **Le journal était écrit de façon synchrone sur le thread du jeu** : chaque ligne = fopen / fputs / fclose.
+  Or 1.6.12 écrivait `pos_log` une fois par seconde ET PAR JOUEUR, plus `aim_log` deux fois par seconde :
+  sur un serveur plein, vingt ouvertures de fichier par seconde au milieu des frames (disque lent, dossier
+  OneDrive, antivirus = plusieurs ms chacune). Le logger est désormais **asynchrone** (thread écrivain,
+  WriteFile) et les traces de développement (`pos_log`, `aim_log`, dump des contrôleurs) ne s'activent
+  qu'avec `COD1RELOADED_DEV_LOGS=1`.
+- **L'attente du GPU bloquait le jeu** : `gpu_sync` faisait un `glFinish` après chaque SwapBuffers (zéro
+  image en vol). Chaque à-coup du GPU — 1,5 à 5 ms sur une image qui en prend 0,5 en moyenne, 12 à 36 ms au
+  retour d'un alt-tab — devenait une frame longue (54 des 66 frames longues d'une session mesurée). Remplacé
+  par une **fence GL_ARB_sync sur l'image précédente** : une image en vol au maximum (la file d'un pilote
+  laissé seul en garde deux ou trois), les à-coups sont absorbés, et tant que le GPU suit la latence est la
+  même qu'avant. Sans GL_ARB_sync, ou avec `COD1RELOADED_GPU_FINISH=1`, l'ancien glFinish.
+- **Les cartes à plus de 1021 modèles visibles** (coastal, hurtgen, carentan depuis certains points) : pour
+  CHAQUE modèle au-delà de la limite, le moteur parcourait toute la liste avec une racine carrée par entrée
+  pour trouver le plus lointain à remplacer — des millions d'opérations par image, 30 fps sur coastal. Le
+  parcours est remplacé par un tas de distances construit une fois par image (`smodel_fast`, cvar
+  `cod1x_smodel_fast`, 1 par défaut). **Le modèle remplacé est exactement celui que le moteur aurait choisi** :
+  ce qui est affiché ne change pas d'un buisson, seule la vitesse change.
+- L'attente du limiteur passe sur un minuteur haute résolution (spin 1 ms au lieu de 2,5) et le thread du jeu
+  rejoint la classe MMCSS « Games » (`COD1RELOADED_MMCSS=0` pour l'éviter) : pics de frame divisés par 2 à 4
+  au banc.
+
+### 📊 Diagnostic dans `cod1reloaded.log` (pour les prochaines plaintes)
+- Ligne `rythme` à chaque bilan : régularité des images et de l'affichage (moyenne, écart-type, p99, max).
+- Ligne `dll` à chaque bilan : ce que les hooks de la DLL coûtent par image, hook par hook.
+- Ligne `stall:` pour chaque frame à plus de deux fois la période du cap et 8 ms (40 par minute au plus) :
+  temps où le thread a vraiment tourné (préempté / en attente sinon), attente GPU, remplacements de scène,
+  paquets reçus, fenêtre réduite ou en arrière-plan, et la part de la DLL. `COD1RELOADED_STALL_TRACE=0` = off.
+- Ligne `scene` quand une fenêtre a eu des images au-delà des 1021 modèles.
+
+### 🖥️ Ctrl+M
+- **Display > RENDER CLOCK** (`cod1x_render_hz`, **0 = off par défaut, comportement moteur inchangé**) : N images
+  par seconde régulièrement espacées à l'écran pendant que le jeu garde ses 250 commandes ; -1 = suit l'écran.
+  Au-dessus de 250 c'est du travail CPU en plus : si plus de 5 % des frames de commande arrivent en retard,
+  le taux retombe de lui-même à com_maxfps et réessaie 30 s plus tard (trois fois par session).
+- Keys : BACKSPACE pendant une liaison efface les touches de l'action.
+
+### 🎮 Jeu
+- Lean : table v9 = **la même que 1.6.12 et que le .so en ligne** (7,5 partout) ; aucune mise à jour serveur
+  n'est nécessaire pour cette version.
+- Démos : lues dans le mod de l'enregistrement (fs_game), avec la liste pure du serveur enregistré ; le spec
+  compétitif du serveur n'est plus réappliqué en lecture (timescale libre).
+- anim_clamp : une valeur d'animation hors plage est jouée comme l'animation 0 à l'entrée du runner d'interpolation
+  (plus de retour au menu sur une démo enregistrée sur un serveur moddé).
+- Un crash pendant le chargement d'une carte ne laisse plus une fenêtre plein écran figée : à la fermeture du
+  processus, la DLL ne restaure plus le gamma (l'appel attendait indéfiniment un thread déjà mort).
+
+## Non publié (correctif 1.6.9, build de test du 2026-09-26)
+
+### 📄 `cod1reloaded.ini` absent = recréé, plus jamais les défauts compilés en silence
+- Un joueur (1.6.9, D:\) jouait SANS `cod1reloaded.ini` à côté de `mss32.dll` : `load_config` sortait
+  sans une ligne de log, aucun verrou, et les défauts compilés s'appliquaient — dont `smoothness_cpu_cores`
+  = 2, soit le jeu entier épinglé sur UN cœur physique (mask 0x3) : 1 200 à 2 800 frames longues par
+  minute, `glFinish` à 54 % (pilote GPU affamé), gpu_sync qui se coupe. Le fichier livré est désormais
+  embarqué dans la DLL (`build/generated/ini_template.h`, généré par CMake depuis `cod1reloaded.ini`) et
+  réécrit tel quel quand il manque, avec une ligne `*** cod1reloaded.ini was MISSING …` dans le log ;
+  si l'écriture échoue, les valeurs verrouillées sont forcées quand même et le log le dit.
+- Défauts compilés alignés sur l'ini livré : `smoothness_cpu_cores` 2 → 0, working set max 512 → 5000 MB.
+- `tools/test_ini_template.cpp` : copie embarquée identique octet pour octet, verrou sans effet dessus.
+
+### 📡 Diagnostic réseau dans le bilan (pour les 999)
+- Hook des imports `WSOCK32.dll` `recvfrom`/`sendto` (le moteur les importe par ORDINAL, 17/20 :
+  `iat_hook_ordinal`). Le bilan gagne `net recu N pq (trou max X ms) envoye N pq (trou max X ms)`.
+- Quand un silence ≥ 0,8 s (ce qu'il faut pour un 999 à snaps 40) se termine alors qu'une partie était
+  en cours (≥ 10 paquets/s dans chaque sens la seconde d'avant), UNE ligne dit ce que le jeu faisait
+  pendant : `jeu gele (N frames)`, `reseau entrant ou serveur` (le jeu tournait et envoyait) ou
+  `anomalie client` (le jeu tournait, recevait, n'envoyait plus). Un silence encore ouvert après 1 s
+  est signalé par le watcher. 40 lignes max par session.
+
+## v1.6.9 (2026-09-25)
+
+Base : la 1.6.8 (ruleset compilé en v6) + la fluidité, rien d'autre — pas de home screen ni de
+menu Ctrl+M de la branche dev. Validé en jeu par enzo et les admins.
+
+### 🔒 Réglages imposés (tout le monde joue pareil)
+- `cod1reloaded.ini` est remis en ligne à chaque lancement : `frame_limiter_enable = on`,
+  `force_1ms_timer = on`, `gpu_sync = auto`, `input_late_sampling = on`, `fullscreen = on`,
+  `refresh_rate = max`, `smoothness_cpu_cores = 0`. Une clé absente est ajoutée avec son explication,
+  une clé modifiée est réécrite ; tout le reste du fichier (et vos autres réglages) est conservé.
+  Les valeurs utilisées sont celles-là quoi que dise le fichier. `raw_mouse_input` reste votre choix.
+- `r_fullscreen` est mis à 1 et passé en lecture seule (un `seta r_fullscreen 0` laissé dans
+  `config_mp.cfg` par une ancienne version est corrigé) ; `r_displayRefresh` est maintenu au Hz maximum
+  de l'écran. Le menu 1.6X et la console ne peuvent plus les changer.
+
+### ⚡ Entrées lues après l'attente de frame
+- Le moteur lisait la souris avant l'attente du limiteur et pompait le clavier / les boutons souris
+  **après** avoir construit la commande de la frame : un clic fait pendant la frame N partait dans la
+  commande de N+1 au mieux (vanilla compris). Le limiteur pompe la file et relit la souris à la fin de
+  son attente : une frame de latence en moins sur les clics et les touches, la durée d'attente en moins
+  sur la souris.
+
+### 🖥️ Plein écran exclusif, Hz maximum
+- En `r_fullscreen 1` la 1.6.8 restylait quand même la fenêtre en borderless (mode hybride) : le
+  watcher ne touche plus à la fenêtre du moteur, garde la réduction à la perte de focus et remet le
+  mode du jeu au retour. Le plafond moteur de `r_displayRefresh` (200 Hz) est levé ; un mode refusé
+  est retenté au meilleur Hz listé (`mode_guard`, chaque changement de mode est dans le log).
+
+### 🎮 GPU : une frame en vol
+- `glFinish` après chaque `SwapBuffers` : la frame qui porte votre mouvement est à l'écran avant la
+  lecture suivante de la souris. En `auto`, si l'attente occupe plus de la moitié de la frame pendant
+  10 s (GPU limitant), la synchro se coupe pour la session et le dit dans le log.
+
+### 📋 Une ligne de bilan dans le log
+- Toutes les 60 s et à la fermeture : `bilan 60 s: 250.0 fps (15000 frames, 0 en retard, 0 longues,
+  max 4.3 ms) | GPU 0.50 ms (max 1.4) | 1920x1080 @ 320 Hz exclusif | com_maxfps 250 | rinput on`.
+  Un joueur qui dit « ça lag » colle cette ligne.
+
+### ⏱️ Frame limiter : horloge du moteur, plus de frame doublée
+- Depuis la 1.6.3 le limiteur écrivait dans `com_frameTime` des millisecondes depuis le **démarrage de
+  Windows** (QPC) alors que le moteur horodate ses événements clavier en millisecondes depuis le
+  **lancement du jeu** (`Sys_Milliseconds`). `CL_KeyState` / `IN_KeyUp` comparent les deux : un appui
+  comptait pour une frame entière, un relâchement perdait sa fraction — le mouvement clavier (strafe,
+  peek, saut) était quantifié à la frame au lieu d'être précis à la milliseconde. Le limiteur rend
+  désormais une horloge continue calée sur l'époque du moteur (recalée s'il dérive).
+- Après un réveil tardif, le delta entier du moteur pouvait lire 3 au lieu de 4 : le second appel
+  attendait la **prochaine** échéance et la frame doublait (8 ms à 250 fps). Ce second appel est
+  reconnu et finit la milliseconde. `tools/test_frame_limiter.cpp` rejoue la boucle de `Com_Frame`
+  contre le vrai code : 0 frame doublée, 250,00 fps exacts (l'ancien : 74 doublées sur 1500 avec une
+  frame lente toutes les 20, et 3,8 jours d'écart d'horloge).
+- Windows 11 : la résolution 1 ms du timer est conservée même si la fenêtre est masquée
+  (`PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION`) ; sans quoi `Sleep(1)` dure 15,6 ms et le
+  jeu tombe à ~62 fps sous un overlay plein écran.
+
+### 📦 Bouton « INSTALL HD TEXTURES » (menu 1.6X, onglet Files)
+- Même mécanique que le bouton PAM (manifeste, SHA-256, `.new` si fichier en cours d'utilisation),
+  cible le dossier que le manifeste nomme (`mod main` pour un pack de textures). Ligne optionnelle
+  `cvar <nom> <valeur>` dans le manifeste, appliquée en `seta` une fois le pack installé (ex.
+  `com_hunkMegs 512`, sans quoi un pack ×4 fait planter le jeu). Clés ini `hdtex_download_enable`,
+  `hdtex_manifest_url` (vide = bouton grisé). Rappel sv_pure : les mêmes pk3 doivent être sur le serveur.
+- Fenêtre : un seul subclass WindowProc pour toute la DLL (`core/wndhub`), fin du crash au retour
+  bureau de la 1.6.6 ; diagnostics Ctrl+M dans le log ; classe fenêtre `Call of Duty Multiplayer`.
+- Plein écran : un `r_fullscreen 1` du joueur n'est plus réécrit à 0 par l'ini livré.
+
 ## v1.6.6 (2026-09-18)
 
 ### 📦 Bouton « INSTALL / UPDATE PAM » (menu 1.6X, onglet Files)

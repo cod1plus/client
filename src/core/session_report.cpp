@@ -1,0 +1,120 @@
+// session_report.cpp - see session_report.h
+#include "core/session_report.h"
+#include "core/hook_prof.h"
+#include "core/logger.h"
+#include "performance/frame_limiter.h"
+#include "performance/gpu_sync.h"
+#include "performance/pacing_stats.h"
+#include "performance/smodel_fast.h"
+#include "netcode/net_diag.h"
+#include "video/mode_guard.h"
+#include "features/settings_menu.h"   // CODMP_CVAR_FINDVAR_VA
+#include "netcode/protocol_patch.h"   // CODMP_CVAR_COUNT_VA
+
+#include <windows.h>
+#include <cstdio>
+#include <cstring>
+
+namespace patches {
+
+namespace {
+
+typedef void* (__cdecl* Cvar_FindVar_t)(const char*);
+constexpr int CVAR_OFF_INTEGER = 0x20;
+
+DWORD g_since = 0;          // start of the current window
+bool  g_final_done = false;
+
+bool engine_ready() {
+    return (uintptr_t)GetModuleHandleA(NULL) == 0x400000 && *(volatile int*)CODMP_CVAR_COUNT_VA > 0;
+}
+
+int cvar_int(const char* name, int fallback) {
+    void* cv = ((Cvar_FindVar_t)CODMP_CVAR_FINDVAR_VA)(name);
+    return cv ? *(int*)((char*)cv + CVAR_OFF_INTEGER) : fallback;
+}
+
+void report(const char* tag, DWORD now) {
+    const DWORD elapsed = now - g_since;
+    if (elapsed < 1000) return;
+
+    FrameLimiterStats fs;
+    frame_limiter_stats(&fs, true);
+    double gpu_avg = 0, gpu_max = 0;
+    long gpu_frames = 0;
+    gpu_sync_stats(&gpu_avg, &gpu_max, &gpu_frames, true);
+
+    int w = 0, h = 0, hz = 0;
+    const bool exclusive = mode_guard_current_mode(&w, &h, &hz);
+    if (!exclusive) {
+        DEVMODEA dm;
+        memset(&dm, 0, sizeof(dm));
+        dm.dmSize = sizeof(dm);
+        if (EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm)) {
+            w = (int)dm.dmPelsWidth; h = (int)dm.dmPelsHeight; hz = (int)dm.dmDisplayFrequency;
+        }
+    }
+
+    char gpu[64];
+    if (gpu_frames > 0)
+        snprintf(gpu, sizeof(gpu), "GPU %.2f ms (max %.1f)", gpu_avg / 1000.0, gpu_max / 1000.0);
+    else
+        snprintf(gpu, sizeof(gpu), "GPU sync %s", gpu_sync_state());
+
+    NetDiagStats ns;
+    net_diag_stats(&ns, true);
+    char net[96];
+    if (ns.rx_packets || ns.tx_packets)
+        snprintf(net, sizeof(net), "net recu %ld pq (trou max %.0f ms) envoye %ld pq (trou max %.0f ms)",
+                 ns.rx_packets, ns.rx_max_gap_ms, ns.tx_packets, ns.tx_max_gap_ms);
+    else
+        snprintf(net, sizeof(net), "net -");
+
+    const double fps = fs.frames * 1000.0 / (double)elapsed;
+    logger::logf("bilan %s: %.1f fps (%ld frames, %ld en retard, %ld longues, max %.1f ms) | %s | "
+                 "%dx%d @ %d Hz %s | com_maxfps %d | rinput %s | %s",
+                 tag, fps, fs.frames, fs.late, fs.long_frames, fs.max_frame_ms, gpu,
+                 w, h, hz, exclusive ? "exclusif" : "fenetre",
+                 cvar_int("com_maxfps", 0), cvar_int("m_rinput", 0) ? "on" : "off", net);
+
+    // the REGULARITY of the same window (pacing_stats.h): what a VRR screen shows
+    PacingStats pf, pp;
+    pacing_stats(&pf, &pp, true);
+    if (pf.n || pp.n)
+        logger::logf("rythme %s: images %.3f ms +-%.3f (p99 %.2f, max %.1f, +25%% %ld) | "
+                     "affichage %.3f ms +-%.3f (p99 %.2f, max %.1f, +25%% %ld)",
+                     tag, pf.mean_ms, pf.sd_ms, pf.p99_ms, pf.max_ms, pf.over,
+                     pp.mean_ms, pp.sd_ms, pp.p99_ms, pp.max_ms, pp.over);
+    // the scene list's overflow (smodel_fast.h): the engine's per-model sqrt scan, or ours
+    char scene[200];
+    smodel_fast_report(scene, sizeof(scene), true);
+    if (scene[0]) logger::logf("%s %s", tag, scene);
+    // the DLL's own hooks (hook_prof.h): what of each frame was ours, and the worst frame's leader
+    double p_avg = 0, p_max = 0, p_slot[PROF_COUNT] = {};
+    int p_lead = -1;
+    prof_window_stats(&p_avg, &p_max, &p_lead, p_slot, true);
+    if (fs.frames > 0)
+        logger::logf("dll %s: %.3f ms par image (pire %.2f ms: %s) | bone %.3f lean %.3f inspect %.3f overlay %.3f rcdraw %.3f",
+                     tag, p_avg, p_max, prof_slot_name(p_lead), p_slot[PROF_BONE], p_slot[PROF_LEAN],
+                     p_slot[PROF_INSPECT], p_slot[PROF_OVERLAY], p_slot[PROF_RCDRAW]);
+}
+
+}  // namespace
+
+void session_report_tick() {
+    if (g_final_done || !engine_ready()) return;
+    const DWORD now = GetTickCount();
+    if (!g_since) { g_since = now ? now : 1; frame_limiter_stats(nullptr, true); pacing_stats(nullptr, nullptr, true); return; }
+    if (now - g_since < 60000) return;
+    report("60 s", now);
+    g_since = now;
+}
+
+void session_report_final(const char* why) {
+    if (g_final_done) return;
+    g_final_done = true;
+    if (!g_since || !engine_ready()) return;
+    report(why, GetTickCount());
+}
+
+}  // namespace patches

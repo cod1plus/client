@@ -2,6 +2,7 @@
 
 #include "core/single_instance.h"
 #include "core/logger.h"
+#include "core/wndhub.h"
 
 #include <cstdio>
 #include <cstring>
@@ -62,12 +63,12 @@ void reap_parent_from_cmdline() {
 }
 
 // The already-running instance is found by WINDOW CLASS, not by pid: we have no
-// handle on the other process, and the class is stable ("CoDMP" is what the
-// engine registers - verified in the exe's string table alongside CoDSP/CoDHost).
+// handle on the other process, and the class is stable (WNDHUB_GAME_CLASS, read
+// from the engine's RegisterClassA call - an earlier "CoDMP" here matched nothing).
 BOOL CALLBACK focus_existing(HWND hwnd, LPARAM) {
-    char cls[32] = {0};
+    char cls[64] = {0};
     if (!GetClassNameA(hwnd, cls, sizeof(cls))) return TRUE;
-    if (strcmp(cls, "CoDMP") != 0) return TRUE;
+    if (strcmp(cls, WNDHUB_GAME_CLASS) != 0) return TRUE;
     DWORD owner = 0;
     GetWindowThreadProcessId(hwnd, &owner);
     if (owner == GetCurrentProcessId()) return TRUE;   // never our own

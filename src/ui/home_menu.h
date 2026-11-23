@@ -16,17 +16,15 @@ enum class HomeAction {
 // (server browser, quit confirmation) stay the engine's own, untouched.
 HomeAction home_menu_draw(float screen_w, float screen_h);
 
-// Polled every frame while hidden: true once the engine's "main" menuDef fires its
-// onOpen (cvar cod1x_home_active, wired into the pk3's ui_mp/main.menu override).
-// Level-triggered - stays true for as long as the engine considers "main" the active
-// top menu, so gl_overlay can also use it to detect an EXTERNAL close (ESC handled by
-// the engine itself, cl_ingame changing, etc.) and drop the overlay in step.
+// Polled every frame: true while "main" is the engine's top menu (ui/menu_hooks.cpp)
+// and no game is loaded. Level-triggered, so gl_overlay drops the home screen in
+// step the moment the engine opens anything else (server browser, connect screen).
 bool home_menu_is_active();
 
-// Forwards the original main.menu onESC engine commands and clears the bridge cvar -
-// called when the player presses ESC while the home screen is showing. Does not touch
-// overlay visibility itself; the caller (gl_overlay) still has to drop the mode.
-void home_menu_close_via_escape();
+// ESC on the home screen: toggles the quit confirmation (the engine's own "main"
+// ignores ESC too). Returns true (always handled).
+bool home_menu_escape();
+void home_menu_close_via_escape();   // drops the confirmation, if any
 
 }  // namespace patches
 

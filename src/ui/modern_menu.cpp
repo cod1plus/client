@@ -26,6 +26,12 @@
 #include "features/settings_menu.h"
 #include "features/pam_install.h"
 #include "video/display_probe.h"
+#include "ui/demo_library.h"
+#include "ui/demo_seek.h"
+#include "ui/demo_mod.h"
+#include "ui/workshop_tab.h"
+#include "ui/hud_editor.h"
+#include "features/demo_index.h"
 
 #include <cstdio>
 #include <cstdarg>
@@ -34,6 +40,8 @@
 #include <cstring>
 #include <algorithm>
 #include <vector>
+#include <map>
+#include <cctype>
 #include <string>
 
 namespace patches {
@@ -90,6 +98,7 @@ int  g_display_mode = 0;             // 0 fullscreen (stretch), 1 borderless
 int  g_view_mode = 0;                // 0 classic, 1 widescreen, 2 stretched (= cod1x_viewmode)
 int  g_fov = 80;
 int  g_tab = 0;
+float g_content_w = 0;   // content width of the current draw (for the wide Inspect list)
 bool g_dirty = false, g_init = false;
 std::vector<std::string> g_cfgs;
 struct DemoEnt { std::string name, dir; };     // dir = search-path folder (Main, mod)
@@ -201,6 +210,8 @@ const BindAct k_combat[] = {
     { "weaponslot primaryb","Secondary weapon" },
     { "weaponslot pistol",  "Pistol" },
     { "weaponslot grenade", "Grenade" },
+    // the one scripted bind the competitive rules allow (exec / vstr are refused, input/script_block.cpp)
+    { "+gostand; wait 2; -attack; wait 2; -gostand", "Jump-throw grenade" },
     { "+dropweapon",        "Drop weapon" },
 };
 const BindAct k_comm[] = {
@@ -389,6 +400,7 @@ void collect_modes() {
         if (g_modes[i].w == cw && g_modes[i].h == ch) { g_sel = (int)i; break; }
     if (g_sel < 0) { g_modes.push_back({ cw, ch }); g_sel = (int)g_modes.size() - 1; }
     collect_hz();
+    g_display_mode = cv_int("r_fullscreen", 1) ? 0 : 1;   // what the engine runs NOW, not a default
     g_view_mode = cv_int("cod1x_viewmode", 0);        // what the bridge currently applies
     if (g_view_mode < 0 || g_view_mode > 2) g_view_mode = 0;
     g_fov = cv_int("cg_fov", COD1X_FOV_MIN);
@@ -500,6 +512,19 @@ float keychip(float x, float y, const char* k) {
     return w;
 }
 
+}  // namespace
+
+// the widgets, for the panels drawn inside the menu (ui/hud_editor.cpp)
+bool menu_button(float x, float y, float w, float h, const char* label, bool primary) { return button(x, y, w, h, label, primary); }
+int  menu_segmented(float x, float y, float w, const char* const* opts, int n, int sel) { return segmented(x, y, w, opts, n, sel); }
+int  menu_slider(float x, float y, float w, int lo, int hi, int v) { return slider(x, y, w, lo, hi, v); }
+bool menu_toggle(float x, float y, const char* label, bool on) { return toggle(x, y, label, on); }
+void menu_section(float x, float y, float w, const char* s) { section(x, y, w, s); }
+void menu_hint(float x, float y, const char* s) { hint(x, y, s); }
+bool menu_hit(float x, float y, float w, float h) { return hit(x, y, w, h); }
+
+namespace {
+
 // ------------------------------------------------------- rail glyph icons
 // Drawn with primitives (the flat direction bans textures); c follows the label.
 void icon_tab(int id, float x, float y, DWORD c) {
@@ -526,9 +551,26 @@ void icon_tab(int id, float x, float y, DWORD c) {
         ui_rect(x + 12.5f, y + 8, 5.5f, 2, c);
         ui_rect(x + 8, y + 8, 2, 2, c);
         break;
-    case 4:                                             // files: folder
+    case 4:                                             // inspect: a rifle, side on
+        ui_rect(x, y + 7, 18, 2, c);
+        ui_rect(x + 1.5f, y + 4.5f, 2, 2.5f, c);
+        ui_rect(x + 7, y + 9, 2.5f, 4.5f, c);
+        ui_rect(x + 12, y + 9, 6, 3, c);
+        break;
+    case 5:                                             // files: folder
         ui_rect(x, y + 2, 8, 3, c);
         ui_rect_border(x, y + 5, 18, 11, 0, 1.5f, c);
+        break;
+    case 6:                                             // demos: frame + play
+        ui_rect_border(x, y + 2, 18, 14, 0, 1.5f, c);
+        ui_triangle(x + 7, y + 5.5f, x + 7, y + 12.5f, x + 12.5f, y + 9, c);
+        break;
+    case 7:                                             // workshop: arrow down into a tray
+        ui_rect(x + 8, y, 2, 8, c);
+        ui_triangle(x + 4, y + 7, x + 14, y + 7, x + 9, y + 12, c);
+        ui_rect(x, y + 11, 1.5f, 6, c);
+        ui_rect(x + 16.5f, y + 11, 1.5f, 6, c);
+        ui_rect(x, y + 15.5f, 18, 1.5f, c);
         break;
     default:                                            // about: the letter i
         ui_ellipse(x + 9, y + 9, 8.5f, 8.5f, 1.5f, c);
@@ -639,7 +681,7 @@ void brackets(float sx, float sy, float w, float h) {
     ui_rect(sx + w - in - th,  sy + h - in - a,   th, a,  c);
 }
 
-void draw_preview(float x, float y, float w, const Mode& m, int dmode, int vmode) {
+float draw_preview(float x, float y, float w, const Mode& m, int dmode, int vmode) {
     const float pad = 12, header = 34, caph = 30;
     float sw2 = w - pad * 2;
     float sh2 = sw2 * g_desk_h / g_desk_w;
@@ -705,6 +747,7 @@ void draw_preview(float x, float y, float w, const Mode& m, int dmode, int vmode
     static const char* views[] = { "Shapes", "Player model" };
     g_pv_view = segmented(x, y + cardh + 14, 260, views, 2, g_pv_view);
     hint(x + 274, y + cardh + 24, "sway + scan follow the selected refresh rate");
+    return y + cardh + 54;
 }
 
 void apply_display() {
@@ -749,7 +792,530 @@ void info_card(float x, float y, float w, const char* title,
     }
 }
 
+// ------------------------------------------------------------------ demos tab
+// Every demo of every search-path folder, what is inside it (features/demo_index reads
+// the file itself: map, recorder, kills with their server time) and a click on a kill
+// plays the demo from a few seconds before it (ui/demo_seek fast-forwards there).
+int   g_demo_sel = -1;
+std::string g_demo_sel_path;
+float g_demo_scroll = 0, g_kill_scroll = 0;
+int   g_demo_filter = 0;             // 0 the recorder's kills, 1 the eyes on screen, 2 every obituary
+int   g_demo_lead = 1;               // 3 / 5 / 10 s before the kill
+DWORD g_demo_scan_tick = 0;
+bool  g_demo_scanned = false;
+
+std::string strip_colors(const std::string& s) {
+    std::string o;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '^' && i + 1 < s.size() && s[i + 1] != '^') { ++i; continue; }
+        o += s[i];
+    }
+    return o;
+}
+std::string mmss(int ms) {
+    if (ms < 0) ms = 0;
+    char b[16];
+    snprintf(b, sizeof(b), "%d:%02d", ms / 60000, (ms / 1000) % 60);
+    return b;
+}
+std::string filedate(uint64_t ft) {
+    FILETIME f, lf;
+    SYSTEMTIME st;
+    f.dwLowDateTime = (DWORD)ft;
+    f.dwHighDateTime = (DWORD)(ft >> 32);
+    if (!FileTimeToLocalFileTime(&f, &lf) || !FileTimeToSystemTime(&lf, &st)) return "";
+    char b[32];
+    snprintf(b, sizeof(b), "%04d-%02d-%02d  %02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+    return b;
+}
+std::string map_label(const std::string& m) {
+    std::string s = m;
+    if (s.size() > 3 && (_strnicmp(s.c_str(), "mp_", 3) == 0 || _strnicmp(s.c_str(), "xp_", 3) == 0)) s = s.substr(3);
+    for (char& c : s) if (c == '_') c = ' ';
+    if (!s.empty()) s[0] = (char)toupper((unsigned char)s[0]);
+    return s.empty() ? std::string("?") : s;
+}
+std::string gametype_label(const std::string& g) {
+    if (g == "sd")  return "Search & Destroy";
+    if (g == "dm")  return "Deathmatch";
+    if (g == "tdm") return "Team Deathmatch";
+    if (g == "re")  return "Retrieval";
+    if (g == "bel") return "Behind Enemy Lines";
+    if (g == "hq")  return "Headquarters";
+    return g;
+}
+std::string demo_base(const std::string& n) {
+    size_t p = n.rfind('.');
+    return p == std::string::npos ? n : n.substr(0, p);
+}
+std::string weapon_or_mod(const DemoKill& k) {
+    if (!k.weapon_name.empty()) return k.weapon_name;
+    return k.mod >= 0 ? demo_mod_label(k.mod) : "";
+}
+
+struct KillRow { const DemoKill* k; int group; };   // group = kills in the multi-kill it belongs to
+
+bool keep_kill(const DemoInfo& d, const DemoKill& k, int filter) {
+    const bool world = k.attacker < 0 || k.attacker >= 64;
+    const bool self = k.attacker == k.victim;
+    if (filter == 0) return !world && !self && k.attacker == d.recorder;
+    if (filter == 1) return !world && !self && k.attacker == k.pov;
+    return true;
+}
+
+void collect_kills(const DemoInfo& d, int filter, std::vector<KillRow>& rows) {
+    rows.clear();
+    for (const DemoKill& k : d.kills)
+        if (keep_kill(d, k, filter)) rows.push_back({ &k, 1 });
+    // multi-kills: the same killer again within 5 s of his previous one
+    for (size_t i = 0; i < rows.size();) {
+        size_t j = i + 1;
+        while (j < rows.size() && rows[j].k->attacker == rows[j - 1].k->attacker &&
+               rows[j].k->t_ms - rows[j - 1].k->t_ms <= 5000) ++j;
+        for (size_t m = i; m < j; ++m) rows[m].group = (int)(j - i);
+        i = j;
+    }
+}
+
+void play_demo_at(const DemoItem& it, const DemoKill* k) {
+    int target = 0;
+    std::string label;
+    if (k) {
+        static const int leads[] = { 3000, 5000, 10000 };
+        target = k->server_time - leads[g_demo_lead < 0 || g_demo_lead > 2 ? 1 : g_demo_lead];
+        if (target <= it.info.first_time + 1000) target = 0;          // that close to the start: just play
+        label = mmss(k->t_ms);
+        const std::string w = weapon_or_mod(*k);
+        if (!w.empty()) label += "   " + w;
+        label += "   \xe2\x86\x92   " + strip_colors(k->victim_name);
+    }
+    demo_seek_play(it.dir, demo_base(it.name), target, it.info.first_time, label);
+    overlay_toggle(false);
+}
+
+// a demo whose map is missing ends on the engine's "Couldn't load" popup (ui/demo_seek)
+bool map_installed(const std::string& m) { return demo_map_installed(m); }
+// a demo of a mod folder that is not loaded: its maps live in that mod, not checkable here
+bool maps_checkable(const DemoItem& it) {
+    return _stricmp(it.dir.c_str(), "Main") == 0 || _stricmp(it.dir.c_str(), cv_str("fs_game", "")) == 0;
+}
+// the map the demo starts on, then the one of that segment
+bool segment_playable(const DemoItem& it, int segment) {
+    if (!maps_checkable(it)) return true;
+    const std::vector<std::string>& m = it.info.maps;
+    if (!m.empty() && !map_installed(m[0])) return false;
+    return segment < 0 || segment >= (int)m.size() || map_installed(m[segment]);
+}
+
+float chip(float x, float y, const char* s, bool filled) {
+    const float w = ui_text_width(11, 600, s) + 12;
+    if (filled) ui_rect_rounded(x, y, w, 19, 5, 0xFFE8E8E8);
+    else ui_rect_border(x, y, w, 19, 5, 1.0f, 0xFF5A5A5A);
+    ui_text(x + 6, y + 2, 11, 600, filled ? 0xFF0A0A0A : 0xFFBDBDBD, s);
+    return w;
+}
+
+void draw_demos_tab(float cx, float cy, float cw, float bottom) {
+    std::vector<DemoItem>& items = demo_library_items();
+    if (!g_demo_scanned || GetTickCount() - g_demo_scan_tick > 15000) {
+        demo_library_scan();                     // cheap: the folders only
+        demo_maps_forget();                      // a map may have been installed meanwhile
+        g_demo_scanned = true;
+        g_demo_scan_tick = GetTickCount();
+        g_demo_sel = -1;
+        for (size_t i = 0; i < items.size(); ++i)
+            if (items[i].path == g_demo_sel_path) g_demo_sel = (int)i;
+        if (g_demo_sel < 0 && !items.empty()) { g_demo_sel = 0; g_demo_sel_path = items[0].path; }
+        if (g_demo_sel >= 0) demo_library_request(g_demo_sel);
+    }
+    demo_library_pump(true);
+
+    // ---- left: the demos, newest first
+    float lw = cw * 0.36f;
+    if (lw < 340) lw = 340;
+    if (lw > 460) lw = 460;
+    int ready = 0, total = 0;
+    demo_library_progress(&ready, &total);
+    char hdr[96];
+    if (ready < total) snprintf(hdr, sizeof(hdr), "DEMOS - %d    reading %d / %d", total, ready, total);
+    else snprintf(hdr, sizeof(hdr), "DEMOS - %d", total);
+    section(cx, cy, lw, hdr);
+    const float ly = cy + 26;
+    const float rh = 58;
+    int vis = (int)((bottom - ly) / rh);
+    if (vis < 3) vis = 3;
+    if (hit(cx, ly, lw, vis * rh)) g_demo_scroll -= ui_input().wheel * 2;
+    int maxoff = (int)items.size() - vis;
+    if (maxoff < 0) maxoff = 0;
+    if (g_demo_scroll < 0) g_demo_scroll = 0;
+    if (g_demo_scroll > maxoff) g_demo_scroll = (float)maxoff;
+    for (int i = 0; i < vis && i + (int)g_demo_scroll < (int)items.size(); ++i) {
+        const int idx = i + (int)g_demo_scroll;
+        const DemoItem& it = items[idx];
+        const float ry = ly + i * rh;
+        const bool sel = idx == g_demo_sel;
+        const bool over = hit(cx, ry, lw, rh - 6);
+        const float hv = ui_smooth(wkey(cx, ry, 9), over ? 1.0f : 0.0f, 14.0f);
+        ui_rect_rounded(cx, ry, lw, rh - 6, 8, sel ? UI_ACCENT : mixc(UI_ROW, UI_ROW_HOT, hv));
+        const DWORD t1 = sel ? 0xFF0A0A0A : UI_TEXT;
+        const DWORD t2 = sel ? 0xFF404040 : UI_MUTED;
+        std::string title = it.state == DEMO_READY ? map_label(it.info.map) : demo_base(it.name);
+        if (it.state == DEMO_READY && it.info.maps.size() > 1)
+            title += "  +" + std::to_string(it.info.maps.size() - 1);
+        ui_text(cx + 14, ry + 6, 16, 600, t1, title.c_str());
+        const std::string date = filedate(it.mtime);
+        const float dw = ui_text_width(12, 400, date.c_str());
+        ui_text(cx + lw - dw - 12, ry + 9, 12, 400, t2, date.c_str());
+        char l2[160];
+        if (it.state == DEMO_READY) {
+            int mine = 0;
+            for (const DemoKill& k : it.info.kills) if (keep_kill(it.info, k, 0)) ++mine;
+            snprintf(l2, sizeof(l2), "%s  \xc2\xb7  %s  \xc2\xb7  %d kill%s", demo_base(it.name).c_str(),
+                     mmss(it.info.duration_ms).c_str(), mine, mine == 1 ? "" : "s");
+        } else if (it.state == DEMO_FAILED) {
+            snprintf(l2, sizeof(l2), "%s  \xc2\xb7  unreadable", demo_base(it.name).c_str());
+        } else {
+            snprintf(l2, sizeof(l2), "%s  \xc2\xb7  reading...", demo_base(it.name).c_str());
+        }
+        ui_text(cx + 14, ry + 29, 13, 400, t2, l2);
+        if (_stricmp(it.dir.c_str(), "Main") != 0) {           // a mod folder's demo
+            const char* tag = it.dir.c_str();
+            while (*tag == '_') ++tag;
+            const float tw = ui_text_width(11, 600, tag) + 12;
+            ui_rect_rounded(cx + lw - tw - 10, ry + 29, tw, 18, 5, sel ? 0xFFD0D0D0 : 0xFF101010);
+            ui_text(cx + lw - tw - 4, ry + 31, 11, 600, sel ? 0xFF303030 : 0xFF8A8A8A, tag);
+        }
+        if (over && ui_input().clicked && !sel) {
+            g_demo_sel = idx;
+            g_demo_sel_path = it.path;
+            g_kill_scroll = 0;
+            demo_library_request(idx);
+        }
+    }
+    if (items.empty())
+        ui_text(cx + 4, ly + 6, 14, 400, UI_MUTED, "No demo in any demos/ folder yet - record one with /record.");
+    if (maxoff > 0) {
+        const float trackh = vis * rh - 6;
+        const float thumbh = trackh * vis / (float)items.size();
+        const float thumby = ly + (trackh - thumbh) * (g_demo_scroll / maxoff);
+        ui_rect_rounded(cx + lw + 6, ly, 3, trackh, 1.5f, UI_ROW);
+        ui_rect_rounded(cx + lw + 6, thumby, 3, thumbh, 1.5f, 0xFF3A3A3A);
+    }
+
+    // ---- right: the selected demo
+    const float rx = cx + lw + 40;
+    const float rw = cw - lw - 40;
+    if (g_demo_sel < 0 || g_demo_sel >= (int)items.size() || rw < 300) return;
+    const DemoItem& it = items[g_demo_sel];
+    const DemoInfo& d = it.info;
+    float y = cy - 6;
+    const std::string title = it.state == DEMO_READY ? map_label(d.map) : demo_base(it.name);
+    ui_text(rx, y, 30, 600, UI_TEXT, title.c_str());
+    const bool start_ok = it.state != DEMO_READY || segment_playable(it, 0);
+    if (start_ok) {
+        if (button(rx + rw - 190, y, 190, 44, "Play from start", true)) { play_demo_at(it, nullptr); return; }
+    } else {
+        ui_rect_rounded(rx + rw - 190, y, 190, 44, 8, UI_ROW);
+        const char* na = "Map missing";
+        ui_text(rx + rw - 95 - ui_text_width(16, 600, na) / 2, y + 11, 16, 600, 0xFF5A5A5A, na);
+    }
+    y += 46;
+    if (it.state != DEMO_READY) {
+        std::string msg = it.state == DEMO_FAILED ? "This demo could not be read: " + d.error
+                                                  : std::string("Reading the demo - map, players and every kill...");
+        ui_text(rx, y + 4, 14, 400, UI_MUTED, msg.c_str());
+        return;
+    }
+    {
+        std::string meta = gametype_label(d.gametype);
+        if (!d.recorder_name.empty()) meta += "   \xc2\xb7   recorded by " + strip_colors(d.recorder_name);
+        meta += "   \xc2\xb7   " + mmss(d.duration_ms) + "   \xc2\xb7   " + filedate(it.mtime);
+        ui_text(rx, y, 14, 400, UI_MUTED, meta.c_str());
+        y += 22;
+        std::string host = strip_colors(d.hostname);
+        if (d.maps.size() > 1) {                       // map changes inside the demo
+            std::string seq;
+            for (size_t i = 0; i < d.maps.size(); ++i) seq += (i ? "  \xe2\x86\x92  " : "") + map_label(d.maps[i]);
+            host = host.empty() ? seq : host + "   \xc2\xb7   " + seq;
+        }
+        if (!host.empty()) ui_text(rx, y, 13, 400, UI_HINT, host.c_str());
+        y += 24;
+        // the maps this machine cannot load, named: the engine would only say "Couldn't load"
+        if (maps_checkable(it)) {
+            std::string missing;
+            for (const std::string& m : d.maps)
+                if (!map_installed(m) && missing.find(m) == std::string::npos) missing += (missing.empty() ? "" : ", ") + m;
+            if (!missing.empty()) {
+                const std::string w = "Map not installed: " + missing +
+                    (start_ok ? "  -  the kills on it cannot be played" : "  -  this demo cannot be played");
+                ui_text(rx, y, 13, 600, UI_DANGER, w.c_str());
+            }
+        }
+        y += 22;
+    }
+
+    // filter + lead
+    static const char* filters[] = { "My kills", "On screen", "Every kill" };
+    const int nf = segmented(rx, y, 330, filters, 3, g_demo_filter);
+    if (nf != g_demo_filter) { g_demo_filter = nf; g_kill_scroll = 0; }
+    if (rw >= 600) {
+        ui_text(rx + 350, y + 11, 13, 400, UI_HINT, "start");
+        static const char* leads[] = { "3 s", "5 s", "10 s" };
+        g_demo_lead = segmented(rx + 390, y, 200, leads, 3, g_demo_lead);
+        if (rw >= 740) ui_text(rx + 604, y + 11, 13, 400, UI_HINT, "before the kill");
+    }
+    y += 54;
+
+    std::vector<KillRow> rows;
+    collect_kills(d, g_demo_filter, rows);
+
+    // timeline: every kill of the filter placed on the demo's length; hover, click = play
+    const float ty = y + 8;
+    const float dur = d.duration_ms > 0 ? (float)d.duration_ms : 1.0f;
+    ui_rect(rx, ty + 10, rw, 2, 0xFF262626);
+    const DemoKill* tip = nullptr;
+    float tipx = 0;
+    for (const KillRow& r : rows) {
+        const float x = rx + rw * (r.k->t_ms / dur);
+        const bool over = hit(x - 4, ty - 2, 8, 26);
+        if (over) { tip = r.k; tipx = x; }
+        ui_rect(x - 1, ty + (over ? 0 : 3), over ? 3.0f : 2.0f, over ? 22.0f : 16.0f,
+                r.group > 1 ? 0xFFFFFFFF : 0xFFB0B0B0);
+    }
+    ui_text(rx, ty + 24, 11, 400, UI_HINT, "0:00");
+    const std::string endt = mmss(d.duration_ms);
+    ui_text(rx + rw - ui_text_width(11, 400, endt.c_str()), ty + 24, 11, 400, UI_HINT, endt.c_str());
+    if (tip) {
+        std::string t = mmss(tip->t_ms) + "  " + weapon_or_mod(*tip) + "  \xe2\x86\x92  " + strip_colors(tip->victim_name);
+        const float tw = ui_text_width(12, 600, t.c_str()) + 16;
+        float bx = tipx - tw / 2;
+        if (bx < rx) bx = rx;
+        if (bx + tw > rx + rw) bx = rx + rw - tw;
+        ui_rect_rounded(bx, ty - 30, tw, 24, 6, 0xFFE8E8E8);
+        ui_text(bx + 8, ty - 26, 12, 600, 0xFF0A0A0A, t.c_str());
+        if (ui_input().clicked && segment_playable(it, tip->segment)) { play_demo_at(it, tip); return; }
+    }
+    y = ty + 48;
+
+    // the list
+    char lh[96];
+    static const int leads_s[] = { 3, 5, 10 };
+    snprintf(lh, sizeof(lh), "%d KILL%s  -  click one: the demo starts %d s before it", (int)rows.size(),
+             rows.size() == 1 ? "" : "S", leads_s[g_demo_lead < 0 || g_demo_lead > 2 ? 1 : g_demo_lead]);
+    section(rx, y, rw, lh);
+    y += 26;
+    if (rows.empty()) {
+        const char* why = g_demo_filter == 0
+            ? "No kill by the player who recorded it. Try On screen (the eyes the demo shows)."
+            : "No kill in this view.";
+        ui_text(rx + 4, y + 4, 14, 400, UI_MUTED, why);
+        return;
+    }
+    const float kh = 40;
+    int kvis = (int)((bottom - y) / kh);
+    if (kvis < 2) kvis = 2;
+    if (hit(rx, y, rw, kvis * kh)) g_kill_scroll -= ui_input().wheel * 2;
+    int kmax = (int)rows.size() - kvis;
+    if (kmax < 0) kmax = 0;
+    if (g_kill_scroll < 0) g_kill_scroll = 0;
+    if (g_kill_scroll > kmax) g_kill_scroll = (float)kmax;
+    for (int i = 0; i < kvis && i + (int)g_kill_scroll < (int)rows.size(); ++i) {
+        const KillRow& r = rows[i + (int)g_kill_scroll];
+        const DemoKill& k = *r.k;
+        const float ry = y + i * kh;
+        const bool playable = segment_playable(it, k.segment);
+        const bool over = playable && (hit(rx, ry, rw, kh - 5) || tip == &k);
+        const float hv = ui_smooth(wkey(rx, ry, 10), over ? 1.0f : 0.0f, 16.0f);
+        ui_rect_rounded(rx, ry, rw, kh - 5, 6, mixc(UI_ROW, UI_ROW_HOT, hv));
+        if (!playable) ui_alpha(ui_alpha_get() * 0.35f);           // its map is missing: shown, not clickable
+        const std::string t = mmss(k.t_ms);
+        ui_text_font(rx + 14, ry + 8, 15, 600, UI_TEXT, t.c_str(), UI_FONT_MONO);
+        std::string who = g_demo_filter == 0 ? std::string()
+                                             : strip_colors(k.attacker_name) + "  ";
+        who += "\xe2\x86\x92  " + strip_colors(k.victim_name);
+        const float right_w = 230;
+        ui_clip_push(rx + 76, ry, rw - 76 - right_w, kh);
+        ui_text(rx + 76, ry + 8, 15, g_demo_filter == 0 ? 600 : 400, UI_TEXT, who.c_str());
+        ui_clip_pop();
+        float bx = rx + rw - right_w;
+        const std::string w = k.weapon_name.empty() ? std::string() : k.weapon_name;
+        if (!w.empty()) ui_text(bx, ry + 9, 13, 400, UI_MUTED, w.c_str());
+        bx += 110;
+        if (k.mod == 8) bx += chip(bx, ry + 8, "HEADSHOT", false) + 6;
+        else if (k.mod == 7) bx += chip(bx, ry + 8, "MELEE", false) + 6;
+        if (r.group > 1) {
+            char g[8];
+            snprintf(g, sizeof(g), "%dK", r.group);
+            chip(bx, ry + 8, g, true);
+        }
+        if (!playable) { ui_alpha(ui_alpha_get() / 0.35f); continue; }
+        if (over) {                                   // play glyph at the far right
+            const float px2 = rx + rw - 22, py2 = ry + 10;
+            ui_triangle(px2, py2, px2, py2 + 15, px2 + 12, py2 + 7.5f, UI_ACCENT);
+        }
+        if (hit(rx, ry, rw, kh - 5) && ui_input().clicked) { play_demo_at(it, &k); return; }
+    }
+    if (kmax > 0) {
+        const float trackh = kvis * kh - 5;
+        const float thumbh = trackh * kvis / (float)rows.size();
+        const float thumby = y + (trackh - thumbh) * (g_kill_scroll / kmax);
+        ui_rect_rounded(rx + rw + 6, y, 3, trackh, 1.5f, UI_ROW);
+        ui_rect_rounded(rx + rw + 6, thumby, 3, thumbh, 1.5f, 0xFF3A3A3A);
+    }
+}
+
 }  // namespace
+
+// ------------------------------------------------------------- weapon inspect
+// gameplay/inspect.cpp plays it: `set cod1x_inspect N`, N = 1..6 one animation each (7 = the
+// archived cod1x_inspect_mode, kept for console users). Here every animation is a row of the
+// Keys tab's kind with its own key: click the row, press the key, that key plays that one.
+const BindAct k_inspect_acts[6] = {
+    { "set cod1x_inspect 1", "Turn" },
+    { "set cod1x_inspect 2", "Full inspect" },
+    { "set cod1x_inspect 3", "Pistol spin" },
+    { "set cod1x_inspect 4", "Toss" },
+    { "set cod1x_inspect 5", "Weapon trick" },
+    { "set cod1x_inspect 6", "Sleeve wipe" },
+};
+const char* const k_inspect_desc[6] = {
+    "shows both sides and the underside (3 s)",
+    "chamber check, magazine out and back, both sides (6 s)",
+    "Colt / Luger spin on the finger (others: full inspect)",
+    "thrown up with one roll and caught",
+    "the weapon's own: magazine thrown and slapped home, PPSh drum, bolt work, Garand ping, pistol juggle",
+    "a sleeve wiped along the flank",
+};
+
+// every key bound to this command is unbound (the engine's own unbind, then the config)
+void unbind_cmd(const char* cmd) {
+    bool any = false;
+    for (auto& b : g_binds)
+        if (_stricmp(b.second.c_str(), cmd) == 0) {
+            cmdf("unbind %s\n", b.first.c_str());
+            b.second.clear();
+            any = true;
+        }
+    if (any) { cmdf("writeconfig config_mp.cfg\n"); g_binds_scan = GetTickCount(); }
+}
+
+// capture resolution (Keys and Inspect tabs): the next input becomes the bind; BACKSPACE
+// clears the action's keys instead
+void resolve_capture() {
+    if (!g_cap_act) return;
+    int vkin = ui_input().vk;
+    if (vkin == VK_ESCAPE) {
+        g_cap_act = nullptr; ui_key_capture(false);
+    } else if (vkin == VK_BACK) {
+        unbind_cmd(g_cap_act->cmd);
+        g_cap_act = nullptr; ui_key_capture(false);
+    } else if (vkin) {
+        const char* kn = keyname_from_vk(vkin);
+        if (kn) {
+            cmdf("bind %s \"%s\"\n", kn, g_cap_act->cmd);
+            cmdf("writeconfig config_mp.cfg\n");
+            // optimistic local update so the row refreshes this frame;
+            // the file re-parse (2 s) then confirms the engine's truth
+            for (auto& b : g_binds)
+                if (_stricmp(b.first.c_str(), kn) == 0) b.second.clear();
+            g_binds.push_back({ kn, g_cap_act->cmd });
+            g_binds_scan = GetTickCount();       // delay re-parse
+            g_cap_act = nullptr; ui_key_capture(false);
+        }
+    }
+}
+
+int clampi_(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+// one animation: [ name | what it does | key box | Play ]. The row binds, Play previews.
+void inspect_row(float x, float y, float w, int i) {
+    const BindAct& a = k_inspect_acts[i];
+    const float h = 44, pw_ = 70;                       // Play button width
+    bool clear_click = false;                            // the x was clicked this frame
+    const float keyw = 150;                              // key box width
+    const bool capme = g_cap_act == &a;
+    const bool over_play = hit(x + w - pw_ - 8, y + 8, pw_, h - 16);
+    const bool over = hit(x, y, w - pw_ - 16, h) && !over_play;
+    float hv = ui_smooth(wkey(x, y, 8), over ? 1.0f : 0.0f, 14.0f);
+    ui_rect_rounded(x, y, w, h, 8, capme ? UI_ROW_HOT : mixc(UI_ROW, UI_ROW_HOT, hv));
+    if (capme) ui_rect_border(x, y, w, h, 8, 1.5f, UI_ACCENT);
+    ui_text(x + 16, y + 12, 15, 600, UI_TEXT, a.label);
+    ui_text(x + 150, y + 14, 12, 400, UI_HINT, k_inspect_desc[i]);
+    // key box
+    const float kx = x + w - pw_ - 16 - keyw;
+    if (capme) {
+        const char* msg = "PRESS A KEY  -  ESC cancels, BACKSPACE clears";
+        float mw = ui_text_width(12, 600, msg);
+        ui_text(kx + keyw - mw, y + 14, 12, 600, UI_ACCENT, msg);
+    } else {
+        char kb[64];
+        ui_rect_rounded(kx, y + 10, keyw, h - 20, 6, 0xFF101010);
+        if (keys_for(a.cmd, kb, sizeof(kb))) {
+            float tw = ui_text_width(13, 600, kb);
+            ui_text(kx + (keyw - tw) / 2 - 8, y + 13, 13, 600, 0xFFE0E0E0, kb);
+            // clear: a small x inside the key box, right end
+            const float xx = kx + keyw - 24, xy = y + 13;
+            const bool over_x = hit(xx - 4, xy - 4, 24, 24);
+            ui_text(xx, xy - 1, 14, 600, over_x ? 0xFFFF5A5A : 0xFF7A7A7A, "x");
+            if (over_x && ui_input().clicked) { unbind_cmd(a.cmd); clear_click = true; }
+        } else {
+            const char* msg = over ? "press a key..." : "click to bind";
+            float tw = ui_text_width(12, 400, msg);
+            ui_text(kx + (keyw - tw) / 2, y + 14, 12, 400, over ? UI_ACCENT : 0xFF5A5A5A, msg);
+        }
+    }
+    if (over && !g_cap_act && !clear_click && ui_input().clicked) {
+        g_cap_act = &a;
+        ui_key_capture(true);
+    }
+    // Play: closes the menu (it covers the whole view) and plays it - in a game only, the
+    // inspection moves the first-person weapon and there is none in the menus
+    if (GetModuleHandleA("cgame_mp_x86.dll")) {
+        if (button(x + w - pw_ - 8, y + 8, pw_, h - 16, "Play", false)) {
+            cmdf("%s\n", a.cmd);
+            overlay_toggle(false);
+        }
+    } else {
+        ui_rect_rounded(x + w - pw_ - 8, y + 8, pw_, h - 16, 8, UI_ROW);
+        float tw = ui_text_width(11, 400, "in game");
+        ui_text(x + w - pw_ - 8 + (pw_ - tw) / 2, y + 14, 11, 400, 0xFF5A5A5A, "in game");
+    }
+}
+
+void draw_inspect_tab(float cx, float cy, float colw, float rx, float rw, bool two_col) {
+    (void)colw; (void)rx; (void)rw; (void)two_col;
+    if (GetTickCount() - g_binds_scan > 2000) {
+        parse_binds();
+        g_binds_scan = GetTickCount();
+    }
+    resolve_capture();
+    const UiInput& in = ui_input();
+    (void)in;
+    // one wide list: the whole content width, capped so the rows stay readable
+    float lw = (g_content_w > 0 ? g_content_w : 900.0f);
+    if (lw > 980) lw = 980;
+
+    section(cx, cy, lw, "ANIMATIONS  -  click one, press a key: that key plays it"); cy += 30;
+    for (int i = 0; i < 6; ++i) {
+        inspect_row(cx, cy, lw, i);
+        cy += 50;
+    }
+    cy += 4;
+    hint(cx, cy, "Play closes this menu and plays it - in a game, weapon out, not aiming. Keys are written to config_mp.cfg at once;");
+    cy += 20;
+    hint(cx, cy, "a key already in use is taken from its old action; the x (or BACKSPACE while binding) clears it. Firing, aiming, reloading or switching weapons cuts an inspection.");
+    cy += 34;
+
+    section(cx, cy, 430, "SPEED"); cy += 24;
+    int sp = (int)(atof(cv_str("cod1x_inspect_speed", "1")) * 100 + 0.5f);
+    sp = clampi_(sp, 50, 200);
+    int nsp = slider(cx, cy, 430 - 70, 50, 200, sp);
+    char st[16]; snprintf(st, sizeof(st), "%d%%", nsp);
+    ui_text(cx + 430 - 52, cy + 8, 17, 600, UI_TEXT, st);
+    if (nsp != sp) cmdf("seta cod1x_inspect_speed %.2f\n", nsp / 100.0f);
+    cy += 46;
+    hint(cx, cy, "100% = the animations as designed. Local only: nobody else sees it, the server is not involved.");
+}
 
 bool modern_menu_poll_open() {
     if (cv_int("cod1x_open_modern", 0)) {
@@ -766,8 +1332,10 @@ void modern_menu_draw(float sw, float sh) {
     // entrance: fade in, content rises a few pixels
     static DWORD s_lastdraw = 0;
     DWORD nowt = GetTickCount();
-    if (nowt - s_lastdraw > 250) ui_anim_set(8000, 0.0f);
+    if (nowt - s_lastdraw > 250) { ui_anim_set(8000, 0.0f); hud_editor_open(false); }
     s_lastdraw = nowt;
+    // Display > HUD > Edit: the menu steps aside, the game stays on screen
+    if (hud_editor_active()) { ui_alpha(1.0f); hud_editor_draw(sw, sh); return; }
     float ot = ui_smooth(8000, 1.0f, 9.0f);
     ui_alpha(ot);
 
@@ -782,21 +1350,37 @@ void modern_menu_draw(float sw, float sh) {
     ui_text(38, 88, 11, 600, UI_MUTED, "C O D 1  R E L O A D E D");
     ui_rect(36, 118, rail - 72, 1, UI_LINE);
 
-    static const char* tabs[] = { "Display", "Mouse", "Keys", "Game", "Files", "About" };
+    static const char* tabs[] = { "Display", "Mouse", "Keys", "Game", "Inspect", "Files", "Demos", "Workshop", "About" };
+    constexpr int NTABS = (int)(sizeof(tabs) / sizeof(tabs[0]));
     static const char* subs[] = {
         "Resolution, refresh rate and how the image reaches the screen.",
         "Raw input and aim feel. What your hand does is what the game gets.",
         "Click an action, press the new key. Saved to your config instantly.",
         "Performance, HUD, effects and the competitive netcode.",
+        "Weapon inspection: one key per animation. Click a row, press a key. Play tries it.",
         "Configs and demos - Main and every mod folder. One click to run.",
+        "Every demo, every kill in it. Click a kill: the demo plays from just before.",
+        "Maps and mods from the 1.6X catalog. One click: downloaded, verified, installed.",
         "What this client is and what runs under the hood.",
     };
+    // a tab left out of the build keeps its id (g_tab, icon_tab and the bodies below are
+    // untouched), only its place in the rail goes
+    auto in_rail = [](int id) {
+#ifndef COD1RELOADED_WEAPON_INSPECT
+        if (id == 4) return false;                      // weapon inspect: a later version
+#endif
+        return id >= 0;
+    };
+    int gslot = 0;
+    for (int i = 0, j = 0; i < NTABS; ++i)
+        if (in_rail(i)) { if (i == g_tab) gslot = j; ++j; }
     float taby = 150;
-    float tsel = ui_smooth(8002, (float)g_tab, 13.0f);
+    float tsel = ui_smooth(8002, (float)gslot, 13.0f);
     ui_rect_rounded(20, 150 + tsel * 54 - 6, rail - 40, 46, 10, UI_ACCENT);
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0, j = 0; i < NTABS; ++i) {
+        if (!in_rail(i)) continue;
         bool over = hit(20, taby - 6, rail - 40, 46);
-        float prox = 1.0f - (tsel > i ? tsel - i : i - tsel);
+        float prox = 1.0f - (tsel > j ? tsel - j : j - tsel);
         if (prox < 0) prox = 0;
         if (i != g_tab && over)
             ui_rect_rounded(20, taby - 6, rail - 40, 46, 10, 0x33242424);
@@ -805,16 +1389,17 @@ void modern_menu_draw(float sw, float sh) {
         ui_text(72, taby + 4, 18, 600, tc, tabs[i]);
         if (over && ui_input().clicked) g_tab = i;
         taby += 54;
+        ++j;
     }
     // leaving the Keys tab mid-capture must release the keyboard, or every key
     // would keep vanishing into a bind that no longer has a visible target
-    if (g_tab != 2 && g_cap_act) { g_cap_act = nullptr; ui_key_capture(false); }
+    if (g_tab != 2 && g_tab != 4 && g_cap_act) { g_cap_act = nullptr; ui_key_capture(false); }
 
     // rail footer: key chips + version
     {
         float ky = sh - 96;
         float kx = 36;
-        kx += keychip(kx, ky, "CTRL+M") + 10;
+        kx += keychip(kx, ky, overlay_hotkey_label()) + 10;
         ui_text(kx, ky + 2, 12, 400, UI_HINT, "open / close");
         ky += 30;
         kx = 36;
@@ -825,15 +1410,16 @@ void modern_menu_draw(float sw, float sh) {
 
     // content frame of reference (kept so the tab bodies below stay untouched)
     const float pw = sw - rail;
+    g_content_w = pw - 120;
     const float px = rail + 24, py = 40 + (1.0f - ot) * 14.0f;
     ui_text(px + 36, py + 10, 30, 600, UI_TEXT, tabs[g_tab]);
     ui_text(px + 36, py + 52, 14, 400, UI_MUTED, subs[g_tab]);
     ui_rect(px + 36, py + 84, pw - 120, 1, 0xFF2A2A2A);
 
     // tab content slides horizontally between tabs
-    float tt = ui_smooth(8001, (float)g_tab, 12.0f);
-    float slide = (tt - g_tab) * 46.0f;
-    float frac = tt - g_tab; if (frac < 0) frac = -frac;
+    float tt = ui_smooth(8001, (float)gslot, 12.0f);
+    float slide = (tt - gslot) * 46.0f;
+    float frac = tt - gslot; if (frac < 0) frac = -frac;
     ui_alpha(ot * (1.0f - (frac > 1 ? 1 : frac) * 0.85f));
     float cx = px + 36 + slide, cy = py + 122;
     const float colw = 430;
@@ -867,6 +1453,47 @@ void modern_menu_draw(float sw, float sh) {
         if (dh) { int n = (int)g_hz.size() + 1;
                   g_hz_sel = (g_hz_sel + dh + n) % n; g_dirty = true; }
         cy += 58;
+        // render clock (cod1x_render_clock): N evenly spaced frames a second on screen while the
+        // game keeps its 250 commands; live, no restart. -1 = follow the screen's rate.
+        section(cx, cy, colw, "RENDER CLOCK  (frames shown per second)"); cy += 24;
+        {
+            static const int rates[] = { 0, -1, 60, 100, 120, 144, 165, 200, 240, 300, 320, 360, 480 };
+            const int nr = (int)(sizeof(rates) / sizeof(rates[0]));
+            const int cur = cv_int("cod1x_render_clock", 0);
+            int rsel = 0;
+            for (int i = 0; i < nr; ++i) if (rates[i] == cur) rsel = i;
+            char rl[48];
+            if (cur == 0)       snprintf(rl, sizeof(rl), "Off  (frames at com_maxfps)");
+            else if (cur == -1) snprintf(rl, sizeof(rl), "Screen rate  (%d Hz now)", sel_hz());
+            else                snprintf(rl, sizeof(rl), "%d frames / s", cur);
+            int dr = cycler(cx, cy, colw, rl);
+            if (dr) cmdf("seta cod1x_render_clock %d\n", rates[(rsel + dr + nr) % nr]);
+            cy += 48;
+            hint(cx, cy, "Above 250 = extra CPU work; drops back to 250 by itself as soon as frames come late.");
+            cy += 26;
+        }
+        // MMCSS (cod1x_mmcss): the game thread in Windows' "Games" scheduling task. Off by default
+        // since 1.6.15: on a CPU with few cores it can starve the graphics driver's thread.
+        {
+            const bool mm = cv_int("cod1x_mmcss", 0) != 0;
+            const bool nmm = toggle(cx, cy, "Windows game priority (MMCSS)", mm);
+            if (nmm != mm) cmdf("seta cod1x_mmcss %d\n", nmm ? 1 : 0);
+            cy += 34;
+            hint(cx, cy, "Off = the safe default. On can help many-core CPUs, can stutter on 4-6 cores.");
+            cy += 30;
+        }
+        // the 1.6.13 frame timing (cod1x_gpu_fence): the GPU fence on the previous frame and the
+        // high-resolution wait. Off by default since 1.6.17: players felt their mouse later with it.
+        {
+            const bool gf = cv_int("cod1x_gpu_fence", 0) != 0;
+            const bool ngf = toggle(cx, cy, "1.6.13 frame timing (GPU fence)", gf);
+            if (ngf != gf) cmdf("seta cod1x_gpu_fence %d\n", ngf ? 1 : 0);
+            cy += 34;
+            ui_text(cx, cy, 13, 400, UI_DANGER, "Warning: changes the mouse delay - your aim can feel like another sensitivity.");
+            cy += 20;
+            hint(cx, cy, "Off = the 1.6.12 timing (default). On = smoother frames, one frame more in flight.");
+            cy += 30;
+        }
 
         section(cx, cy, colw, "VIEW"); cy += 24;
         static const char* vmodes[] = { "Classic", "Widescreen", "Stretched" };
@@ -929,8 +1556,9 @@ void modern_menu_draw(float sw, float sh) {
         }
         float pvw = pw - 120 - colw - 70;
         if (pvw > 560) pvw = 560;
-        draw_preview(px + 36 + colw + 70, py + 122, pvw,
-                     g_modes[g_sel], g_display_mode, g_view_mode);
+        const float pv_bottom = draw_preview(px + 36 + colw + 70, py + 122, pvw,
+                                             g_modes[g_sel], g_display_mode, g_view_mode);
+        hud_editor_block(px + 36 + colw + 70, pv_bottom + 26, pvw);
     } else if (g_tab == 1) {
         section(cx, cy, colw, "RAW INPUT"); cy += 26;
         bool ri = cv_int("m_rinput", 0) != 0;
@@ -951,6 +1579,21 @@ void modern_menu_draw(float sw, float sh) {
         ui_text(cx + colw - 50, cy + 8, 17, 600, UI_TEXT, sv);
         if (ns != s10) cmdf("seta sensitivity %.1f\n", ns / 10.0);
         cy += 50;
+        // mounted MG (input/sensitivity_mg.cpp): the game turns a turret like sensitivity 2.5
+        // whatever the above says; 1 = that, sensitivity / 2.5 = the same feel on yaw
+        char ml[96];
+        snprintf(ml, sizeof(ml), "Mounted MG (sensitivity_mg)  -  %.2f turns like the above",
+                 ns / 10.0 / 2.5);
+        ui_text(cx, cy, 14, 400, UI_MUTED, ml);
+        cy += 20;
+        int g20 = (int)(atof(cv_str("sensitivity_mg", "1")) * 20 + 0.5f);
+        if (g20 < 1) g20 = 1;
+        if (g20 > 100) g20 = 100;
+        int ng = slider(cx, cy, colw - 70, 1, 100, g20);
+        char gv[16]; snprintf(gv, sizeof(gv), "%.2f", ng / 20.0);
+        ui_text(cx + colw - 50, cy + 8, 17, 600, UI_TEXT, gv);
+        if (ng != g20) cmdf("seta sensitivity_mg %.2f\n", ng / 20.0);
+        cy += 48;
 
         section(cx, cy, colw, "ACCELERATION"); cy += 24;
         int a10 = (int)(atof(cv_str("cl_mouseAccel", "0")) * 10 + 0.5f);
@@ -1024,26 +1667,7 @@ void modern_menu_draw(float sw, float sh) {
             parse_binds();
             g_binds_scan = GetTickCount();
         }
-        // capture resolution: the next input becomes the bind
-        if (g_cap_act) {
-            int vkin = ui_input().vk;
-            if (vkin == VK_ESCAPE) {
-                g_cap_act = nullptr; ui_key_capture(false);
-            } else if (vkin) {
-                const char* kn = keyname_from_vk(vkin);
-                if (kn) {
-                    cmdf("bind %s \"%s\"\n", kn, g_cap_act->cmd);
-                    cmdf("writeconfig config_mp.cfg\n");
-                    // optimistic local update so the row refreshes this frame;
-                    // the file re-parse (2 s) then confirms the engine's truth
-                    for (auto& b : g_binds)
-                        if (_stricmp(b.first.c_str(), kn) == 0) b.second.clear();
-                    g_binds.push_back({ kn, g_cap_act->cmd });
-                    g_binds_scan = GetTickCount();       // delay re-parse
-                    g_cap_act = nullptr; ui_key_capture(false);
-                }
-            }
-        }
+        resolve_capture();                  // the next input becomes the bind
         const float kw = (pw - 120 - 40) / 2 > 470 ? 470 : (pw - 120 - 40) / 2;
         const float rowh = 34;
         float col_y[2] = { cy, cy };
@@ -1062,7 +1686,7 @@ void modern_menu_draw(float sw, float sh) {
                 if (capme) ui_rect_border(kx, ky, kw, rowh - 4, 6, 1.5f, UI_ACCENT);
                 ui_text(kx + 14, ky + 5, 14, 400, UI_TEXT, a.label);
                 if (capme) {
-                    const char* msg = "PRESS A KEY  -  ESC cancels";
+                    const char* msg = "PRESS A KEY  -  ESC cancels, BACKSPACE clears";
                     float mw = ui_text_width(12, 600, msg);
                     ui_text(kx + kw - mw - 14, ky + 7, 12, 600, UI_ACCENT, msg);
                 } else {
@@ -1175,6 +1799,8 @@ void modern_menu_draw(float sw, float sh) {
                     "netcode. 40 Hz + antilag: what you see is what you hit.");
         }
     } else if (g_tab == 4) {
+        draw_inspect_tab(cx, cy, colw, two_col ? col2x : cx, two_col ? (col2w > 430 ? 430 : col2w) : colw, two_col);
+    } else if (g_tab == 5) {
         if (GetTickCount() - g_files_scan > 3000) {
             scan_dir("configs", "*.cfg", g_cfgs);
             scan_demos();
@@ -1184,18 +1810,19 @@ void modern_menu_draw(float sw, float sh) {
         float ly = cy;
         char hdr[64];
 
-        // ---- PAM: the competitive mod, fetched here instead of at the first connect
-        if (g_pam_install_config.enable) {
-            section(cx, ly, pw - 72, "PAM MOD  (the competitive mod every 1.6X match server runs)"); ly += 26;
-            PamStatus ps; pam_install_status(&ps);
+        // ---- packages fetched here instead of at the first connect: the PAM (the
+        // competitive mod) and the HD texture pack. One block each, same mechanics.
+        auto package = [&](PkgId id, const char* title, const char* install_lbl, const char* idle_txt, bool has_url) {
+            section(cx, ly, pw - 72, title); ly += 26;
+            PamStatus ps; pkg_install_status(id, &ps);
             const bool busy = ps.state == PAM_CHECKING || ps.state == PAM_DOWNLOADING;
-            const char* lbl = busy ? "WORKING..." : (ps.state == PAM_DONE ? "CHECK AGAIN" : "INSTALL / UPDATE PAM");
-            if (button(cx, ly, 250, 38, lbl, !busy) && !busy) pam_install_start();
-            const char* txt = ps.state == PAM_IDLE
-                ? "Downloads the mod's pk3s (maps included) so joining a match server never waits on a download."
-                : ps.text;
+            const char* lbl = busy ? "WORKING..." : (ps.state == PAM_DONE ? "CHECK AGAIN" : install_lbl);
+            if (button(cx, ly, 250, 38, lbl, !busy && has_url) && !busy && has_url) pkg_install_start(id);
+            const char* txt = !has_url ? "Download link not configured yet (hdtex_manifest_url in cod1reloaded.ini)."
+                            : ps.state == PAM_IDLE ? idle_txt : ps.text;
             const DWORD col = ps.state == PAM_ERROR ? 0xFFE05252 : (ps.state == PAM_DONE ? 0xFF6FCF7A : UI_TEXT);
-            ui_text(cx + 268, ly + 9, 14, ps.state == PAM_IDLE ? 400 : 500, ps.state == PAM_IDLE ? UI_MUTED : col, txt);
+            const bool muted = !has_url || ps.state == PAM_IDLE;
+            ui_text(cx + 268, ly + 9, 14, muted ? 400 : 500, muted ? UI_MUTED : col, txt);
             if (busy || ps.state == PAM_RESTART) {
                 const float bw = pw - 72;
                 ui_rect_rounded(cx, ly + 46, bw, 6, 3, UI_ROW);
@@ -1203,15 +1830,25 @@ void modern_menu_draw(float sw, float sh) {
                 if (ps.state == PAM_RESTART) f = 1.f;
                 ui_rect_rounded(cx, ly + 46, bw * f, 6, 3, ps.state == PAM_RESTART ? 0xFFE0B252 : UI_ACCENT);
             }
+            // (the pack's `cvar` lines are applied by pkg_install_frame, menu open or not)
             ly += 68;
-        }
+        };
+        if (g_pam_install_config.enable)
+            package(PKG_PAM, "PAM MOD  (the competitive mod every 1.6X match server runs)", "INSTALL / UPDATE PAM",
+                    "Downloads the mod's pk3s (maps included) so joining a match server never waits on a download.",
+                    g_pam_install_config.manifest_url[0] != 0);
+        if (g_hdtex_install_config.enable)
+            package(PKG_HDTEX, "HD TEXTURES  (optional texture pack, goes into main)", "INSTALL HD TEXTURES",
+                    "5.6 GB into main, then restart. 1.6X servers accept the pack; other pure servers show the normal textures.",
+                    g_hdtex_install_config.manifest_url[0] != 0);
 
         snprintf(hdr, sizeof(hdr), "CONFIGS - %d  (click to exec)", (int)g_cfgs.size());
         section(cx, ly, lw - 20, hdr);
         snprintf(hdr, sizeof(hdr), "DEMOS - %d  (click to play)", (int)g_demo_ents.size());
         section(cx + lw + 40, ly, lw - 20, hdr);
         ly += 26;
-        const int vis = g_pam_install_config.enable ? 9 : 11; const float rh = 36;   // the PAM block takes two rows
+        const int vis = 11 - (g_pam_install_config.enable ? 2 : 0) - (g_hdtex_install_config.enable ? 2 : 0);
+        const float rh = 36;   // each package block takes two rows
         auto list = [&](float lx, std::vector<std::string>& v, float& scroll,
                         const char* cmd_fmt, bool strip) {
             if (hit(lx, ly, lw, vis * rh)) scroll -= ui_input().wheel * 2;
@@ -1254,7 +1891,6 @@ void modern_menu_draw(float sw, float sh) {
             int maxoff = (int)v.size() - vis; if (maxoff < 0) maxoff = 0;
             if (scroll < 0) scroll = 0;
             if (scroll > maxoff) scroll = (float)maxoff;
-            const char* fsg = cv_str("fs_game", "");
             for (int i = 0; i < vis && i + (int)scroll < (int)v.size(); ++i) {
                 int idx = i + (int)scroll;
                 float ry = ly + i * rh;
@@ -1271,13 +1907,7 @@ void modern_menu_draw(float sw, float sh) {
                 if (over && ui_input().clicked) {
                     std::string nm = v[idx].name;
                     size_t p = nm.rfind('.'); if (p != std::string::npos) nm.resize(p);
-                    bool sw = _stricmp(v[idx].dir.c_str(), "Main") != 0 &&
-                              _stricmp(v[idx].dir.c_str(), fsg) != 0;
-                    if (sw)
-                        cmdf("seta fs_game %s\nvid_restart\ndemo %s\n",
-                             v[idx].dir.c_str(), nm.c_str());
-                    else
-                        cmdf("demo %s\n", nm.c_str());
+                    demo_play_in(v[idx].dir, nm);    // into the demo's folder (mod or Main) first
                     overlay_toggle(false);
                 }
             }
@@ -1294,6 +1924,10 @@ void modern_menu_draw(float sw, float sh) {
              "Configs from Main/configs. Demos from every folder's demos/ - playing a mod's");
         hint(cx, ly + vis * rh + 30,
              "demo loads that mod first (fs_game + renderer restart), then plays it.");
+    } else if (g_tab == 6) {
+        draw_demos_tab(cx, cy, pw - 120, sh - 36);
+    } else if (g_tab == 7) {
+        workshop_tab_draw(cx, cy, pw - 120, sh - 36);
     } else {
         // ABOUT: what 1.6X actually is - the feature list doubles as a changelog
         ui_text(cx, cy, 22, 600, UI_TEXT, "cod1reloaded  -  the 1.6X competitive client");
@@ -1324,7 +1958,7 @@ void modern_menu_draw(float sw, float sh) {
         cy += 16;
         section(cx, cy, colw, "KEYS"); cy += 26;
         float kx = cx;
-        kx += keychip(kx, cy, "CTRL+M") + 10;
+        kx += keychip(kx, cy, overlay_hotkey_label()) + 10;
         ui_text(kx, cy + 2, 13, 400, UI_HINT, "open / close this panel");
         cy += 30;
         kx = cx;

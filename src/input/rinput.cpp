@@ -55,6 +55,7 @@ bool             g_lock_ready = false;
 long             g_dx = 0, g_dy = 0;      // unread device counts
 long             g_ui_dx = 0, g_ui_dy = 0; // unread counts for the menu overlay
 volatile LONG    g_ui_capture = 0;         // overlay open: route deltas to the UI
+volatile LONG    g_engine_read_tick = 0;   // GetTickCount of the engine's last mouse read
 long             g_msg_total = 0;         // WM_INPUT messages ever seen (rate readout)
 
 volatile LONG    g_active  = 0;           // hook answers raw only while this is 1
@@ -97,6 +98,12 @@ void take_delta(long* x, long* y) {
     if (stale) { g_dx = 0; g_dy = 0; }
     *x = g_dx; *y = g_dy;
     g_dx = 0;  g_dy = 0;
+    LeaveCriticalSection(&g_lock);
+}
+
+void peek_delta(long* x, long* y) {
+    EnterCriticalSection(&g_lock);
+    *x = g_dx; *y = g_dy;
     LeaveCriticalSection(&g_lock);
 }
 
@@ -242,6 +249,29 @@ void rinput_disable() {
 // --- the hook ----------------------------------------------------------------------
 
 BOOL WINAPI hk_GetCursorPos(LPPOINT p) {
+    if (p) InterlockedExchange(&g_engine_read_tick, (LONG)GetTickCount());
+    // Menu overlay open. The engine must see no movement (the view would turn behind
+    // the panel), and the menu cursor needs the movement instead. With m_rinput 1 the
+    // raw thread already routes the counts to the UI. With m_rinput 0 there is no raw
+    // thread, and WM_MOUSEMOVE cannot drive the cursor (coalesced, overwritten by the
+    // engine's re-centre): the menu cursor was frozen for every m_rinput 0 player
+    // while the mouse turned the view. The engine reads the cursor once a frame and
+    // re-centres it right after, so what it is about to read IS this frame's movement:
+    // it goes to the menu, and the engine gets the centre.
+    if (p && InterlockedCompareExchange(&g_ui_capture, 0, 0) == 1 && *g_center_x > 0 && *g_center_y > 0) {
+        if (InterlockedCompareExchange(&g_active, 0, 0) != 1 && g_real_GetCursorPos) {
+            POINT real;
+            if (g_real_GetCursorPos(&real)) {
+                EnterCriticalSection(&g_lock);
+                g_ui_dx += real.x - *g_center_x;
+                g_ui_dy += real.y - *g_center_y;
+                LeaveCriticalSection(&g_lock);
+            }
+        }
+        p->x = *g_center_x;
+        p->y = *g_center_y;
+        return TRUE;
+    }
     if (InterlockedCompareExchange(&g_active, 0, 0) != 1 || !p)
         return g_real_GetCursorPos ? g_real_GetCursorPos(p) : FALSE;
 
@@ -422,6 +452,56 @@ void rinput_ui_take_delta(long* dx, long* dy) {
     *dx = g_ui_dx; *dy = g_ui_dy;
     g_ui_dx = 0; g_ui_dy = 0;
     LeaveCriticalSection(&g_lock);
+}
+
+void rinput_peek_delta(long* dx, long* dy) {
+    *dx = 0; *dy = 0;
+    if (InterlockedCompareExchange(&g_ui_capture, 0, 0) == 1) return;   // the menu has the mouse
+    if (InterlockedCompareExchange(&g_active, 0, 0) == 1) {
+        if (g_lock_ready) peek_delta(dx, dy);
+        return;
+    }
+    // m_rinput 0: the engine reads GetCursorPos - centre and re-centres once a frame, so
+    // the cursor's current offset IS the movement it has not read yet
+    if (*g_center_x <= 0 || *g_center_y <= 0) return;
+    // ... unless an EXTERNAL raw-input tool (RInput) re-hooked the game's GetCursorPos after
+    // us: the engine then reads that tool's raw counts while the real cursor below moves with
+    // Windows' pointer speed and acceleration - the render clock turned the view between
+    // commands by a different amount than the command did ("feels like another sensitivity /
+    // acceleration", 1.6.14 report). Nothing is predicted then: the view turns with the
+    // commands only, exactly what the tool gives (its hook is never called from here: whether
+    // a read consumes its counts is not ours to know).
+    {
+        static DWORD s_checked = 0;
+        static bool  s_foreign = false;
+        const DWORD now = GetTickCount();
+        if (!s_checked || now - s_checked >= 2000) {
+            s_checked = now ? now : 1;
+            void* cur = iat_peek("user32.dll", "GetCursorPos");
+            // the no-rinput build never installs our hook (g_real_GetCursorPos stays null): Windows'
+            // own function in the slot is not a foreign hook either
+            static void* s_user32 = nullptr;
+            if (!s_user32) s_user32 = (void*)GetProcAddress(GetModuleHandleA("user32.dll"), "GetCursorPos");
+            const bool foreign = cur && cur != (void*)hk_GetCursorPos && cur != (void*)g_real_GetCursorPos &&
+                                 cur != s_user32;
+            if (foreign != s_foreign)
+                logger::logf(foreign ? "rinput: GetCursorPos re-hooked by another tool (external RInput?) - the render clock no longer turns the view between commands"
+                                     : "rinput: GetCursorPos back to ours - render clock view turning between commands restored");
+            s_foreign = foreign;
+        }
+        if (s_foreign) return;
+    }
+    POINT real;
+    const BOOL ok = g_real_GetCursorPos ? g_real_GetCursorPos(&real) : GetCursorPos(&real);
+    if (!ok) return;
+    *dx = real.x - *g_center_x;
+    *dy = real.y - *g_center_y;
+}
+
+bool rinput_ui_cursor_pinned() {
+    if (InterlockedCompareExchange(&g_active, 0, 0) == 1) return true;
+    const DWORD last = (DWORD)InterlockedCompareExchange(&g_engine_read_tick, 0, 0);
+    return last != 0 && GetTickCount() - last < 200;
 }
 
 void rinput_shutdown() {

@@ -5,15 +5,15 @@
 
 namespace patches {
 
-// Stop the "Player animation index out of range (N): M" kick to the main menu.
-// cgame's BG_GetAnimationForIndex Com_Error's when the requested index >= the
-// runtime animation count. On a heavily-modded server the client can register a
-// slightly different animation count than the server, so it receives an index it
-// never registered and the player is dropped. This patches the check to CLAMP the
-// index to 0 (return a valid default animation) instead of erroring — no kick.
-// Mirror of the server-side clamp in cod1plus.so (anim_clamp.c).
+// Stop the drop to the main menu on an out-of-range player animation index
+// ("Player animation index out of range (%i): %i", "BG_GetAnimationForIndex: index out of
+// bounds", ...): the index is one the client's animation table does not have - a modded server
+// registering a different count, or a demo recorded on one and watched from the main menu.
+// The five cgame checks fall back to animation 0 (a valid default pose) instead of erroring,
+// without touching any register their callers rely on (see anim_clamp.cpp: the 2026-07
+// version did, and was reverted). Mirror of the server-side clamp in cod1plus.so.
 //
-// Idempotent, verify-then-write; a different cgame build is left untouched.
+// Idempotent, verify-then-write, all five or none; a different cgame build is left untouched.
 // Re-applied on every cgame (re)load via apply_to_cgame.
 bool apply_anim_clamp(HMODULE cgame_module);
 

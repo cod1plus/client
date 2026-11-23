@@ -20,6 +20,12 @@ namespace patches {
 // dir run/facing direction: >= 0 runs right, < 0 runs left
 void player_preview_draw(float cx, float gy, float h, float st, float t, float dir);
 
+// The same model as a HERO: standing pose on a turntable, studio light (key + rim),
+// a breathing idle, a soft light pool on the ground. For the home screen.
+// cx, gy, h as above; yaw in radians (the model's facing, animate it for the
+// turntable); t in seconds drives the idle; alpha 0..1 multiplies the overlay alpha.
+void player_hero_draw(float cx, float gy, float h, float yaw, float t, float alpha);
+
 }  // namespace patches
 
 #endif

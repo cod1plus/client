@@ -7,10 +7,13 @@
 #include "core/patches.h"
 #include "core/single_instance.h"
 #include "features/pam_install.h"
+#include "features/news.h"
 #include "netcode/cheat_scan.h"
 #include "netcode/ruleset.h"
 #include "gameplay/viewheight_fix.h"
 #include "gameplay/lean_fix.h"
+#include "gameplay/inspect.h"
+#include "gameplay/use_pickup.h"
 #include "core/logger.h"
 #include "netcode/version_patch.h"
 #include "netcode/protocol_patch.h"
@@ -21,8 +24,25 @@
 #include "video/display_probe.h"
 #include "video/mode_guard.h"
 #include "input/rinput.h"
+#include "input/sensitivity_mg.h"
+#include "input/script_block.h"
+#include "core/hunk_min.h"
+#include "gameplay/bone_probe.h"
+#include "features/hitbox_view.h"
 #include "performance/fps_cap.h"
 #include "performance/frame_limiter.h"
+#include "performance/render_clock.h"
+#include "performance/smodel_fast.h"
+#include "performance/trace_cull.h"
+#include "performance/smodel_light.h"
+#include "performance/smodel_lod.h"
+#include "performance/smodel_path.h"
+#include "performance/gpu_sync.h"
+#include "core/session_report.h"
+#include "core/ini_lock.h"
+#include "netcode/net_diag.h"
+#include "ui/demo_seek.h"
+#include "ui/demo_mod.h"
 #include "features/updater.h"
 #include "features/demo_upload.h"
 #include "core/toast.h"
@@ -33,6 +53,7 @@
 #include "video/widescreen_fix.h"
 #include "features/avatar_overlay.h"
 #include "ui/gl_overlay.h"
+#include "ui/menu_hooks.h"
 #include "features/engine_2d.h"
 #include "features/discord_rpc.h"
 #include "features/settings_menu.h"
@@ -76,6 +97,17 @@ bool apply_cgame_patches(HMODULE cgame, bool fresh) {
         patches::g_discord_rpc_config.client_id[0] != '\0') {
         patches::engine_2d_install_hook(cgame);
     }
+    // server-tested hit boxes overlay (cod1x_drawhitbox): needs the 'hb' server command
+    // intercepted on EVERY cgame load, whatever else is enabled
+    patches::hitbox_view_install(cgame);
+    // render clock: the view of frames drawn between two commands (inert while cod1x_render_clock 0)
+    patches::render_clock_install_cgame(cgame);
+#ifdef COD1RELOADED_WEAPON_INSPECT
+    // weapon inspect (cod1x_inspect): the view weapon's call site, on every cgame load
+    patches::inspect_install(cgame);
+#endif
+    // weapons on the ground: no walk-over pickup predicted (cod1x_use_pickup), on every cgame load
+    patches::use_pickup_install(cgame);
 
     const bool ok = patches::apply_to_cgame(cgame);
     logger::logf("  [%s] cgame patches applied (lean=%d)", ok ? "OK" : "RETRY",
@@ -112,8 +144,23 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
             patches::ruleset_tick();             // embedded PB ruleset (sv_competitive_ruleset) -> userinfo cod1x_rs
             patches::rinput_tick();              // follow m_rinput, publish m_rinput_hz
             patches::netmode_tick();             // follow cod1x_masterlist (1.6 <-> legacy 1.5)
+            patches::session_report_tick();      // one 'bilan' line a minute in the log
+            patches::render_clock_tick();        // cod1x_render_clock
+            patches::process_priority_mmcss_tick();  // cod1x_mmcss
+            patches::gpu_sync_tick();            // cod1x_gpu_fence
+            patches::smodel_fast_tick();         // cod1x_smodel_fast
+            patches::sensitivity_mg_tick();      // sensitivity_mg
+            patches::trace_cull_tick();          // inline-model trace bounds test: the 10 s line
+            patches::smodel_light_tick();        // DIAGNOSTIC: static-model surfaces relit, the 10 s line
+            patches::smodel_lod_tick();          // detail clusters culled at their distance, the 10 s line
+            patches::smodel_path_tick();         // DIAGNOSTIC: static-model surfaces on the CPU path
+            patches::use_pickup_tick();          // cod1x_use_pickup
+            patches::ini_lock_tick();            // r_fullscreen read-only, r_displayRefresh at max
+            patches::net_diag_tick();            // a network silence still open gets its line
         }
         patches::widescreen_update_stretch();    // drive the stretched-mode vfov ratio (live)
+        patches::overlay_tick();                 // SwapBuffers hook still running? (diagnostic)
+        patches::menu_hooks_tick();              // ui_mp_x86.dll: which engine menu is on top (home screen)
         patches::gamma_fix_tick();               // per-monitor gamma: focus/monitor transitions
         monitor_cgame();
         Sleep(5);
@@ -123,7 +170,7 @@ DWORD WINAPI patch_watcher_thread(LPVOID) {
 
 }  // namespace
 
-extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
+extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     switch (reason) {
         case DLL_PROCESS_ATTACH:
             DisableThreadLibraryCalls(hModule);
@@ -136,8 +183,14 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             // apply pending update (rename .new -> .dll) before file gets locked
             patches::updater_apply_pending();
             logger::init(hModule);
-            logger::logf("cod1reloaded DLL_PROCESS_ATTACH (loaded as 0x%08x, version %s)",
-                         (unsigned)(uintptr_t)hModule, patches::COD1RELOADED_VERSION);
+            logger::logf("cod1reloaded DLL_PROCESS_ATTACH (loaded as 0x%08x, version %s%s)",
+                         (unsigned)(uintptr_t)hModule, patches::COD1RELOADED_VERSION,
+#ifdef COD1RELOADED_DEV_UNLOCK
+                         " DEV UNLOCK build - ini lock off, do not ship"
+#else
+                         ""
+#endif
+                         );
             patches::load_config(hModule);
 
             // must run before FS_InitFilesystem so the first pak scan picks it up (~150ms sync on cache miss)
@@ -164,6 +217,7 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             patches::widescreen_fix_apply();
             patches::settings_menu_start();  // in-game 1.6X settings menu (FOV + screen ratio)
             patches::overlay_start();        // modern GL settings menu (Ctrl+M)
+            patches::news_start();           // main-menu announcement card (news.txt online)
 
             // per-monitor hardware gamma (dual-screen light bugs; must precede vid init)
             patches::gamma_fix_start();
@@ -185,6 +239,10 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             // `fullscreen = on/off` in the .ini beats a stale `seta r_fullscreen` left in
             // config_mp.cfg by an older build (players windowed without knowing why)
             patches::enforce_ini_fullscreen();
+            // a crash in the middle of a demo fast-forward left mss_volume 0 in config_mp.cfg
+            patches::demo_seek_startup_recover();
+            // `demo <name>` switches to the demo's mod when its map lives there (rPAM map packs)
+            patches::demo_mod_install();
             // refresh_rate = max: a custom res the driver lists below the panel's max Hz
             // is swapped for the res that has it (4:3 stretch emulated by the mod)
             patches::enforce_max_hz_native();
@@ -197,6 +255,22 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             patches::apply_fullscreen_patch();
 
             patches::apply_frame_limiter_patch();
+            patches::render_clock_install();     // CL_Frame's draw: on the render clock when cod1x_render_clock > 0
+            patches::smodel_fast_install();      // scene overflow (> 1021 models): heap, not the engine's sqrt scan
+            patches::sensitivity_mg_install();   // CL_MouseMove's turret branch: sensitivity_mg
+            patches::script_block_install();     // exec / vstr refused in binds and typed in the console
+            patches::hunk_min_install();         // com_hunkMegs at least 256 (mp_liberation needs 167)
+            patches::trace_cull_install();       // CM_BoxTrace: bounds test before an inline model's leaf trace
+            patches::smodel_light_install();     // DIAGNOSTIC: count the static-model surface lighting (0x513ded)
+            patches::smodel_lod_install();       // <map>_dtNNN detail clusters: distance cull under r_lodscale 0 (0x513d1f)
+            patches::smodel_path_install();      // DIAGNOSTIC: rb_surfaceTable[11] (RB_SurfaceStaticModel) wrapped
+            patches::bone_probe_install();      // DEV DIAGNOSTIC: drawn bone positions (2026-09-29)
+
+            // one frame in flight: glFinish after every SwapBuffers (gpu_sync = off to skip)
+            patches::gpu_sync_start();
+
+            // UDP packets and silences per direction -> bilan line + one line per gap (999 diagnosis)
+            patches::net_diag_start();
 
             // raw mouse input: hook GetCursorPos now, stays idle until m_rinput 1
             patches::rinput_start();
@@ -211,6 +285,18 @@ extern "C" BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
             }
             break;
         case DLL_PROCESS_DETACH:
+            patches::session_report_final("fin");
+            logger::flush();                 // ExitProcess already killed the writer thread
+            if (reserved) {
+                // PROCESS TERMINATION (ExitProcess / a crash): every other thread is already dead. Anything that
+                // joins a thread or goes through Windows subsystems here hangs the dying process forever - the
+                // gamma restore (SetDeviceGammaRamp -> mscms -> DisplayColorManagement, waits on a worker that
+                // no longer exists) turned a map-load crash into a frozen full-screen window (10-26). Leave it:
+                // Windows resets the gamma ramp with the process.
+                patches::fps_cap_shutdown();     // timeEndPeriod only
+                break;
+            }
+            patches::demo_seek_restore_now();
             patches::rinput_shutdown();      // unregister the raw input device + join its thread
             patches::gamma_fix_shutdown();   // never leave the desktop gamma modified
             patches::fps_cap_shutdown();

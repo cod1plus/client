@@ -42,6 +42,9 @@ bool mode_guard_exclusive_active();
 // (vid_restart/quit) - that is a deliberate exit from fullscreen, not the OS.
 bool mode_guard_reapply_fullscreen();
 bool mode_guard_fullscreen_size(int* w, int* h);
+// The exclusive mode the engine holds (w, h, Hz as the display reports it), or false
+// when the game is windowed (session_report.cpp).
+bool mode_guard_current_mode(int* w, int* h, int* hz);
 
 }  // namespace patches
 

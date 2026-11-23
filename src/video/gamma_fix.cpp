@@ -92,17 +92,14 @@ bool monitor_device_of_window(HWND w, char out[32]) {
     return true;
 }
 
-// THE window resolution. get_game_window() is only populated by the borderless
-// watcher, which never even starts with window_borderless=off - enzo's setup and
-// most players' (fullscreen stretched). With it NULL the whole pipeline silently
+// THE window resolution: wndhub's, learned from WindowFromDC at every SwapBuffers,
+// in every display mode. (Before wndhub, get_game_window() was only populated by
+// the borderless watcher, which never even started with window_borderless=off -
+// enzo's setup and most players' - and with it NULL the whole pipeline silently
 // degraded to the vanilla path: no desktop-ramp capture, no unfocus restore, a
-// no-op restore at exit - i.e. BOTH reported symptoms ("brightness stays on the
-// desktop after quit / after the Windows key", 2026-08-25). The overlay learns
-// the window from WindowFromDC at every SwapBuffers, in every display mode.
+// no-op restore at exit - BOTH reported symptoms of 2026-08-25.)
 HWND resolve_game_window() {
-    HWND w = get_game_window();
-    if (!w) w = overlay_game_window();
-    return w;
+    return overlay_game_window();
 }
 
 // Crash insurance: the desktop ramp is persisted next to the exe while our ramp

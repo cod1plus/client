@@ -270,6 +270,59 @@ bool apply_new(const char* new_path) {
     return true;
 }
 
+// The update has only ever fetched mss32.dll: a player who updates keeps the menu pk3
+// of the version he first installed, and what changed in it (the "1.6X SETTINGS" entry
+// that opens the overlay, the 1.6 / 1.5 buttons of the server browser) only reached
+// fresh installs. When the published release IS this build, its zz_cod1x_ui.pk3 is
+// fetched if the local one predates it (no ui_mp/joinserver.menu inside). The engine
+// holds the pk3 open by now, so it lands as .pk3.new and pam_install_swap_pending()
+// (DllMain, before any pak is opened) puts it in place at the next launch.
+const char kMenuPk3Marker[] = "ui_mp/joinserver.menu";
+
+bool file_has_marker(const char* path, bool need_zip) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    static char buf[1 << 20];
+    const size_t n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    if (need_zip && (n < 4 || memcmp(buf, "PK\x03\x04", 4) != 0)) return false;
+    const size_t m = sizeof(kMenuPk3Marker) - 1;
+    for (size_t i = 0; i + m <= n; ++i)
+        if (buf[i] == kMenuPk3Marker[0] && memcmp(buf + i, kMenuPk3Marker, m) == 0) return true;
+    return false;
+}
+
+void refresh_menu_pk3() {
+    char dir[MAX_PATH];
+    snprintf(dir, sizeof(dir), "%s", g_dll_path);
+    char* cut = strrchr(dir, '\\');
+    if (!cut) return;
+    cut[1] = '\0';
+    char pk3[MAX_PATH], pnew[MAX_PATH], part[MAX_PATH];
+    snprintf(pk3,  sizeof(pk3),  "%sMain\\zz_cod1x_ui.pk3", dir);
+    snprintf(pnew, sizeof(pnew), "%s.new", pk3);
+    snprintf(part, sizeof(part), "%s.part", pk3);
+    if (file_has_marker(pk3, false)) return;                             // already current
+    if (GetFileAttributesA(pnew) != INVALID_FILE_ATTRIBUTES) return;     // swapped next launch
+
+    char url[512];
+    snprintf(url, sizeof(url), "%s", g_updater_config.manifest_url);
+    char* slash = strrchr(url, '/');
+    if (!slash || (size_t)(slash + 1 - url) + sizeof("zz_cod1x_ui.pk3") > sizeof(url)) return;
+    strcpy(slash + 1, "zz_cod1x_ui.pk3");
+
+    DeleteFileA(part);
+    if (http_download(url, NULL, 0, part) && file_has_marker(part, true) &&
+        MoveFileExA(part, pnew, MOVEFILE_REPLACE_EXISTING)) {
+        logger::logf("updater: menu pk3 predates this version -> new zz_cod1x_ui.pk3 staged, "
+                     "in place at the next launch");
+    } else {
+        DeleteFileA(part);
+        logger::logf("updater: menu pk3 predates this version, and the published one "
+                     "could not be fetched or is not newer (%s)", url);
+    }
+}
+
 // Runs ONCE, on the main thread, right before the game creates its window. May
 // ExitProcess (update pending) or return (up to date / offline -> game continues).
 void updater_gate() {
@@ -292,6 +345,7 @@ void updater_gate() {
 
     if (version_compare(remote, COD1RELOADED_VERSION) <= 0) {
         logger::logf("updater: up to date (local=%s remote=%s)", COD1RELOADED_VERSION, remote);
+        if (version_compare(remote, COD1RELOADED_VERSION) == 0) refresh_menu_pk3();
         return;  // launch normally
     }
 

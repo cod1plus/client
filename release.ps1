@@ -51,6 +51,9 @@ Remove-Item -Recurse -Force $dist -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $dist | Out-Null
 Copy-Item $dll (Join-Path $dist "mss32.dll")
 Copy-Item (Join-Path $root "cod1reloaded.ini") (Join-Path $dist "cod1reloaded.ini")
+# home screen art (optional at runtime; the zip mirrors the game folder)
+New-Item -ItemType Directory -Force (Join-Path $dist "cod1reloaded\home") | Out-Null
+Copy-Item (Join-Path $root "assets\home\*.jpg") (Join-Path $dist "cod1reloaded\home\")
 
 $readme = @"
 cod1reloaded $Version
@@ -77,7 +80,7 @@ Set-Content (Join-Path $root "manifest.json") $manifest -Encoding ASCII
 
 # --- zip joueur ---
 $zip = Join-Path $dist "cod1reloaded-$Version.zip"
-Compress-Archive -Path (Join-Path $dist "mss32.dll"),(Join-Path $dist "cod1reloaded.ini"),(Join-Path $dist "LISEZMOI.txt") -DestinationPath $zip -Force
+Compress-Archive -Path (Join-Path $dist "mss32.dll"),(Join-Path $dist "cod1reloaded.ini"),(Join-Path $dist "LISEZMOI.txt"),(Join-Path $dist "cod1reloaded") -DestinationPath $zip -Force
 
 Write-Host ""
 Write-Host "OK -> $dist" -ForegroundColor Green
