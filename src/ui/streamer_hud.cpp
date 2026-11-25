@@ -349,6 +349,7 @@ Slot     g_slot[10];
 Feed     g_feed;
 RadarWin g_win;
 std::string g_name[2], g_score[2], g_info;
+std::string g_tag[2];                     // the team tags of a FPSChallenge match (PAM top_team_tag), "" else
 bool     g_info_red = false;
 int      g_team_side[2] = { 2, 1 };   // team shown on the left / right
 DWORD    g_clock_at = 0;              // arrival of the current clock value
@@ -537,6 +538,7 @@ void read_slots() {
     }
     for (int k = 0; k < 2; ++k) {
         g_name[k] = clean(g_io->cvar(k ? "ui_streamersystem_top_name2" : "ui_streamersystem_top_name1"));
+        g_tag[k] = clean(g_io->cvar(k ? "ui_streamersystem_top_tag2" : "ui_streamersystem_top_tag1"));
         g_score[k] = clean(g_io->cvar(k ? "ui_streamersystem_top_score2" : "ui_streamersystem_top_score1"));
     }
     g_info = clean(g_io->cvar("ui_streamersystem_top_info"), &g_info_red);

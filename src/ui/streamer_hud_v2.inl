@@ -162,6 +162,15 @@ const KillEv* killed_by(int k) {
 }
 
 // a team's tile: the monogram over diagonal stripes in its colour
+// the mark in a team's tile: its tag in a FPSChallenge match (PAM cod1x_tag_*), else its initials
+std::string team_mark(int side) {
+    std::string t;
+    if (side >= 0 && side < 2)
+        for (char c : g_tag[side])
+            if (isalnum((unsigned char)c) && t.size() < 5) t += (char)toupper((unsigned char)c);
+    return t.empty() ? monogram(team_label(side)) : t;
+}
+
 void team_tile(float x, float y, float s, DWORD tc, const std::string& mark, float cut = 0) {
     if (cut > 0) plate(x, y, s, s, cut, 0, cut, 0, with_alpha(tc, 0.14f), with_alpha(tc, 0.08f));
     else ui_rect(x, y, s, s, with_alpha(tc, 0.10f));
@@ -170,7 +179,8 @@ void team_tile(float x, float y, float s, DWORD tc, const std::string& mark, flo
     ui_clip_pop();
     if (cut > 0) plate_stroke(x, y, s, s, cut, 0, cut, 0, std::max(1.0f, 2 * S), tc);
     else ui_aa_stroke_rect(x, y, s, s, 0, std::max(1.0f, 1 * S), with_alpha(tc, 0.55f));
-    vt(x + s / 2, y + s / 2, F_BLACK, s * 0.45f / S, tc, mark.c_str(), 0, 1);
+    const float k = mark.size() <= 3 ? 0.45f : mark.size() == 4 ? 0.36f : 0.30f;     // 4-5 letter tags
+    vt(x + s / 2, y + s / 2, F_BLACK, s * k / S, tc, mark.c_str(), 0, 1);
 }
 
 // the clock in tenths, as text ("1:32", "9.4" for the last ten seconds of the bomb)
@@ -284,7 +294,7 @@ float draw_scorebug(float vw) {
         // tile, name, side + alive
         const float ts = 58 * S, tx = side == 0 ? bx + 22 * S : bx + tw - 22 * S - ts, ty = top + (h - 4 * S - ts) / 2;
         const std::string nm = team_label(side);
-        team_tile(tx, ty, ts, tc, monogram(nm));
+        team_tile(tx, ty, ts, tc, team_mark(side));
         const float nx = side == 0 ? tx + ts + 16 * S : tx - 16 * S;
         const int al = side == 0 ? -1 : 1;
         const float lim = side == 0 ? szx - 10 * S - nx : nx - (szx + sz + 10 * S);
@@ -916,7 +926,7 @@ void draw_overview(float vw, float vh) {
         ui_rect(bx, y + hh - 4 * S, half, 4 * S, tc);
         const std::string nm = team_label(side);
         const float ts = 72 * S, tx = side == 0 ? bx + 40 * S : bx + half - 40 * S - ts;
-        team_tile(tx, y + (hh - ts) / 2 - 2 * S, ts, tc, monogram(nm));
+        team_tile(tx, y + (hh - ts) / 2 - 2 * S, ts, tc, team_mark(side));
         const float nx = side == 0 ? tx + ts + 20 * S : tx - 20 * S;
         const int al = side == 0 ? -1 : 1;
         vt(nx, y + 50 * S, F_DISP, 40, COL_TEXT, nm.c_str(), al, 3);
@@ -1089,7 +1099,7 @@ void draw_winner(float vw, float vh) {
     const float scw = vt_w(F_STEN, 170, big) + 44 * S + vt_w(F_STEN, 120, small_);
     const float rowW = ts + 44 * S + namew + 44 * S + 40 * S + scw;
     float xx = vw / 2 - rowW / 2;
-    team_tile(xx, hy, ts, wc, monogram(wname), 28 * S);
+    team_tile(xx, hy, ts, wc, wside >= 0 ? team_mark(wside) : monogram(wname), 28 * S);
     xx += ts + 44 * S;
     {
         const float cw = vt_w(F_BOLD, 14, "MAP WINNER", 5) + 24 * S;
@@ -1263,7 +1273,7 @@ void draw_pause(float vw, float vh) {
         const std::string nm = team_label(cside);
         const float ts = 118 * S, nw = vt_w(F_STEN, 118, nm.c_str(), 6);
         const float row = ts + 36 * S + nw, x0 = cx - row / 2;
-        team_tile(x0, y, ts, cc, monogram(nm), 22 * S);
+        team_tile(x0, y, ts, cc, team_mark(cside), 22 * S);
         vt(x0 + ts + 36 * S, y + ts / 2, F_STEN, 118, cc, nm.c_str(), -1, 6);
         y += ts + 26 * S;
         char sub[64];
@@ -1308,7 +1318,7 @@ void draw_pause(float vw, float vh) {
             ui_rect(bx, y + h - 4 * S, half, 4 * S, tc);
             const std::string nm = team_label(side);
             const float ts = 52 * S, tx = side == 0 ? bx + 24 * S : bx + half - 24 * S - ts;
-            team_tile(tx, y + (h - 4 * S - ts) / 2, ts, tc, monogram(nm));
+            team_tile(tx, y + (h - 4 * S - ts) / 2, ts, tc, team_mark(side));
             const float nx = side == 0 ? tx + ts + 16 * S : tx - 16 * S;
             vt(nx, y + 32 * S, F_DISP, 28, COL_TEXT, nm.c_str(), side == 0 ? -1 : 1, 2);
             vt(nx, y + 58 * S, F_BOLD, 12, tc, team_word(team), side == 0 ? -1 : 1, 3.5f);
